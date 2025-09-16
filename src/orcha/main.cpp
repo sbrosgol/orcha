@@ -42,8 +42,7 @@ auto main(int argc, char* argv[]) -> int {
     // CLI workflow mode
     if (argc > 1) {
         std::vector<Orcha::Workflow::WorkflowStepResult> step_results;
-        Orcha::Workflow::WorkflowRunner runner(registry);
-        if (!runner.run(argv[1], step_results)) {
+        if (const Orcha::Workflow::WorkflowRunner runner(registry); !runner.run(argv[1], step_results)) {
             std::cout << "[Orcha] Workflow failed!\n";
         }
         for (size_t i = 0; i < step_results.size(); ++i) {
