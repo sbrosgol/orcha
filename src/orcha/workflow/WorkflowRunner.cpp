@@ -128,7 +128,20 @@ namespace Orcha::Workflow {
                 params = resolve_placeholders(params, step_results);
             }
 
-            auto exec_func = [&, params, cmd]() mutable {
+            if (parallel) {
+                futures.push_back(std::async(std::launch::async, [this, params, cmd, &results_mutex, &step_results]() mutable {
+                    WorkflowStepResult local_result;
+                    try {
+                        local_result.output = cmd->execute(params);
+                        local_result.success = true;
+                    } catch (const std::exception &ex) {
+                        local_result.success = false;
+                        local_result.error_message = ex.what();
+                    }
+                    std::lock_guard<std::mutex> lock(results_mutex);
+                    step_results.push_back(std::move(local_result));
+                }));
+            } else {
                 try {
                     result.output = cmd->execute(params);
                     result.success = true;
@@ -136,14 +149,10 @@ namespace Orcha::Workflow {
                     result.success = false;
                     result.error_message = ex.what();
                 }
-                std::lock_guard<std::mutex> lock(results_mutex);
-                step_results.push_back(result);
-            };
-
-            if (parallel) {
-                futures.push_back(std::async(std::launch::async, exec_func));
-            } else {
-                exec_func();
+                {
+                    std::lock_guard<std::mutex> lock(results_mutex);
+                    step_results.push_back(result);
+                }
                 if (!result.success) break;
             }
         }
@@ -190,7 +199,20 @@ namespace Orcha::Workflow {
                     params = resolve_placeholders(params, results);
                 }
 
-                auto exec_func = [&, params, cmd]() {
+                if (parallel) {
+                    futures.push_back(std::async(std::launch::async, [this, params, cmd, &results_mutex, &results]() mutable {
+                        WorkflowStepResult local_result;
+                        try {
+                            local_result.output = cmd->execute(params);
+                            local_result.success = true;
+                        } catch (const std::exception &ex) {
+                            local_result.success = false;
+                            local_result.error_message = ex.what();
+                        }
+                        std::lock_guard<std::mutex> lock(results_mutex);
+                        results.push_back(std::move(local_result));
+                    }));
+                } else {
                     try {
                         result.output = cmd->execute(params);
                         result.success = true;
@@ -198,14 +220,10 @@ namespace Orcha::Workflow {
                         result.success = false;
                         result.error_message = ex.what();
                     }
-                    std::lock_guard<std::mutex> lock(results_mutex);
-                    results.push_back(result);
-                };
-
-                if (parallel) {
-                    futures.push_back(std::async(std::launch::async, exec_func));
-                } else {
-                    exec_func();
+                    {
+                        std::lock_guard<std::mutex> lock(results_mutex);
+                        results.push_back(result);
+                    }
                     if (!result.success) break;
                 }
             }
@@ -259,7 +277,20 @@ namespace Orcha::Workflow {
                     step.at(U("params")) : web::json::value::object();
                 params = resolve_placeholders(params, results);
 
-                auto exec_func = [&, params, cmd]() {
+                if (parallel) {
+                    futures.push_back(std::async(std::launch::async, [this, params, cmd, &results_mutex, &results]() mutable {
+                        WorkflowStepResult local_result;
+                        try {
+                            local_result.output = cmd->execute(params);
+                            local_result.success = true;
+                        } catch (const std::exception& ex) {
+                            local_result.success = false;
+                            local_result.error_message = ex.what();
+                        }
+                        std::lock_guard<std::mutex> lock(results_mutex);
+                        results.push_back(std::move(local_result));
+                    }));
+                } else {
                     try {
                         result.output = cmd->execute(params);
                         result.success = true;
@@ -267,14 +298,10 @@ namespace Orcha::Workflow {
                         result.success = false;
                         result.error_message = ex.what();
                     }
-                    std::lock_guard<std::mutex> lock(results_mutex);
-                    results.push_back(result);
-                };
-
-                if (parallel) {
-                    futures.push_back(std::async(std::launch::async, exec_func));
-                } else {
-                    exec_func();
+                    {
+                        std::lock_guard<std::mutex> lock(results_mutex);
+                        results.push_back(result);
+                    }
                     if (!result.success) break;
                 }
             }
