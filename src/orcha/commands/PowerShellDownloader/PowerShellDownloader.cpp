@@ -34,7 +34,7 @@ const std::string ps_archive = "powershell.tar.gz";
 const std::string ps_folder = "pwsh";
 #endif
 
-class PowerShellDownloader final : public ICommand {
+class PowerShellDownloader final : public Orcha::Core::ICommand {
 public:
     web::json::value execute(const web::json::value &params) override {
         using namespace web;
@@ -102,6 +102,6 @@ public:
     [[nodiscard]] std::string name() const override { return "download_pwsh"; }
 };
 
-extern "C" ICommand *create_command() {
+extern "C" Orcha::Core::ICommand *create_command() {
     return new PowerShellDownloader();
 }

@@ -1,0 +1,18 @@
+{
+    "name": "echo",
+    "version": "1.0.0",
+    "description": "Echoes back the input message",
+    "author": "Orcha Team",
+    "tags": ["utility", "debug"],
+    "entry_point": "libEchoCommand.dylib",
+    "parameters": [
+        {
+            "name": "message",
+            "type": "string",
+            "required": false,
+            "description": "The message to echo back",
+            "default": "",
+            "example": "Hello, World!"
+        }
+    ]
+}
