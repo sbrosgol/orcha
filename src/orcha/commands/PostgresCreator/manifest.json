@@ -1,0 +1,61 @@
+{
+    "name": "create_pg_db",
+    "version": "1.0.0",
+    "description": "Creates a PostgreSQL database using psql CLI",
+    "author": "Orcha Team",
+    "tags": ["database", "postgres", "infrastructure"],
+    "entry_point": "libPostgresCreator.dylib",
+    "parameters": [
+        {
+            "name": "dbname",
+            "type": "string",
+            "required": true,
+            "description": "Name of the database to create"
+        },
+        {
+            "name": "host",
+            "type": "string",
+            "required": false,
+            "description": "PostgreSQL server host",
+            "default": "localhost"
+        },
+        {
+            "name": "port",
+            "type": "string",
+            "required": false,
+            "description": "PostgreSQL server port",
+            "default": "5432"
+        },
+        {
+            "name": "user",
+            "type": "string",
+            "required": false,
+            "description": "PostgreSQL username"
+        },
+        {
+            "name": "password",
+            "type": "string",
+            "required": false,
+            "description": "PostgreSQL password"
+        },
+        {
+            "name": "owner",
+            "type": "string",
+            "required": false,
+            "description": "Owner of the new database"
+        },
+        {
+            "name": "template",
+            "type": "string",
+            "required": false,
+            "description": "Template database to use"
+        },
+        {
+            "name": "if_not_exists",
+            "type": "bool",
+            "required": false,
+            "description": "If true, do not error if database exists",
+            "default": "true"
+        }
+    ]
+}

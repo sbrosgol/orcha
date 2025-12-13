@@ -1,3 +1,8 @@
+//
+// Logger.cpp - Concrete logging implementation
+// Updated to implement ILogger interface
+//
+
 #include "Logger.hpp"
 #include <filesystem>
 
@@ -13,7 +18,7 @@ namespace Orcha::Utils {
     }
 
     Logger::~Logger() {
-        shutdown(); // Ensure logs are flushed on static destruction
+        shutdown();
     }
 
     void Logger::set_log_file(const std::string& filename) {
@@ -30,10 +35,63 @@ namespace Orcha::Utils {
         use_file_ = file_.is_open();
     }
 
-    void Logger::log(LogLevel level, const std::string& msg) {
+    void Logger::log(LogLevel level,
+                    const std::string& msg,
+                    const LogContext& ctx,
+                    const std::source_location& loc) {
+        // Check minimum level
+        if (static_cast<int>(level) < static_cast<int>(min_level_.load())) {
+            return;
+        }
+
+        std::string formatted = format_log_entry(level, msg, ctx, loc);
+        enqueue(formatted);
+    }
+
+    std::string Logger::format_log_entry(LogLevel level,
+                                         const std::string& msg,
+                                         const LogContext& ctx,
+                                         const std::source_location& loc) {
         std::ostringstream oss;
-        oss << "[" << timestamp() << "][" << level_to_string(level) << "] " << msg << '\n';
-        enqueue(oss.str());
+
+        // Timestamp
+        oss << "[" << timestamp() << "]";
+
+        // Level
+        oss << "[" << to_string(level) << "]";
+
+        // Component (if present)
+        if (ctx.component.has_value()) {
+            oss << "[" << ctx.component.value() << "]";
+        }
+
+        // Correlation ID (if present)
+        if (ctx.correlation_id.has_value()) {
+            oss << "[" << ctx.correlation_id.value() << "]";
+        }
+
+        // Message
+        oss << " " << msg;
+
+        // Tags (if any)
+        if (!ctx.tags.empty()) {
+            oss << " {";
+            bool first = true;
+            for (const auto& [key, value] : ctx.tags) {
+                if (!first) oss << ", ";
+                oss << key << "=" << value;
+                first = false;
+            }
+            oss << "}";
+        }
+
+        // Source location for DEBUG and below
+        if (level == LogLevel::DEBUG || level == LogLevel::TRACE) {
+            oss << " [" << loc.file_name() << ":" << loc.line() << "]";
+        }
+
+        oss << '\n';
+        return oss.str();
     }
 
     void Logger::enqueue(const std::string& message) {
@@ -54,28 +112,41 @@ namespace Orcha::Utils {
                 log_queue_.pop();
                 lock.unlock();
 
-                // Output to appropriate streams
-                if (message.find("[ERROR]") != std::string::npos || message.find("[WARN]") != std::string::npos)
+                // Output to appropriate streams based on level indicators
+                if (message.find("[ERROR]") != std::string::npos ||
+                    message.find("[WARN]") != std::string::npos ||
+                    message.find("[FATAL]") != std::string::npos) {
                     std::cerr << message;
-                else
+                } else {
                     std::cout << message;
+                }
 
                 if (use_file_ && file_.is_open()) {
                     file_ << message;
-                    file_.flush(); // Optional, or batch flush for better performance
+                    file_.flush();
                 }
                 lock.lock();
             }
         }
     }
 
+    void Logger::flush() {
+        // Wait for queue to empty
+        std::unique_lock<std::mutex> lock(mtx_);
+        cv_.notify_one();
+        // Note: This is a best-effort flush - for synchronous flush,
+        // we'd need a more complex mechanism
+    }
+
     void Logger::shutdown() {
         if (running_.exchange(false)) {
             cv_.notify_one();
-            if (worker_.joinable())
+            if (worker_.joinable()) {
                 worker_.join();
-            if (file_.is_open())
+            }
+            if (file_.is_open()) {
                 file_.close();
+            }
         }
     }
 
@@ -83,6 +154,8 @@ namespace Orcha::Utils {
         using namespace std::chrono;
         const auto now = system_clock::now();
         auto t_c = system_clock::to_time_t(now);
+        auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+
         std::tm tm{};
 #if defined(_WIN32)
         localtime_s(&tm, &t_c);
@@ -90,23 +163,9 @@ namespace Orcha::Utils {
         localtime_r(&t_c, &tm);
 #endif
         std::ostringstream oss;
-        oss << std::put_time(&tm, "%F %T");
+        oss << std::put_time(&tm, "%F %T")
+            << '.' << std::setfill('0') << std::setw(3) << ms.count();
         return oss.str();
-    }
-
-    std::string Logger::level_to_string(LogLevel level) {
-        switch (level) {
-            case LogLevel::INFO:
-                return "INFO";
-            case LogLevel::WARNING:
-                return "WARN";
-            case LogLevel::ERROR:
-                return "ERROR";
-            case LogLevel::DEBUG:
-                return "DEBUG";
-            default:
-                return "UNK";
-        }
     }
 
 } // namespace Orcha::Utils

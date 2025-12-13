@@ -21,6 +21,8 @@ add_library(core STATIC
         core/ICommand.hpp
         core/CommandRegistry.cpp
         core/CommandRegistry.hpp
+        core/PluginManager.cpp
+        core/PluginManager.hpp
 )
 
 add_library(logger STATIC
@@ -28,7 +30,14 @@ add_library(logger STATIC
         utils/Logger.hpp
 )
 
+add_library(config STATIC
+        config/YamlConfiguration.cpp
+        config/YamlConfiguration.hpp
+        config/IConfiguration.hpp
+)
+
 target_link_libraries(core PUBLIC cpprestsdk::cpprest dl)
+target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp cpprestsdk::cpprest)
 
 # Header-only utils library (modern CMake!)
 add_library(utils INTERFACE)
@@ -37,6 +46,9 @@ target_include_directories(utils INTERFACE ${CMAKE_SOURCE_DIR}/utils)
 add_library(workflow STATIC
         workflow/WorkflowRunner.cpp
         workflow/WorkflowRunner.hpp
+        workflow/WorkflowEngine.cpp
+        workflow/WorkflowEngine.hpp
+        workflow/IWorkflowEngine.hpp
 )
 target_link_libraries(workflow PUBLIC core utils yaml-cpp::yaml-cpp logger)
 
@@ -53,7 +65,7 @@ target_link_libraries(agent PUBLIC core workflow Boost::thread Boost::system cpp
 add_executable(orcha
         main.cpp
 )
-target_link_libraries(orcha PRIVATE agent core workflow yaml-cpp::yaml-cpp utils logger OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(orcha PRIVATE agent core workflow config yaml-cpp::yaml-cpp utils logger OpenSSL::SSL OpenSSL::Crypto)
 
 target_precompile_headers(core PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
 target_precompile_headers(agent PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
