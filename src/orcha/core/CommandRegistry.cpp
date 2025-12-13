@@ -23,21 +23,21 @@ namespace Orcha::Core {
     bool CommandRegistry::load_command_library(const std::string& path) {
         void* handle = dlopen(path.c_str(), RTLD_NOW);
         if (!handle) {
-            std::cerr << "Failed to load plugin: " << path << " (" << dlerror() << ")" << std::endl;
+            std::cerr << "Failed to load plugin: " << path << " (" << dlerror() << ")" << '\n';
             return false;
         }
 
         dlerror(); // Clear any existing error
         const auto create_func = reinterpret_cast<CreateCommandFunc>(dlsym(handle, "create_command"));
         if (const char* dlsym_error = dlerror()) {
-            std::cerr << "Cannot load symbol 'create_command' in " << path << ": " << dlsym_error << std::endl;
+            std::cerr << "Cannot load symbol 'create_command' in " << path << ": " << dlsym_error << '\n';
             dlclose(handle);
             return false;
         }
 
         std::unique_ptr<ICommand> cmd(create_func());
         if (!cmd) {
-            std::cerr << "Plugin in " << path << " did not return a valid command." << std::endl;
+            std::cerr << "Plugin in " << path << " did not return a valid command." << '\n';
             dlclose(handle);
             return false;
         }
@@ -49,7 +49,7 @@ namespace Orcha::Core {
 
             // Check if command already exists
             if (commands_.contains(cmd_name)) {
-                std::cerr << "Command '" << cmd_name << "' already registered, skipping." << std::endl;
+                std::cerr << "Command '" << cmd_name << "' already registered, skipping." << '\n';
                 dlclose(handle);
                 return false;
             }
@@ -58,7 +58,7 @@ namespace Orcha::Core {
             plugins_.push_back({handle, std::move(cmd), path});
         }
 
-        std::cout << "Loaded command: " << cmd_name << " from " << path << std::endl;
+        std::cout << "Loaded command: " << cmd_name << " from " << path << '\n';
         return true;
     }
 
@@ -72,14 +72,14 @@ namespace Orcha::Core {
         std::unique_lock lock(mutex_);
 
         if (commands_.contains(cmd_name)) {
-            std::cerr << "Command '" << cmd_name << "' already registered." << std::endl;
+            std::cerr << "Command '" << cmd_name << "' already registered." << '\n';
             return false;
         }
 
         commands_[cmd_name] = command.get();
         plugins_.push_back({nullptr, std::move(command), ""});
 
-        std::cout << "Registered command: " << cmd_name << std::endl;
+        std::cout << "Registered command: " << cmd_name << '\n';
         return true;
     }
 
@@ -104,7 +104,7 @@ namespace Orcha::Core {
         }
 
         commands_.erase(cmd_it);
-        std::cout << "Unregistered command: " << name << std::endl;
+        std::cout << "Unregistered command: " << name << '\n';
         return true;
     }
 

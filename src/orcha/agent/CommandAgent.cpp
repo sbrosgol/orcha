@@ -96,14 +96,14 @@ namespace Orcha::Agent {
 
         try {
             listener_->open().wait();
-            std::cout << "[Orcha] CommandAgent listening on port " << port << std::endl;
+            std::cout << "[Orcha] CommandAgent listening on port " << port << '\n';
 
             if (logger_) {
                 logger_->info("CommandAgent listening on port " + std::to_string(port));
             }
         } catch (const std::exception& ex) {
             std::cerr << "[Orcha] Failed to open HTTP listener on port "
-                      << port << ": " << ex.what() << std::endl;
+                      << port << ": " << ex.what() << '\n';
 
             if (logger_) {
                 logger_->error(

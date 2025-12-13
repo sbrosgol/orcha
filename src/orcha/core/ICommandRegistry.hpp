@@ -65,21 +65,21 @@ namespace Orcha::Core {
          * @param path Path to the shared library.
          * @return True if loading succeeded.
          */
-        virtual bool load_command_library(const std::string& path) = 0;
+        [[nodiscard]] virtual bool load_command_library(const std::string& path) = 0;
 
         /**
          * @brief Register a command instance directly.
          * @param command The command to register (takes ownership).
          * @return True if registration succeeded.
          */
-        virtual bool register_command(std::unique_ptr<ICommand> command) = 0;
+        [[nodiscard]] virtual bool register_command(std::unique_ptr<ICommand> command) = 0;
 
         /**
          * @brief Unregister a command by name.
          * @param name The command name to unregister.
          * @return True if unregistration succeeded.
          */
-        virtual bool unregister_command(const std::string& name) = 0;
+        [[nodiscard]] virtual bool unregister_command(const std::string& name) = 0;
     };
 
 } // namespace Orcha::Core
