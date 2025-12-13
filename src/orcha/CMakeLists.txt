@@ -36,7 +36,7 @@ add_library(config STATIC
         config/IConfiguration.hpp
 )
 
-target_link_libraries(core PUBLIC cpprestsdk::cpprest dl)
+target_link_libraries(core PUBLIC cpprestsdk::cpprest)
 target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp cpprestsdk::cpprest)
 
 # Header-only utils library (modern CMake!)
@@ -65,7 +65,7 @@ target_link_libraries(agent PUBLIC core workflow Boost::thread Boost::system cpp
 add_executable(orcha
         main.cpp
 )
-target_link_libraries(orcha PRIVATE agent core workflow config yaml-cpp::yaml-cpp utils logger OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(orcha PRIVATE agent config)
 
 target_precompile_headers(core PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
 target_precompile_headers(agent PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)

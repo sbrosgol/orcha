@@ -1,9 +1,21 @@
 #include "../../core/ICommand.hpp"
 #include <cpprest/json.h>
-#include <cstdlib>
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <regex>
+
+namespace {
+    // Validates PostgreSQL identifier to prevent SQL injection
+    // Allows alphanumeric, underscores, and must start with letter or underscore
+    bool is_valid_pg_identifier(const std::string& name) {
+        if (name.empty() || name.length() > 63) {
+            return false;
+        }
+        static const std::regex valid_identifier(R"(^[a-zA-Z_][a-zA-Z0-9_]*$)");
+        return std::regex_match(name, valid_identifier);
+    }
+}
 
 class PostgresCreator final : public Orcha::Core::ICommand {
 public:
@@ -12,9 +24,9 @@ public:
     web::json::value execute(const web::json::value &params) override {
         using namespace web;
         using namespace utility;
-        json::value result;
 
         try {
+            json::value result;
             auto get_str = [&](const char* key, const std::string& def = std::string()) -> std::string {
                 if (params.has_field(conversions::to_string_t(key))) {
                     return conversions::to_utf8string(params.at(conversions::to_string_t(key)).as_string());
@@ -34,7 +46,12 @@ public:
             };
 
             const std::string dbname = get_str("dbname");
-            if (dbname.empty()) throw std::runtime_error("'dbname' parameter is required");
+            if (dbname.empty()) {
+                throw std::runtime_error("'dbname' parameter is required");
+            }
+            if (!is_valid_pg_identifier(dbname)) {
+                throw std::runtime_error("'dbname' contains invalid characters (use alphanumeric and underscores only)");
+            }
             const std::string host = get_str("host", "localhost");
             const std::string port = get_str("port", "5432");
             const std::string user = get_str("user", "");
@@ -42,6 +59,14 @@ public:
             const std::string owner = get_str("owner", "");
             const std::string template_db = get_str("template", "");
             const bool if_not_exists = get_bool("if_not_exists", true);
+
+            // Validate optional identifiers
+            if (!owner.empty() && !is_valid_pg_identifier(owner)) {
+                throw std::runtime_error("'owner' contains invalid characters (use alphanumeric and underscores only)");
+            }
+            if (!template_db.empty() && !is_valid_pg_identifier(template_db)) {
+                throw std::runtime_error("'template' contains invalid characters (use alphanumeric and underscores only)");
+            }
 
             // Prepare base psql command
             std::ostringstream psqlBase;
@@ -53,8 +78,9 @@ public:
 
             // Export password to environment for psql
             std::string old_pgpassword;
-            const char* prev = std::getenv("PGPASSWORD");
-            if (prev) old_pgpassword = prev;
+            if (const char* prev = std::getenv("PGPASSWORD")) {
+                old_pgpassword = prev;
+            }
             if (!password.empty()) {
 #ifdef _WIN32
                 _putenv_s("PGPASSWORD", password.c_str());
@@ -80,21 +106,19 @@ public:
             // Check if DB exists
             std::ostringstream checkCmd;
             checkCmd << psqlBase.str() << " -d postgres -c \"SELECT 1 FROM pg_database WHERE datname='" << dbname << "';\"";
-            std::cout << "Checking if database exists: " << dbname << std::endl;
-            int checkExit = std::system(checkCmd.str().c_str());
-            bool exists = (checkExit == 0);
+            std::cout << "Checking if database exists: " << dbname << '\n';
+            const int checkExit = std::system(checkCmd.str().c_str());
 
-            if (exists) {
+            if (const bool exists = (checkExit == 0); exists) {
                 if (if_not_exists) {
                     result[U("success")] = json::value(true);
                     result[U("dbname")] = json::value::string(conversions::to_string_t(dbname));
                     result[U("created")] = json::value(false);
                     restore_password();
                     return result;
-                } else {
-                    restore_password();
-                    throw std::runtime_error("Database already exists: " + dbname);
                 }
+                restore_password();
+                throw std::runtime_error("Database already exists: " + dbname);
             }
 
             std::ostringstream createSql;
@@ -105,8 +129,8 @@ public:
 
             std::ostringstream createCmd;
             createCmd << psqlBase.str() << " -d postgres -c \"" << createSql.str() << "\"";
-            std::cout << "Creating database: " << dbname << std::endl;
-            int createExit = std::system(createCmd.str().c_str());
+            std::cout << "Creating database: " << dbname << '\n';
+            const int createExit = std::system(createCmd.str().c_str());
 
             restore_password();
 
@@ -119,8 +143,8 @@ public:
             result[U("created")] = json::value(true);
             return result;
         } catch (const std::exception& ex) {
-            std::cout << "Error: " << ex.what() << std::endl;
-            web::json::value err;
+            std::cerr << "Error: " << ex.what() << '\n';
+            json::value err;
             err[U("success")] = web::json::value(false);
             err[U("error")] = web::json::value::string(ex.what());
             return err;

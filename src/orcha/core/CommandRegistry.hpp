@@ -38,9 +38,9 @@ namespace Orcha::Core {
         [[nodiscard]] size_t command_count() const override;
 
         // IMutableCommandRegistry interface
-        bool load_command_library(const std::string& path) override;
-        bool register_command(std::unique_ptr<ICommand> command) override;
-        bool unregister_command(const std::string& name) override;
+        [[nodiscard]] bool load_command_library(const std::string& path) override;
+        [[nodiscard]] bool register_command(std::unique_ptr<ICommand> command) override;
+        [[nodiscard]] bool unregister_command(const std::string& name) override;
 
     private:
         struct PluginHandle {
