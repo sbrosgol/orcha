@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
+
+# Suppress FindBoost deprecation warning (CMake 3.30+)
+# This must be set before project() for vcpkg compatibility
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
 project(orcha LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -89,3 +96,15 @@ message(STATUS "Registered command plugins from commands/ directory.")
 if(NOT WIN32)
     target_link_libraries(core PUBLIC dl)
 endif()
+
+# Test executable for dependency resolver
+add_executable(test_dependency_resolver
+        tests/test_dependency_resolver_main.cpp
+)
+target_link_libraries(test_dependency_resolver PRIVATE core cpprestsdk::cpprest)
+
+# Test executable for new architecture features
+add_executable(test_new_features
+        tests/test_new_features_main.cpp
+)
+target_link_libraries(test_new_features PRIVATE core workflow config yaml-cpp::yaml-cpp cpprestsdk::cpprest)

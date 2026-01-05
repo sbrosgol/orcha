@@ -130,17 +130,79 @@ namespace Orcha::Core {
         stop_watching();
     }
 
-    size_t PluginManager::load_plugins_from_directory(const std::filesystem::path& directory) {
-        auto plugins = discovery_->scan_plugins(directory);
-        size_t loaded = 0;
+    PluginManager::LoadResult PluginManager::load_plugins_from_directory(
+        const std::filesystem::path& directory,
+        bool strict_dependencies) {
 
-        for (const auto& plugin : plugins) {
+        LoadResult result;
+
+        // Scan for all plugins
+        auto plugins = discovery_->scan_plugins(directory);
+
+        if (plugins.empty()) {
+            logger_->info("No plugins found in directory: " + directory.string());
+            return result;
+        }
+
+        logger_->info("Discovered " + std::to_string(plugins.size()) +
+                     " plugin(s) in " + directory.string());
+
+        // Resolve dependencies and get load order
+        auto resolve_result = DependencyResolver::resolve(plugins, strict_dependencies);
+
+        if (resolve_result.is_err()) {
+            const auto& error = resolve_result.error();
+            result.dependency_error = error;
+
+            logger_->error("Dependency resolution failed: " + error.message);
+
+            if (error.type == DependencyError::Type::CircularDependency) {
+                // Cannot proceed with circular dependencies
+                return result;
+            }
+
+            // For missing dependencies in strict mode, we already returned error
+            // In non-strict mode, resolve() would have succeeded
+        }
+
+        // Load plugins in dependency order
+        const auto& ordered_plugins = resolve_result.value();
+
+        logger_->info("Loading plugins in dependency order:");
+        for (const auto& plugin : ordered_plugins) {
+            std::string deps_str;
+            if (!plugin.dependencies.empty()) {
+                deps_str = " (depends on: ";
+                for (size_t i = 0; i < plugin.dependencies.size(); ++i) {
+                    if (i > 0) deps_str += ", ";
+                    deps_str += plugin.dependencies[i];
+                }
+                deps_str += ")";
+            }
+            logger_->info("  -> " + plugin.name + deps_str);
+        }
+
+        for (const auto& plugin : ordered_plugins) {
+            result.load_order.push_back(plugin.name);
+
             if (load_plugin(plugin.library_path)) {
-                ++loaded;
+                result.loaded_count++;
+            } else {
+                result.failed_count++;
+                logger_->error("Failed to load plugin: " + plugin.name);
             }
         }
 
-        return loaded;
+        logger_->info("Plugin loading complete: " +
+                     std::to_string(result.loaded_count) + " loaded, " +
+                     std::to_string(result.failed_count) + " failed");
+
+        return result;
+    }
+
+    size_t PluginManager::load_plugins_from_directory_legacy(const std::filesystem::path& directory) {
+        auto result = load_plugins_from_directory(directory, false);
+        return result.loaded_count;
     }
 
     bool PluginManager::load_plugin(const std::filesystem::path& library_path) {

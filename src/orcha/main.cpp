@@ -81,12 +81,31 @@ size_t load_plugins(Orcha::Core::ServiceLocator& services,
         fs::create_directories(plugin_config.directory);
     }
 
-    // Load plugins
-    size_t loaded = plugin_manager->load_plugins_from_directory(plugin_config.directory);
+    // Load plugins with dependency resolution
+    auto result = plugin_manager->load_plugins_from_directory(plugin_config.directory);
 
-    if (loaded == 0) {
+    // Handle dependency errors
+    if (result.has_dependency_error()) {
+        const auto& error = result.dependency_error.value();
+        logger->error("Plugin dependency error: " + error.message);
+
+        if (error.type == Core::DependencyError::Type::CircularDependency) {
+            logger->error("Cannot proceed with circular dependencies. "
+                         "Please fix plugin dependencies and restart.");
+        }
+    }
+
+    if (result.loaded_count == 0) {
         logger->warn("No command plugins found in " + plugin_config.directory +
                     ". Place plugin libraries here to extend Orcha.");
+    }
+
+    // Log load order if plugins were loaded
+    if (!result.load_order.empty()) {
+        logger->info("Plugin load order: ");
+        for (const auto& name : result.load_order) {
+            logger->info("  - " + name);
+        }
     }
 
     // Optionally start watching for changes
@@ -96,7 +115,7 @@ size_t load_plugins(Orcha::Core::ServiceLocator& services,
             std::chrono::milliseconds(plugin_config.scan_interval_ms));
     }
 
-    return loaded;
+    return result.loaded_count;
 }
 
 /**
