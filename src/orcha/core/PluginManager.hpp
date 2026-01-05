@@ -7,6 +7,7 @@
 
 #include "IPluginDiscovery.hpp"
 #include "ICommandRegistry.hpp"
+#include "DependencyResolver.hpp"
 #include "../utils/ILogger.hpp"
 #include <memory>
 #include <functional>
@@ -62,11 +63,37 @@ namespace Orcha::Core {
         PluginManager& operator=(const PluginManager&) = delete;
 
         /**
-         * @brief Scan and load all plugins from directory.
+         * @struct LoadResult
+         * @brief Result of loading plugins from a directory.
+         */
+        struct LoadResult {
+            size_t loaded_count = 0;
+            size_t failed_count = 0;
+            std::vector<std::string> load_order;
+            std::optional<DependencyError> dependency_error;
+
+            [[nodiscard]] bool has_dependency_error() const {
+                return dependency_error.has_value();
+            }
+        };
+
+        /**
+         * @brief Scan and load all plugins from directory with dependency ordering.
+         * @param directory Plugin directory path.
+         * @param strict_dependencies If true, fail on missing dependencies.
+         * @return LoadResult with statistics and any errors.
+         */
+        LoadResult load_plugins_from_directory(
+            const std::filesystem::path& directory,
+            bool strict_dependencies = false);
+
+        /**
+         * @brief Scan and load all plugins (legacy overload for backward compatibility).
          * @param directory Plugin directory path.
          * @return Number of plugins loaded.
          */
-        size_t load_plugins_from_directory(const std::filesystem::path& directory);
+        [[deprecated("Use load_plugins_from_directory with LoadResult instead")]]
+        size_t load_plugins_from_directory_legacy(const std::filesystem::path& directory);
 
         /**
          * @brief Load a specific plugin by path.

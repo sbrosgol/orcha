@@ -89,3 +89,9 @@ message(STATUS "Registered command plugins from commands/ directory.")
 if(NOT WIN32)
     target_link_libraries(core PUBLIC dl)
 endif()
+
+# Test executable for dependency resolver
+add_executable(test_dependency_resolver
+        tests/test_dependency_resolver_main.cpp
+)
+target_link_libraries(test_dependency_resolver PRIVATE core cpprestsdk::cpprest)
