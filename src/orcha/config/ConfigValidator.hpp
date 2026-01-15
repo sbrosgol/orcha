@@ -5,7 +5,6 @@
 #pragma once
 
 #include "IConfiguration.hpp"
-#include "../core/Result.hpp"
 #include <vector>
 #include <string>
 #include <functional>
@@ -129,7 +128,7 @@ namespace Orcha::Config {
         }
 
     private:
-        void validate_server_config(const IConfiguration& config, ValidationResult& result) const {
+        static void validate_server_config(const IConfiguration& config, ValidationResult& result) {
             // Server port validation
             if (auto port = config.get_int("server.port")) {
                 if (*port < 1 || *port > 65535) {
@@ -175,7 +174,7 @@ namespace Orcha::Config {
             }
         }
 
-        void validate_plugin_config(const IConfiguration& config, ValidationResult& result) const {
+        static void validate_plugin_config(const IConfiguration& config, ValidationResult& result) {
             // Plugin directory validation
             if (auto dir = config.get_string("plugins.directory")) {
                 if (dir->empty()) {
@@ -201,7 +200,7 @@ namespace Orcha::Config {
             }
         }
 
-        void validate_logging_config(const IConfiguration& config, ValidationResult& result) const {
+        static void validate_logging_config(const IConfiguration& config, ValidationResult& result) {
             // Log level validation
             if (auto level = config.get_string("logging.level")) {
                 static const std::vector<std::string> valid_levels =
@@ -235,7 +234,7 @@ namespace Orcha::Config {
             }
         }
 
-        void validate_workflow_config(const IConfiguration& config, ValidationResult& result) const {
+        static void validate_workflow_config(const IConfiguration& config, ValidationResult& result) {
             // Default timeout validation
             if (auto timeout = config.get_int("workflow.default_timeout_ms")) {
                 if (*timeout < 0) {
