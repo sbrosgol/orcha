@@ -136,7 +136,7 @@ namespace Orcha::Workflow {
          * @return Step execution result.
          */
         [[nodiscard]] virtual WorkflowStepResult execute_step(
-            Core::ICommand* cmd,
+            const std::shared_ptr<Core::ICommand>& cmd,
             const web::json::value& params) = 0;
     };
 

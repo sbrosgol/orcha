@@ -22,13 +22,13 @@ namespace Orcha::Tests::Mocks {
     public:
         // ========== ICommandRegistry Interface ==========
 
-        [[nodiscard]] Core::ICommand* get_command(const std::string& name) const override {
+        [[nodiscard]] std::shared_ptr<Core::ICommand> get_command(const std::string& name) const override {
             if (get_command_calls_) {
                 get_command_calls_(name);
             }
 
             auto it = commands_.find(name);
-            return (it != commands_.end()) ? it->second.get() : nullptr;
+            return (it != commands_.end()) ? it->second : nullptr;
         }
 
         [[nodiscard]] std::vector<std::string> list_commands() const override {
@@ -53,7 +53,7 @@ namespace Orcha::Tests::Mocks {
         /**
          * @brief Add a mock command to the registry.
          */
-        void add_command(std::unique_ptr<Core::ICommand> cmd) {
+        void add_command(std::shared_ptr<Core::ICommand> cmd) {
             auto name = cmd->name();
             commands_[name] = std::move(cmd);
         }
@@ -63,7 +63,7 @@ namespace Orcha::Tests::Mocks {
          */
         template<typename CommandType, typename... Args>
         void add_command(Args&&... args) {
-            auto cmd = std::make_unique<CommandType>(std::forward<Args>(args)...);
+            auto cmd = std::make_shared<CommandType>(std::forward<Args>(args)...);
             add_command(std::move(cmd));
         }
 
@@ -82,7 +82,7 @@ namespace Orcha::Tests::Mocks {
         }
 
     private:
-        std::unordered_map<std::string, std::unique_ptr<Core::ICommand>> commands_;
+        std::unordered_map<std::string, std::shared_ptr<Core::ICommand>> commands_;
         std::function<void(const std::string&)> get_command_calls_;
     };
 

@@ -20,24 +20,8 @@ namespace Orcha::Workflow {
     class SyncStepExecutor : public IStepExecutor {
     public:
         [[nodiscard]] WorkflowStepResult execute_step(
-            Core::ICommand* cmd,
+            const std::shared_ptr<Core::ICommand>& cmd,
             const web::json::value& params) override;
-    };
-
-    /**
-     * @class AsyncStepExecutor
-     * @brief Asynchronous step executor with thread pool support.
-     */
-    class AsyncStepExecutor : public IStepExecutor {
-    public:
-        explicit AsyncStepExecutor(size_t thread_count = 4);
-
-        [[nodiscard]] WorkflowStepResult execute_step(
-            Core::ICommand* cmd,
-            const web::json::value& params) override;
-
-    private:
-        size_t thread_count_;
     };
 
     /**
@@ -76,8 +60,7 @@ namespace Orcha::Workflow {
      * @class WorkflowEngine
      * @brief Refactored workflow execution engine.
      *
-     * Eliminates code duplication from the original WorkflowRunner
-     * by using strategy pattern for step execution.
+     * Uses strategy pattern for step execution.
      */
     class WorkflowEngine : public IWorkflowEngine {
     public:

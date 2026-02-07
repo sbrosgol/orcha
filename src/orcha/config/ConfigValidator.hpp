@@ -151,6 +151,7 @@ namespace Orcha::Config {
                         "Use '0.0.0.0' for all interfaces or '127.0.0.1' for localhost");
                 }
                 // Basic IP/hostname validation
+                // Thread-safe per C++11 [stmt.dcl]/4; compiled once on first call
                 static const std::regex ip_regex(
                     R"(^(\d{1,3}\.){3}\d{1,3}$|^localhost$|^[\w\-\.]+$)");
                 if (!std::regex_match(*host, ip_regex)) {

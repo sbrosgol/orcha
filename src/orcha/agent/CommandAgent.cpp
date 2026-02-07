@@ -7,39 +7,12 @@
 #include "routes/HealthRoute.hpp"
 #include "routes/WorkflowRoute.hpp"
 #include "routes/SwaggerRoute.hpp"
-#include "../workflow/WorkflowRunner.hpp"
 
 using namespace web;
 using namespace web::http;
 using namespace web::http::experimental::listener;
 
 namespace Orcha::Agent {
-
-    // Adapter for legacy constructor
-    class LegacyRegistryAdapter : public Core::ICommandRegistry {
-    public:
-        explicit LegacyRegistryAdapter(Core::CommandRegistry& registry)
-            : registry_(registry) {}
-
-        [[nodiscard]] Core::ICommand* get_command(const std::string& name) const override {
-            return registry_.get_command(name);
-        }
-
-        [[nodiscard]] std::vector<std::string> list_commands() const override {
-            return registry_.list_commands();
-        }
-
-        [[nodiscard]] bool has_command(const std::string& name) const override {
-            return registry_.has_command(name);
-        }
-
-        [[nodiscard]] size_t command_count() const override {
-            return registry_.command_count();
-        }
-
-    private:
-        Core::CommandRegistry& registry_;
-    };
 
     CommandAgent::CommandAgent(
         std::shared_ptr<Core::ICommandRegistry> registry,
@@ -48,13 +21,6 @@ namespace Orcha::Agent {
         : registry_(std::move(registry))
         , engine_(std::move(engine))
         , logger_(std::move(logger)) {
-        setup_default_routes();
-    }
-
-    CommandAgent::CommandAgent(Core::CommandRegistry& registry)
-        : registry_(std::make_shared<LegacyRegistryAdapter>(registry))
-        , engine_(std::make_shared<Workflow::WorkflowEngine>(registry_))
-        , logger_(nullptr) {
         setup_default_routes();
     }
 

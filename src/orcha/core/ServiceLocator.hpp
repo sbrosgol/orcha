@@ -50,7 +50,7 @@ namespace Orcha::Core {
         ServiceLocator(const ServiceLocator&) = delete;
         ServiceLocator& operator=(const ServiceLocator&) = delete;
 
-        // Cannot move due to std::mutex
+        // Cannot move due to std::recursive_mutex
         ServiceLocator(ServiceLocator&&) = delete;
         ServiceLocator& operator=(ServiceLocator&&) = delete;
 
@@ -61,7 +61,7 @@ namespace Orcha::Core {
          */
         template<typename Interface>
         void register_singleton(std::shared_ptr<Interface> instance) {
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             auto key = std::type_index(typeid(Interface));
             singletons_[key] = instance;
             // Clear any factory for this type
@@ -75,7 +75,7 @@ namespace Orcha::Core {
          */
         template<typename Interface>
         void register_factory(std::function<std::shared_ptr<Interface>()> factory) {
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             auto key = std::type_index(typeid(Interface));
             factories_[key] = [factory]() -> std::any {
                 return factory();
@@ -102,7 +102,7 @@ namespace Orcha::Core {
          */
         template<typename Interface>
         void register_lazy_singleton(std::function<std::shared_ptr<Interface>()> factory) {
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             auto key = std::type_index(typeid(Interface));
             lazy_singletons_[key] = [factory]() -> std::any {
                 return factory();
@@ -118,7 +118,7 @@ namespace Orcha::Core {
         std::shared_ptr<Interface> get() const {
             auto key = std::type_index(typeid(Interface));
 
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
 
             // Check singletons first
             auto singleton_it = singletons_.find(key);
@@ -130,9 +130,9 @@ namespace Orcha::Core {
             auto lazy_it = lazy_singletons_.find(key);
             if (lazy_it != lazy_singletons_.end()) {
                 auto instance = std::any_cast<std::shared_ptr<Interface>>(lazy_it->second());
-                // Promote to singleton
-                const_cast<ServiceLocator*>(this)->singletons_[key] = instance;
-                const_cast<ServiceLocator*>(this)->lazy_singletons_.erase(key);
+                // Promote to singleton (safe: singletons_ is mutable)
+                singletons_[key] = instance;
+                lazy_singletons_.erase(key);
                 return instance;
             }
 
@@ -164,7 +164,7 @@ namespace Orcha::Core {
         template<typename Interface>
         [[nodiscard]] bool has() const {
             auto key = std::type_index(typeid(Interface));
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             return singletons_.contains(key) ||
                    factories_.contains(key) ||
                    lazy_singletons_.contains(key);
@@ -176,7 +176,7 @@ namespace Orcha::Core {
         template<typename Interface>
         void unregister() {
             auto key = std::type_index(typeid(Interface));
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             singletons_.erase(key);
             factories_.erase(key);
             lazy_singletons_.erase(key);
@@ -186,15 +186,15 @@ namespace Orcha::Core {
          * @brief Clear all registered services.
          */
         void clear() {
-            std::lock_guard lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             singletons_.clear();
             factories_.clear();
             lazy_singletons_.clear();
         }
 
     private:
-        mutable std::mutex mutex_;
-        std::unordered_map<std::type_index, std::any> singletons_;
+        mutable std::recursive_mutex mutex_;
+        mutable std::unordered_map<std::type_index, std::any> singletons_;
         std::unordered_map<std::type_index, std::function<std::any()>> factories_;
         mutable std::unordered_map<std::type_index, std::function<std::any()>> lazy_singletons_;
     };

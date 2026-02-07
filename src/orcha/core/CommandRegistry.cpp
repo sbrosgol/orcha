@@ -5,13 +5,13 @@
 
 #include "CommandRegistry.hpp"
 #include <dlfcn.h>
-#include <iostream>
 #include <algorithm>
 
 namespace Orcha::Core {
 
     CommandRegistry::~CommandRegistry() {
         std::unique_lock lock(mutex_);
+        commands_.clear();
         for (auto& plugin : plugins_) {
             plugin.command.reset();
             if (plugin.handle) {
@@ -23,21 +23,27 @@ namespace Orcha::Core {
     bool CommandRegistry::load_command_library(const std::string& path) {
         void* handle = dlopen(path.c_str(), RTLD_NOW);
         if (!handle) {
-            std::cerr << "Failed to load plugin: " << path << " (" << dlerror() << ")" << '\n';
+            if (logger_) {
+                logger_->error("Failed to load plugin: " + path + " (" + dlerror() + ")");
+            }
             return false;
         }
 
         dlerror(); // Clear any existing error
         const auto create_func = reinterpret_cast<CreateCommandFunc>(dlsym(handle, "create_command"));
         if (const char* dlsym_error = dlerror()) {
-            std::cerr << "Cannot load symbol 'create_command' in " << path << ": " << dlsym_error << '\n';
+            if (logger_) {
+                logger_->error("Cannot load symbol 'create_command' in " + path + ": " + dlsym_error);
+            }
             dlclose(handle);
             return false;
         }
 
-        std::unique_ptr<ICommand> cmd(create_func());
+        std::shared_ptr<ICommand> cmd(create_func());
         if (!cmd) {
-            std::cerr << "Plugin in " << path << " did not return a valid command." << '\n';
+            if (logger_) {
+                logger_->error("Plugin in " + path + " did not return a valid command.");
+            }
             dlclose(handle);
             return false;
         }
@@ -49,20 +55,24 @@ namespace Orcha::Core {
 
             // Check if command already exists
             if (commands_.contains(cmd_name)) {
-                std::cerr << "Command '" << cmd_name << "' already registered, skipping." << '\n';
+                if (logger_) {
+                    logger_->error("Command '" + cmd_name + "' already registered, skipping.");
+                }
                 dlclose(handle);
                 return false;
             }
 
-            commands_[cmd_name] = cmd.get();
+            commands_[cmd_name] = cmd;
             plugins_.push_back({handle, std::move(cmd), path});
         }
 
-        std::cout << "Loaded command: " << cmd_name << " from " << path << '\n';
+        if (logger_) {
+            logger_->info("Loaded command: " + cmd_name + " from " + path);
+        }
         return true;
     }
 
-    bool CommandRegistry::register_command(std::unique_ptr<ICommand> command) {
+    bool CommandRegistry::register_command(std::shared_ptr<ICommand> command) {
         if (!command) {
             return false;
         }
@@ -72,14 +82,18 @@ namespace Orcha::Core {
         std::unique_lock lock(mutex_);
 
         if (commands_.contains(cmd_name)) {
-            std::cerr << "Command '" << cmd_name << "' already registered." << '\n';
+            if (logger_) {
+                logger_->error("Command '" + cmd_name + "' already registered.");
+            }
             return false;
         }
 
-        commands_[cmd_name] = command.get();
+        commands_[cmd_name] = command;
         plugins_.push_back({nullptr, std::move(command), ""});
 
-        std::cout << "Registered command: " << cmd_name << '\n';
+        if (logger_) {
+            logger_->info("Registered command: " + cmd_name);
+        }
         return true;
     }
 
@@ -104,11 +118,13 @@ namespace Orcha::Core {
         }
 
         commands_.erase(cmd_it);
-        std::cout << "Unregistered command: " << name << '\n';
+        if (logger_) {
+            logger_->info("Unregistered command: " + name);
+        }
         return true;
     }
 
-    ICommand* CommandRegistry::get_command(const std::string& name) const {
+    std::shared_ptr<ICommand> CommandRegistry::get_command(const std::string& name) const {
         std::shared_lock lock(mutex_);
         const auto it = commands_.find(name);
         return (it != commands_.end()) ? it->second : nullptr;

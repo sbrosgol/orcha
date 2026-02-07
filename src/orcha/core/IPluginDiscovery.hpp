@@ -10,34 +10,9 @@
 #include <optional>
 #include <filesystem>
 #include <cpprest/json.h>
+#include "ICommand.hpp"
 
 namespace Orcha::Core {
-
-    /**
-     * @struct ParameterSchema
-     * @brief Schema definition for a command parameter.
-     */
-    struct ParameterSchema {
-        std::string name;
-        std::string type;  // "string", "int", "bool", "double", "object", "array"
-        bool required = false;
-        std::optional<std::string> description;
-        std::optional<std::string> default_value;
-
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value obj;
-            obj[U("name")] = web::json::value::string(name);
-            obj[U("type")] = web::json::value::string(type);
-            obj[U("required")] = web::json::value::boolean(required);
-            if (description) {
-                obj[U("description")] = web::json::value::string(*description);
-            }
-            if (default_value) {
-                obj[U("default")] = web::json::value::string(*default_value);
-            }
-            return obj;
-        }
-    };
 
     /**
      * @struct PluginMetadata
@@ -50,7 +25,7 @@ namespace Orcha::Core {
         std::string author;
         std::vector<std::string> tags;
         std::vector<std::string> dependencies;
-        std::vector<ParameterSchema> parameters;
+        std::vector<CommandParameter> parameters;
         std::filesystem::path library_path;
         std::filesystem::path manifest_path;
 
@@ -112,23 +87,26 @@ namespace Orcha::Core {
             }
             if (json.has_field(U("parameters")) && json.at(U("parameters")).is_array()) {
                 for (const auto& param : json.at(U("parameters")).as_array()) {
-                    ParameterSchema ps;
+                    CommandParameter cp;
                     if (param.has_field(U("name"))) {
-                        ps.name = param.at(U("name")).as_string();
+                        cp.name = param.at(U("name")).as_string();
                     }
                     if (param.has_field(U("type"))) {
-                        ps.type = param.at(U("type")).as_string();
+                        cp.type = param.at(U("type")).as_string();
                     }
                     if (param.has_field(U("required"))) {
-                        ps.required = param.at(U("required")).as_bool();
+                        cp.required = param.at(U("required")).as_bool();
                     }
                     if (param.has_field(U("description"))) {
-                        ps.description = param.at(U("description")).as_string();
+                        cp.description = param.at(U("description")).as_string();
                     }
                     if (param.has_field(U("default"))) {
-                        ps.default_value = param.at(U("default")).as_string();
+                        cp.default_value = param.at(U("default")).as_string();
                     }
-                    meta.parameters.push_back(ps);
+                    if (param.has_field(U("example"))) {
+                        cp.example = param.at(U("example")).as_string();
+                    }
+                    meta.parameters.push_back(cp);
                 }
             }
             return meta;

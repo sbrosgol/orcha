@@ -7,7 +7,6 @@
 
 #include "IRouteHandler.hpp"
 #include "../core/ICommandRegistry.hpp"
-#include "../core/CommandRegistry.hpp"
 #include "../workflow/IWorkflowEngine.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 #include "../utils/ILogger.hpp"
@@ -30,11 +29,6 @@ namespace Orcha::Agent {
         CommandAgent(std::shared_ptr<Core::ICommandRegistry> registry,
                     std::shared_ptr<Workflow::IWorkflowEngine> engine,
                     std::shared_ptr<Utils::ILogger> logger = nullptr);
-
-        /**
-         * @brief Construct with registry only (legacy compatibility).
-         */
-        explicit CommandAgent(Core::CommandRegistry& registry);
 
         ~CommandAgent();
 

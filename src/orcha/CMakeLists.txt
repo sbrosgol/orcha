@@ -51,8 +51,6 @@ add_library(utils INTERFACE)
 target_include_directories(utils INTERFACE ${CMAKE_SOURCE_DIR}/utils)
 
 add_library(workflow STATIC
-        workflow/WorkflowRunner.cpp
-        workflow/WorkflowRunner.hpp
         workflow/WorkflowEngine.cpp
         workflow/WorkflowEngine.hpp
         workflow/IWorkflowEngine.hpp
