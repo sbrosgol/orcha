@@ -1,0 +1,13 @@
+#pragma once
+
+#define ORCHA_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define ORCHA_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define ORCHA_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define ORCHA_VERSION "@PROJECT_VERSION@"
+
+namespace Orcha {
+    constexpr const char* kVersion = ORCHA_VERSION;
+    constexpr int kVersionMajor = ORCHA_VERSION_MAJOR;
+    constexpr int kVersionMinor = ORCHA_VERSION_MINOR;
+    constexpr int kVersionPatch = ORCHA_VERSION_PATCH;
+}

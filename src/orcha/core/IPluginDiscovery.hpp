@@ -20,7 +20,7 @@ namespace Orcha::Core {
      */
     struct PluginMetadata {
         std::string name;
-        std::string version = "1.0.0";
+        std::string version = Orcha::kVersion;
         std::string description;
         std::string author;
         std::vector<std::string> tags;

@@ -23,6 +23,9 @@
 // Utils
 #include "utils/Logger.hpp"
 
+// Version
+#include "core/Version.hpp"
+
 namespace fs = std::filesystem;
 
 /**
@@ -214,7 +217,7 @@ auto main(int argc, char* argv[]) -> int {
     bootstrap_services(services, *config);
 
     auto logger = services.get<Utils::ILogger>();
-    logger->info("Starting Orcha...");
+    logger->info("Starting Orcha v" + std::string(Orcha::kVersion) + "...");
 
     // Load plugins
     size_t plugin_count = load_plugins(services, *config);

@@ -11,6 +11,7 @@
 #include <vector>
 #include <optional>
 #include "Result.hpp"
+#include "core/Version.hpp"
 
 namespace Orcha::Core {
 
@@ -50,7 +51,7 @@ namespace Orcha::Core {
      */
     struct CommandMetadata {
         std::string name;
-        std::string version = "1.0.0";
+        std::string version = Orcha::kVersion;
         std::string description;
         std::string author;
         std::vector<std::string> tags;
@@ -147,7 +148,7 @@ namespace Orcha::Core {
         [[nodiscard]] virtual CommandMetadata metadata() const {
             CommandMetadata meta;
             meta.name = name();
-            meta.version = "1.0.0";
+            meta.version = Orcha::kVersion;
             meta.description = "No description available";
             return meta;
         }

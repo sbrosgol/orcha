@@ -4,6 +4,7 @@
 //
 
 #include "../../core/ICommand.hpp"
+#include "core/Version.hpp"
 #include <cpprest/json.h>
 #include <string>
 
@@ -32,7 +33,7 @@ public:
     [[nodiscard]] Orcha::Core::CommandMetadata metadata() const override {
         Orcha::Core::CommandMetadata meta;
         meta.name = "echo";
-        meta.version = "1.0.0";
+        meta.version = Orcha::kVersion;
         meta.description = "Echoes back the input message";
         meta.author = "Orcha Team";
         meta.tags = {"utility", "debug"};
