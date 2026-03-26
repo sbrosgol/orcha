@@ -23,6 +23,9 @@
 // Utils
 #include "utils/Logger.hpp"
 
+// Version
+#include "core/Version.hpp"
+
 namespace fs = std::filesystem;
 
 /**
@@ -42,7 +45,7 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     services.register_singleton<Utils::ILogger>(logger_ptr);
 
     // Command Registry (singleton)
-    auto registry = std::make_shared<Core::CommandRegistry>();
+    auto registry = std::make_shared<Core::CommandRegistry>(logger_ptr);
     services.register_singleton<Core::ICommandRegistry>(registry);
     services.register_singleton<Core::IMutableCommandRegistry>(registry);
 
@@ -214,7 +217,7 @@ auto main(int argc, char* argv[]) -> int {
     bootstrap_services(services, *config);
 
     auto logger = services.get<Utils::ILogger>();
-    logger->info("Starting Orcha...");
+    logger->info("Starting Orcha v" + std::string(Orcha::kVersion) + "...");
 
     // Load plugins
     size_t plugin_count = load_plugins(services, *config);
@@ -222,9 +225,15 @@ auto main(int argc, char* argv[]) -> int {
 
     // CLI mode if workflow path provided
     if (argc > 1) {
-        return run_cli_mode(services, argv[1]);
+        int result = run_cli_mode(services, argv[1]);
+        // Release all shared_ptrs before static destruction to avoid
+        // destructor-order issues with Logger singleton
+        services.clear();
+        return result;
     }
 
     // Otherwise, run server mode
-    return run_server_mode(services, *config);
+    int result = run_server_mode(services, *config);
+    services.clear();
+    return result;
 }

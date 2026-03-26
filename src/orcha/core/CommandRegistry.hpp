@@ -6,6 +6,7 @@
 
 #include "ICommandRegistry.hpp"
 #include "ICommand.hpp"
+#include "../utils/ILogger.hpp"
 #include <unordered_map>
 #include <shared_mutex>
 
@@ -20,7 +21,8 @@ namespace Orcha::Core {
      */
     class CommandRegistry : public IMutableCommandRegistry {
     public:
-        CommandRegistry() = default;
+        explicit CommandRegistry(std::shared_ptr<Utils::ILogger> logger = nullptr)
+            : logger_(std::move(logger)) {}
         ~CommandRegistry() override;
 
         // Prevent copying
@@ -32,26 +34,27 @@ namespace Orcha::Core {
         CommandRegistry& operator=(CommandRegistry&&) = delete;
 
         // ICommandRegistry interface
-        [[nodiscard]] ICommand* get_command(const std::string& name) const override;
+        [[nodiscard]] std::shared_ptr<ICommand> get_command(const std::string& name) const override;
         [[nodiscard]] std::vector<std::string> list_commands() const override;
         [[nodiscard]] bool has_command(const std::string& name) const override;
         [[nodiscard]] size_t command_count() const override;
 
         // IMutableCommandRegistry interface
         [[nodiscard]] bool load_command_library(const std::string& path) override;
-        [[nodiscard]] bool register_command(std::unique_ptr<ICommand> command) override;
+        [[nodiscard]] bool register_command(std::shared_ptr<ICommand> command) override;
         [[nodiscard]] bool unregister_command(const std::string& name) override;
 
     private:
         struct PluginHandle {
             void* handle = nullptr;
-            std::unique_ptr<ICommand> command;
+            std::shared_ptr<ICommand> command;
             std::string library_path;
         };
 
         mutable std::shared_mutex mutex_;
         std::vector<PluginHandle> plugins_;
-        std::unordered_map<std::string, ICommand*> commands_;
+        std::unordered_map<std::string, std::shared_ptr<ICommand>> commands_;
+        std::shared_ptr<Utils::ILogger> logger_;
     };
 
 } // namespace Orcha::Core

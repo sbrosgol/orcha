@@ -10,6 +10,20 @@
 #include "../workflow/WorkflowEngine.hpp"
 #include "../core/ServiceLocator.hpp"
 #include <memory>
+#include <stdexcept>
+
+#define ORCHA_ASSERT(expr) \
+    do { if (!(expr)) throw std::runtime_error( \
+        std::string(__FILE__) + ":" + std::to_string(__LINE__) + \
+        " Assertion failed: " #expr); } while(0)
+
+#define ORCHA_ASSERT_EQ(a, b) \
+    do { if ((a) != (b)) throw std::runtime_error( \
+        std::string(__FILE__) + ":" + std::to_string(__LINE__) + \
+        " Expected " #a " == " #b); } while(0)
+
+#define ORCHA_ASSERT_TRUE(expr) ORCHA_ASSERT(expr)
+#define ORCHA_ASSERT_FALSE(expr) ORCHA_ASSERT(!(expr))
 
 namespace Orcha::Tests {
 
@@ -39,7 +53,7 @@ namespace Orcha::Tests {
          */
         void add_mock_command(const std::string& name,
                              std::function<web::json::value(const web::json::value&)> fn = nullptr) {
-            registry_->add_command(std::make_unique<Mocks::MockCommand>(name, fn));
+            registry_->add_command(std::make_shared<Mocks::MockCommand>(name, fn));
         }
 
         /**
@@ -47,7 +61,7 @@ namespace Orcha::Tests {
          */
         void add_failing_command(const std::string& name,
                                 const std::string& error = "Command failed") {
-            registry_->add_command(std::make_unique<Mocks::FailingCommand>(name, error));
+            registry_->add_command(std::make_shared<Mocks::FailingCommand>(name, error));
         }
 
         /**

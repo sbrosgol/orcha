@@ -6,7 +6,7 @@ if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
-project(orcha LANGUAGES CXX)
+project(orcha VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,14 @@ find_package(cpprestsdk REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 include_directories(${CMAKE_SOURCE_DIR})
+
+# Generate version header from template
+configure_file(
+    ${CMAKE_SOURCE_DIR}/core/Version.hpp.in
+    ${CMAKE_BINARY_DIR}/generated/core/Version.hpp
+    @ONLY
+)
+include_directories(${CMAKE_BINARY_DIR}/generated)
 
 # Core libraries
 add_library(core STATIC
@@ -51,8 +59,6 @@ add_library(utils INTERFACE)
 target_include_directories(utils INTERFACE ${CMAKE_SOURCE_DIR}/utils)
 
 add_library(workflow STATIC
-        workflow/WorkflowRunner.cpp
-        workflow/WorkflowRunner.hpp
         workflow/WorkflowEngine.cpp
         workflow/WorkflowEngine.hpp
         workflow/IWorkflowEngine.hpp

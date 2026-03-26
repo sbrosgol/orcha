@@ -28,9 +28,9 @@ namespace Orcha::Core {
         /**
          * @brief Retrieve a command by name.
          * @param name The unique name of the command.
-         * @return Pointer to the command, or nullptr if not found.
+         * @return Shared pointer to the command, or nullptr if not found.
          */
-        [[nodiscard]] virtual ICommand* get_command(const std::string& name) const = 0;
+        [[nodiscard]] virtual std::shared_ptr<ICommand> get_command(const std::string& name) const = 0;
 
         /**
          * @brief List all registered command names.
@@ -69,10 +69,10 @@ namespace Orcha::Core {
 
         /**
          * @brief Register a command instance directly.
-         * @param command The command to register (takes ownership).
+         * @param command The command to register (shared ownership).
          * @return True if registration succeeded.
          */
-        [[nodiscard]] virtual bool register_command(std::unique_ptr<ICommand> command) = 0;
+        [[nodiscard]] virtual bool register_command(std::shared_ptr<ICommand> command) = 0;
 
         /**
          * @brief Unregister a command by name.

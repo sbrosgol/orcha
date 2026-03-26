@@ -234,8 +234,7 @@ namespace Orcha::Core {
                         if (!plugin_map.contains(dep)) continue;
 
                         if (state[dep] == State::Visiting) {
-                            // Found cycle - extract it
-                            auto cycle_start = std::find(path.begin(), path.end(), dep);
+                            // Found cycle - extraction happens after DFS unwinds
                             return true;
                         }
 

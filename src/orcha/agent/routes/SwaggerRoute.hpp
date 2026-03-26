@@ -9,6 +9,7 @@
 #include "../swagger_embedded.hpp"
 #include "../../core/ICommandRegistry.hpp"
 #include "../../utils/ILogger.hpp"
+#include "core/Version.hpp"
 
 namespace Orcha::Agent::Routes {
 
@@ -120,7 +121,7 @@ namespace Orcha::Agent::Routes {
                     cmd_info[U("name")] = web::json::value::string(name);
 
                     // Get metadata if available
-                    if (auto* cmd = registry->get_command(name)) {
+                    if (auto cmd = registry->get_command(name)) {
                         auto meta = cmd->metadata();
                         cmd_info[U("version")] = web::json::value::string(meta.version);
                         cmd_info[U("description")] = web::json::value::string(meta.description);
@@ -160,7 +161,7 @@ namespace Orcha::Agent::Routes {
             // Info
             value info = value::object();
             info[U("title")] = value::string(U("Orcha API"));
-            info[U("version")] = value::string(U("2.0.0"));
+            info[U("version")] = value::string(Orcha::kVersion);
             info[U("description")] = value::string(
                 U("Orcha Command Orchestration API with plugin support"));
             spec[U("info")] = info;

@@ -16,7 +16,7 @@ namespace Orcha::Workflow {
     // ============================================================================
 
     WorkflowStepResult SyncStepExecutor::execute_step(
-        Core::ICommand* cmd,
+        const std::shared_ptr<Core::ICommand>& cmd,
         const web::json::value& params) {
 
         WorkflowStepResult result;
@@ -41,40 +41,6 @@ namespace Orcha::Workflow {
         } catch (...) {
             result.success = false;
             result.error_message = "Unknown error during command execution";
-        }
-
-        return result;
-    }
-
-    // ============================================================================
-    // AsyncStepExecutor Implementation
-    // ============================================================================
-
-    AsyncStepExecutor::AsyncStepExecutor(size_t thread_count)
-        : thread_count_(thread_count) {}
-
-    WorkflowStepResult AsyncStepExecutor::execute_step(
-        Core::ICommand* cmd,
-        const web::json::value& params) {
-        // For now, same as sync - could be enhanced with thread pool
-        WorkflowStepResult result;
-        result.command_name = cmd->name();
-
-        try {
-            auto validation = cmd->validate(params);
-            if (!validation.is_ok()) {
-                result.success = false;
-                result.error_message = "Validation failed for parameter '" +
-                    validation.error().parameter_name + "': " +
-                    validation.error().message;
-                return result;
-            }
-
-            result.output = cmd->execute(params);
-            result.success = true;
-        } catch (const std::exception& ex) {
-            result.success = false;
-            result.error_message = ex.what();
         }
 
         return result;
@@ -215,6 +181,7 @@ namespace Orcha::Workflow {
 
     WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
         WorkflowResult result;
+        result.step_results.resize(definition.steps.size());
         std::mutex results_mutex;
         std::vector<std::future<void>> futures;
 
@@ -227,11 +194,16 @@ namespace Orcha::Workflow {
                 // Execute in parallel
                 futures.push_back(std::async(std::launch::async,
                     [this, &step, &result, &results_mutex, i]() {
+                        std::vector<WorkflowStepResult> snapshot;
+                        {
+                            std::lock_guard<std::mutex> lock(results_mutex);
+                            snapshot = result.step_results;
+                        }
                         auto step_result = execute_single_step(
-                            step, result.step_results, static_cast<int>(i));
+                            step, snapshot, static_cast<int>(i));
 
-                        std::lock_guard lock(results_mutex);
-                        result.step_results.push_back(std::move(step_result));
+                        std::lock_guard<std::mutex> lock(results_mutex);
+                        result.step_results[i] = std::move(step_result);
                     }));
             } else {
                 // Execute synchronously
@@ -240,10 +212,7 @@ namespace Orcha::Workflow {
 
                 log_step_complete(step_result, static_cast<int>(i));
 
-                {
-                    std::lock_guard lock(results_mutex);
-                    result.step_results.push_back(step_result);
-                }
+                result.step_results[i] = step_result;
 
                 // Stop on failure for non-parallel steps
                 if (!step_result.success) {
@@ -336,7 +305,7 @@ namespace Orcha::Workflow {
         result.command_name = step.command_name;
 
         // Get command
-        auto* cmd = registry_->get_command(step.command_name);
+        auto cmd = registry_->get_command(step.command_name);
         if (!cmd) {
             result.success = false;
             result.error_message = "Command not found: " + step.command_name;

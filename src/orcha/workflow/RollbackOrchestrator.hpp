@@ -121,7 +121,7 @@ namespace Orcha::Workflow {
                                    const std::string& command_name,
                                    const web::json::value& params,
                                    const web::json::value& output) {
-            auto* cmd = registry_->get_command(command_name);
+            auto cmd = registry_->get_command(command_name);
             bool supports_rollback = cmd && cmd->metadata().supports_rollback;
 
             completed_steps_.push_back({
@@ -289,7 +289,7 @@ namespace Orcha::Workflow {
                 return result;
             }
 
-            auto* cmd = registry_->get_command(step.command_name);
+            auto cmd = registry_->get_command(step.command_name);
             if (!cmd) {
                 result.success = false;
                 result.error_message = "Command not found for rollback: " + step.command_name;

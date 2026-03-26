@@ -106,7 +106,7 @@ server:
     // ========== Circuit Breaker Tests ==========
 
     inline void test_circuit_breaker_closed_state() {
-        Core::CircuitBreaker breaker("test", {5, 2, std::chrono::seconds{30}, std::chrono::seconds{60}});
+        Core::CircuitBreaker breaker("test", {5, 2, std::chrono::seconds{30}});
 
         assert(breaker.state() == Core::CircuitState::Closed && "Initial state should be closed");
         assert(breaker.allow_request() && "Should allow requests when closed");
@@ -118,7 +118,7 @@ server:
     }
 
     inline void test_circuit_breaker_opens_on_failures() {
-        Core::CircuitBreakerConfig config{3, 1, std::chrono::seconds{1}, std::chrono::seconds{60}};
+        Core::CircuitBreakerConfig config{3, 1, std::chrono::seconds{1}};
         Core::CircuitBreaker breaker("test", config);
 
         // Record 3 failures (threshold)
@@ -134,7 +134,7 @@ server:
     }
 
     inline void test_circuit_breaker_half_open_transition() {
-        Core::CircuitBreakerConfig config{2, 1, std::chrono::seconds{1}, std::chrono::seconds{60}};
+        Core::CircuitBreakerConfig config{2, 1, std::chrono::seconds{1}};
         Core::CircuitBreaker breaker("test", config);
 
         // Trip the breaker

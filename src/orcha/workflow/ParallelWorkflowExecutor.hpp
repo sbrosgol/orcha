@@ -388,7 +388,7 @@ namespace Orcha::Workflow {
             result.command_name = step.command_name;
 
             // Get command
-            auto* cmd = registry_->get_command(step.command_name);
+            auto cmd = registry_->get_command(step.command_name);
             if (!cmd) {
                 result.success = false;
                 result.error_message = "Command not found: " + step.command_name;

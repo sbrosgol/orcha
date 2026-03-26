@@ -32,15 +32,14 @@ namespace Orcha::Core {
         size_t failure_threshold = 5;           // Failures before opening
         size_t success_threshold = 2;           // Successes in half-open to close
         std::chrono::seconds reset_timeout{30}; // Time before trying half-open
-        std::chrono::seconds window_size{60};   // Sliding window for failure count
 
         // Factory for common configurations
         static CircuitBreakerConfig strict() {
-            return {3, 1, std::chrono::seconds{60}, std::chrono::seconds{30}};
+            return {3, 1, std::chrono::seconds{60}};
         }
 
         static CircuitBreakerConfig lenient() {
-            return {10, 3, std::chrono::seconds{15}, std::chrono::seconds{120}};
+            return {10, 3, std::chrono::seconds{15}};
         }
     };
 
@@ -54,6 +53,7 @@ namespace Orcha::Core {
         size_t total_calls = 0;
         size_t successful_calls = 0;
         size_t failed_calls = 0;
+        size_t consecutive_failures = 0;
         size_t rejected_calls = 0;
         std::optional<std::chrono::system_clock::time_point> last_failure;
         std::optional<std::chrono::system_clock::time_point> last_state_change;
@@ -152,6 +152,7 @@ namespace Orcha::Core {
             std::lock_guard lock(mutex_);
             total_count_++;
             failure_count_++;
+            total_failures_++;
             last_failure_time_ = Clock::now();
 
             switch (state_) {
@@ -236,7 +237,8 @@ namespace Orcha::Core {
             s.state = state_;
             s.total_calls = total_count_;
             s.successful_calls = success_count_;
-            s.failed_calls = failure_count_;
+            s.failed_calls = total_failures_;
+            s.consecutive_failures = failure_count_;
             s.rejected_calls = rejected_count_;
             if (last_failure_time_ != TimePoint{}) {
                 s.last_failure = std::chrono::system_clock::now() -
@@ -253,6 +255,7 @@ namespace Orcha::Core {
             std::lock_guard lock(mutex_);
             transition_to(CircuitState::Closed);
             failure_count_ = 0;
+            total_failures_ = 0;
             half_open_successes_ = 0;
         }
 
@@ -282,6 +285,7 @@ namespace Orcha::Core {
         size_t failure_count_;
         size_t success_count_;
         size_t total_count_ = 0;
+        size_t total_failures_ = 0;
         size_t rejected_count_ = 0;
         size_t half_open_successes_ = 0;
         TimePoint last_failure_time_;
