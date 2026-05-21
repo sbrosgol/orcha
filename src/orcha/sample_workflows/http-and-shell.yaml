@@ -1,0 +1,26 @@
+name: http-and-shell-demo
+description: Fetches a remote URL, then runs shell commands and surfaces results via templating.
+
+steps:
+  - name: fetch
+    command: http_request
+    params:
+      url: "https://api.github.com/zen"
+      method: GET
+      timeout_ms: 5000
+
+  - command: echo
+    params:
+      message: "github.com/zen responded with status {{step1.output.status_code}}"
+
+  - command: shell_exec
+    params:
+      cmd: "date -u +%FT%TZ && uname -srm"
+
+  - command: echo
+    params:
+      message: "host info: {{step3.output.output}}"
+
+  - command: echo
+    params:
+      message: "zen quote: {{step1.output.body}}"

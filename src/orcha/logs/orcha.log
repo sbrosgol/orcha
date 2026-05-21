@@ -1,0 +1,17 @@
+[2025-12-13 14:17:39.407][INFO] Starting Orcha...
+[2025-12-13 14:17:39.883][INFO] Loaded plugin: PowerShellDownloader v1.0.0
+[2025-12-13 14:17:40.440][INFO] Loaded plugin: EchoCommand v1.0.0
+[2025-12-13 14:17:40.440][ERROR] Plugin error [echo]: Failed to load library: ./commands/EchoCommand/libEchoCommand.dylib
+[2025-12-13 14:17:40.441][ERROR] Plugin error [create_pg_db]: Failed to load library: ./commands/PostgresCreator/libPostgresCreator.dylib
+[2025-12-13 14:17:40.441][INFO] Loaded 2 plugins
+[2025-12-13 14:17:40.441][INFO] Running workflow from: --help
+[2025-12-13 14:17:40.441][ERROR] Workflow failed: Failed to load YAML: bad file: --help
+[2025-12-13 14:17:40.454][INFO] Starting Orcha...
+[2025-12-13 14:17:40.466][INFO] Loaded plugin: PowerShellDownloader v1.0.0
+[2025-12-13 14:17:40.466][INFO] Loaded plugin: EchoCommand v1.0.0
+[2025-12-13 14:17:40.467][ERROR] Plugin error [echo]: Failed to load library: ./commands/EchoCommand/libEchoCommand.dylib
+[2025-12-13 14:17:40.467][ERROR] Plugin error [create_pg_db]: Failed to load library: ./commands/PostgresCreator/libPostgresCreator.dylib
+[2025-12-13 14:17:40.467][INFO] Loaded 2 plugins
+[2025-12-13 14:17:40.468][INFO] CommandAgent starting on port 8070
+[2025-12-13 14:17:40.468][INFO] CommandAgent listening on port 8070
+[2025-12-13 14:17:40.468][INFO] Shutting down Orcha...

@@ -1,0 +1,31 @@
+{
+    "name": "shell_exec",
+    "version": "1.0.0",
+    "description": "Executes a shell command and captures its output",
+    "author": "Orcha Team",
+    "tags": ["utility", "shell", "process"],
+    "entry_point": "libShellExec.dylib",
+    "parameters": [
+        {
+            "name": "cmd",
+            "type": "string",
+            "required": true,
+            "description": "Shell command line to execute",
+            "example": "echo hello"
+        },
+        {
+            "name": "capture_output",
+            "type": "bool",
+            "required": false,
+            "description": "Capture merged stdout/stderr in the output field",
+            "default": "true"
+        },
+        {
+            "name": "check_exit",
+            "type": "bool",
+            "required": false,
+            "description": "Treat a non-zero exit code as a failure",
+            "default": "true"
+        }
+    ]
+}

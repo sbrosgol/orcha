@@ -1,0 +1,42 @@
+{
+    "name": "http_request",
+    "version": "1.0.0",
+    "description": "Performs an HTTP request and returns the response",
+    "author": "Orcha Team",
+    "tags": ["http", "network", "utility"],
+    "entry_point": "libHttpRequest.dylib",
+    "parameters": [
+        {
+            "name": "url",
+            "type": "string",
+            "required": true,
+            "description": "URL to request",
+            "example": "https://api.example.com/status"
+        },
+        {
+            "name": "method",
+            "type": "string",
+            "required": false,
+            "description": "HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD)",
+            "default": "GET"
+        },
+        {
+            "name": "headers",
+            "type": "object",
+            "required": false,
+            "description": "Request headers as a JSON object of string values"
+        },
+        {
+            "name": "body",
+            "type": "string",
+            "required": false,
+            "description": "Request body (string; JSON values are also accepted)"
+        },
+        {
+            "name": "timeout_ms",
+            "type": "int",
+            "required": false,
+            "description": "Request timeout in milliseconds"
+        }
+    ]
+}
