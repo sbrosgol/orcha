@@ -105,19 +105,26 @@ namespace Orcha::Core {
             return false;
         }
 
-        // Find and remove the plugin
+        // Find the owning plugin entry (if this command came from a library).
         auto plugin_it = std::ranges::find_if(plugins_, [&name](const PluginHandle& p) {
             return p.command && p.command->name() == name;
         });
 
+        // Drop ALL references to the command object before dlclose, so the
+        // command's destructor runs while its code is still mapped. Closing the
+        // library first and destroying the object afterwards is undefined
+        // behaviour (use-after-dlclose).
+        commands_.erase(cmd_it);
+
         if (plugin_it != plugins_.end()) {
-            if (plugin_it->handle) {
-                dlclose(plugin_it->handle);
-            }
+            void* handle = plugin_it->handle;
+            plugin_it->command.reset();   // last reference -> destructor runs now
             plugins_.erase(plugin_it);
+            if (handle) {
+                dlclose(handle);          // safe: object already destroyed
+            }
         }
 
-        commands_.erase(cmd_it);
         if (logger_) {
             logger_->info("Unregistered command: " + name);
         }

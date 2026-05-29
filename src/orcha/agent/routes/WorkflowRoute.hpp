@@ -7,6 +7,7 @@
 
 #include "../IRouteHandler.hpp"
 #include "../../workflow/IWorkflowEngine.hpp"
+#include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
 
 namespace Orcha::Agent::Routes {
@@ -18,9 +19,11 @@ namespace Orcha::Agent::Routes {
     class WorkflowRoute : public IRouteHandler {
     public:
         WorkflowRoute(std::shared_ptr<Workflow::IWorkflowEngine> engine,
-                     std::shared_ptr<Utils::ILogger> logger = nullptr)
+                     std::shared_ptr<Utils::ILogger> logger = nullptr,
+                     std::shared_ptr<Jobs::JobService> jobs = nullptr)
             : engine_(std::move(engine))
-            , logger_(std::move(logger)) {}
+            , logger_(std::move(logger))
+            , jobs_(std::move(jobs)) {}
 
         [[nodiscard]] bool can_handle(
             const std::string& method,
@@ -42,12 +45,20 @@ namespace Orcha::Agent::Routes {
 
             auto engine = engine_;
             auto logger = logger_;
+            auto jobs = jobs_;
 
             request.extract_json()
                 .then([engine, logger, request](web::json::value json) {
                     return engine->execute_json(json);
                 })
-                .then([request, logger](web::json::value result) {
+                .then([request, logger, jobs](web::json::value result) {
+                    // Record the ad-hoc run (no job id) when a job service exists.
+                    if (jobs) {
+                        try {
+                            jobs->record_run(std::nullopt, "api",
+                                             all_steps_succeeded(result), result, "");
+                        } catch (...) { /* recording must never break the response */ }
+                    }
                     request.reply(web::http::status_codes::OK, result);
                     if (logger) {
                         logger->debug("Workflow execution completed");
@@ -76,6 +87,18 @@ namespace Orcha::Agent::Routes {
         }
 
     private:
+        /// The /workflow result is a JSON array of step results; the run
+        /// succeeded if every step reports success (an empty array counts as success).
+        static bool all_steps_succeeded(const web::json::value& result) {
+            if (!result.is_array()) return false;
+            for (const auto& step : result.as_array()) {
+                if (!step.has_field(U("success")) || !step.at(U("success")).as_bool()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         void handle_unsupported_media_type(web::http::http_request request) {
             pplx::create_task([request]() {
                 web::http::http_response resp(web::http::status_codes::UnsupportedMediaType);
@@ -96,6 +119,7 @@ namespace Orcha::Agent::Routes {
 
         std::shared_ptr<Workflow::IWorkflowEngine> engine_;
         std::shared_ptr<Utils::ILogger> logger_;
+        std::shared_ptr<Jobs::JobService> jobs_;
     };
 
 } // namespace Orcha::Agent::Routes

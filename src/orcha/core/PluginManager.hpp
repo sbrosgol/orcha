@@ -163,6 +163,9 @@ namespace Orcha::Core {
         mutable std::mutex mutex_;
         std::unordered_map<std::string, PluginMetadata> loaded_plugins_;
         std::unordered_map<std::string, std::filesystem::file_time_type> plugin_timestamps_;
+        // Command names each plugin registered (a plugin's command name often
+        // differs from its library/plugin name), used to unregister on unload.
+        std::unordered_map<std::string, std::vector<std::string>> plugin_commands_;
 
         // Watching
         std::atomic<bool> watching_{false};

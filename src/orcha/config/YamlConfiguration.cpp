@@ -256,6 +256,16 @@ plugins:
   directory: "./commands"
   auto_reload: false
   scan_interval_ms: 5000
+
+admin:
+  enabled: true
+  auth_required: true
+  username: "admin"
+  password: ""
+  realm: "Orcha Admin"
+
+jobs:
+  db_path: "./orcha-jobs.db"
 )");
         config->merge_environment("ORCHA_");
         return config;

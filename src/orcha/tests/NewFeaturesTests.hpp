@@ -11,7 +11,9 @@
 #include "../workflow/ParallelWorkflowExecutor.hpp"
 #include "mocks/MockCommandRegistry.hpp"
 #include "mocks/MockLogger.hpp"
-#include <cassert>
+#include "Assertions.hpp"
+#include "PluginAdminTests.hpp"
+#include "JobStoreTests.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -43,8 +45,8 @@ logging:
         Config::ConfigValidator validator;
         auto result = validator.validate(config);
 
-        assert(result.valid && "Valid config should pass validation");
-        assert(result.issues.empty() && "Should have no issues");
+        ORCHA_ASSERT(result.valid && "Valid config should pass validation");
+        ORCHA_ASSERT(result.issues.empty() && "Should have no issues");
 
         std::cout << "[PASS] test_config_validation_valid\n";
     }
@@ -61,8 +63,8 @@ server:
         Config::ConfigValidator validator;
         auto result = validator.validate(config);
 
-        assert(!result.valid && "Invalid port should fail validation");
-        assert(!result.get_error_messages().empty() && "Should have error messages");
+        ORCHA_ASSERT(!result.valid && "Invalid port should fail validation");
+        ORCHA_ASSERT(!result.get_error_messages().empty() && "Should have error messages");
 
         std::cout << "[PASS] test_config_validation_invalid_port\n";
     }
@@ -79,7 +81,7 @@ logging:
         Config::ConfigValidator validator;
         auto result = validator.validate(config);
 
-        assert(!result.valid && "Invalid log level should fail validation");
+        ORCHA_ASSERT(!result.valid && "Invalid log level should fail validation");
 
         std::cout << "[PASS] test_config_validation_invalid_log_level\n";
     }
@@ -98,7 +100,7 @@ server:
         auto result = validator.validate(config);
 
         // Port 80 requires root (warning), 100 threads is high (warning)
-        assert(!result.get_warning_messages().empty() && "Should have warnings");
+        ORCHA_ASSERT(!result.get_warning_messages().empty() && "Should have warnings");
 
         std::cout << "[PASS] test_config_validation_warnings\n";
     }
@@ -108,11 +110,11 @@ server:
     inline void test_circuit_breaker_closed_state() {
         Core::CircuitBreaker breaker("test", {5, 2, std::chrono::seconds{30}});
 
-        assert(breaker.state() == Core::CircuitState::Closed && "Initial state should be closed");
-        assert(breaker.allow_request() && "Should allow requests when closed");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Closed && "Initial state should be closed");
+        ORCHA_ASSERT(breaker.allow_request() && "Should allow requests when closed");
 
         breaker.record_success();
-        assert(breaker.state() == Core::CircuitState::Closed && "Should stay closed after success");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Closed && "Should stay closed after success");
 
         std::cout << "[PASS] test_circuit_breaker_closed_state\n";
     }
@@ -124,11 +126,11 @@ server:
         // Record 3 failures (threshold)
         breaker.record_failure();
         breaker.record_failure();
-        assert(breaker.state() == Core::CircuitState::Closed && "Should still be closed");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Closed && "Should still be closed");
 
         breaker.record_failure();
-        assert(breaker.state() == Core::CircuitState::Open && "Should be open after threshold");
-        assert(!breaker.allow_request() && "Should reject requests when open");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Open && "Should be open after threshold");
+        ORCHA_ASSERT(!breaker.allow_request() && "Should reject requests when open");
 
         std::cout << "[PASS] test_circuit_breaker_opens_on_failures\n";
     }
@@ -140,18 +142,18 @@ server:
         // Trip the breaker
         breaker.record_failure();
         breaker.record_failure();
-        assert(breaker.state() == Core::CircuitState::Open && "Should be open");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Open && "Should be open");
 
         // Wait for reset timeout
         std::this_thread::sleep_for(std::chrono::seconds{2});
 
         // Should transition to half-open and allow a request
-        assert(breaker.allow_request() && "Should allow request after timeout");
-        assert(breaker.state() == Core::CircuitState::HalfOpen && "Should be half-open");
+        ORCHA_ASSERT(breaker.allow_request() && "Should allow request after timeout");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::HalfOpen && "Should be half-open");
 
         // Success should close the circuit
         breaker.record_success();
-        assert(breaker.state() == Core::CircuitState::Closed && "Should close after success in half-open");
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Closed && "Should close after success in half-open");
 
         std::cout << "[PASS] test_circuit_breaker_half_open_transition\n";
     }
@@ -162,17 +164,17 @@ server:
         auto& breaker1 = registry.get_or_create("cmd1");
         auto& breaker2 = registry.get_or_create("cmd2");
 
-        assert(registry.exists("cmd1") && "Should exist after creation");
-        assert(registry.exists("cmd2") && "Should exist after creation");
-        assert(!registry.exists("cmd3") && "Should not exist");
+        ORCHA_ASSERT(registry.exists("cmd1") && "Should exist after creation");
+        ORCHA_ASSERT(registry.exists("cmd2") && "Should exist after creation");
+        ORCHA_ASSERT(!registry.exists("cmd3") && "Should not exist");
 
         // Trip one breaker
         for (int i = 0; i < 5; ++i) breaker1.record_failure();
 
-        assert(registry.open_circuit_count() == 1 && "Should have one open circuit");
+        ORCHA_ASSERT(registry.open_circuit_count() == 1 && "Should have one open circuit");
 
         auto stats = registry.all_stats();
-        assert(stats.size() == 2 && "Should have two breakers");
+        ORCHA_ASSERT(stats.size() == 2 && "Should have two breakers");
 
         std::cout << "[PASS] test_circuit_breaker_registry\n";
     }
@@ -194,7 +196,7 @@ server:
         orchestrator.record_completed_step(1, "cmd2", params, output);
 
         // No rollbackable steps since mock commands don't support rollback
-        assert(!orchestrator.has_rollbackable_steps() && "Mock commands don't support rollback");
+        ORCHA_ASSERT(!orchestrator.has_rollbackable_steps() && "Mock commands don't support rollback");
 
         std::cout << "[PASS] test_rollback_records_steps\n";
     }
@@ -210,7 +212,7 @@ server:
 
         auto result = orchestrator.execute_rollback("test failure");
 
-        assert(!result.initiated && "Rollback should not be initiated in None mode");
+        ORCHA_ASSERT(!result.initiated && "Rollback should not be initiated in None mode");
 
         std::cout << "[PASS] test_rollback_mode_none\n";
     }
@@ -232,8 +234,8 @@ server:
 
         auto deps = Workflow::WorkflowDependencyAnalyzer::analyze(def);
 
-        assert(deps[0].depends_on.empty() && "Step 0 should have no deps");
-        assert(deps[1].depends_on.empty() && "Step 1 should have no deps");
+        ORCHA_ASSERT(deps[0].depends_on.empty() && "Step 0 should have no deps");
+        ORCHA_ASSERT(deps[1].depends_on.empty() && "Step 1 should have no deps");
 
         std::cout << "[PASS] test_dependency_analyzer_no_deps\n";
     }
@@ -255,8 +257,8 @@ server:
 
         auto deps = Workflow::WorkflowDependencyAnalyzer::analyze(def);
 
-        assert(deps[0].depends_on.empty() && "Step 0 should have no deps");
-        assert(deps[1].depends_on.count(0) == 1 && "Step 1 should depend on step 0");
+        ORCHA_ASSERT(deps[0].depends_on.empty() && "Step 0 should have no deps");
+        ORCHA_ASSERT(deps[1].depends_on.count(0) == 1 && "Step 1 should depend on step 0");
 
         std::cout << "[PASS] test_dependency_analyzer_with_refs\n";
     }
@@ -288,9 +290,9 @@ server:
 
         auto levels = Workflow::WorkflowDependencyAnalyzer::compute_execution_levels(def);
 
-        assert(levels.size() == 2 && "Should have 2 execution levels");
-        assert(levels[0].step_indices.size() == 3 && "Level 0 should have 3 parallel steps");
-        assert(levels[1].step_indices.size() == 1 && "Level 1 should have 1 step");
+        ORCHA_ASSERT(levels.size() == 2 && "Should have 2 execution levels");
+        ORCHA_ASSERT(levels[0].step_indices.size() == 3 && "Level 0 should have 3 parallel steps");
+        ORCHA_ASSERT(levels[1].step_indices.size() == 1 && "Level 1 should have 1 step");
 
         std::cout << "[PASS] test_execution_levels_parallel\n";
     }
@@ -311,7 +313,7 @@ server:
 
             def.steps = {step0, step1};
 
-            assert(!Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
+            ORCHA_ASSERT(!Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
                    "Sequential workflow should have no parallelism");
         }
 
@@ -328,7 +330,7 @@ server:
 
             def.steps = {step0, step1};
 
-            assert(Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
+            ORCHA_ASSERT(Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
                    "Independent steps should have parallelism");
         }
 
@@ -365,6 +367,12 @@ server:
         test_dependency_analyzer_with_refs();
         test_execution_levels_parallel();
         test_has_parallelism();
+
+        // Admin Dashboard (Phase 1)
+        run_plugin_admin_tests();
+
+        // Jobs (Phase 2)
+        run_job_store_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }

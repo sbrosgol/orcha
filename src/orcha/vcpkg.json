@@ -18,6 +18,10 @@
     {
       "name": "yaml-cpp",
       "version>=": "0.8.0#3"
+    },
+    {
+      "name": "sqlite3",
+      "version>=": "3.43.2"
     }
   ]
 }

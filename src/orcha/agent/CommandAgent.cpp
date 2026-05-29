@@ -7,6 +7,10 @@
 #include "routes/HealthRoute.hpp"
 #include "routes/WorkflowRoute.hpp"
 #include "routes/SwaggerRoute.hpp"
+#include "routes/PluginAdminRoute.hpp"
+#include "routes/DashboardRoute.hpp"
+#include "routes/JobRoute.hpp"
+#include "AuthMiddleware.hpp"
 
 using namespace web;
 using namespace web::http;
@@ -17,10 +21,22 @@ namespace Orcha::Agent {
     CommandAgent::CommandAgent(
         std::shared_ptr<Core::ICommandRegistry> registry,
         std::shared_ptr<Workflow::IWorkflowEngine> engine,
-        std::shared_ptr<Utils::ILogger> logger)
+        std::shared_ptr<Utils::ILogger> logger,
+        std::shared_ptr<Core::PluginManager> plugins,
+        std::shared_ptr<Core::IPluginDiscovery> discovery,
+        Config::AdminConfig admin,
+        std::string plugin_dir,
+        std::chrono::milliseconds watch_interval,
+        std::shared_ptr<Jobs::JobService> jobs)
         : registry_(std::move(registry))
         , engine_(std::move(engine))
-        , logger_(std::move(logger)) {
+        , logger_(std::move(logger))
+        , plugins_(std::move(plugins))
+        , discovery_(std::move(discovery))
+        , admin_(std::move(admin))
+        , plugin_dir_(std::move(plugin_dir))
+        , watch_interval_(watch_interval)
+        , jobs_(std::move(jobs)) {
         setup_default_routes();
     }
 
@@ -33,13 +49,60 @@ namespace Orcha::Agent {
         router_.register_handler(
             std::make_shared<Routes::HealthRoute>(logger_));
 
-        // Workflow execution
+        // Workflow execution (records each ad-hoc run when a job service is present)
         router_.register_handler(
-            std::make_shared<Routes::WorkflowRoute>(engine_, logger_));
+            std::make_shared<Routes::WorkflowRoute>(engine_, logger_, jobs_));
 
         // Swagger and commands
         router_.register_handler(
             std::make_shared<Routes::SwaggerRoute>(registry_, logger_));
+
+        setup_admin_routes();
+    }
+
+    void CommandAgent::setup_admin_routes() {
+        // Admin dashboard requires a plugin manager + discovery to be useful.
+        if (!plugins_ || !discovery_) {
+            return;
+        }
+
+        if (!admin_.enabled) {
+            if (logger_) {
+                logger_->info("Admin dashboard disabled by configuration");
+            }
+            return;
+        }
+
+        // Fail closed: never expose config-mutating endpoints unauthenticated.
+        if (!admin_.is_serviceable()) {
+            if (logger_) {
+                logger_->warn(
+                    "Admin dashboard NOT started: auth is required but no "
+                    "admin.password is configured (set admin.password or "
+                    "ORCHA_ADMIN_PASSWORD, or set admin.auth_required=false).");
+            }
+            return;
+        }
+
+        // Guard the admin API with Basic auth (no-op when auth_required=false).
+        // The /admin HTML shell is intentionally NOT gated: it carries no data
+        // and renders its own custom login view, which then authenticates the
+        // /api/* calls. This avoids the browser's native Basic-auth dialog.
+        router_.use(make_basic_auth(admin_, {"/api/"}, logger_));
+
+        router_.register_handler(std::make_shared<Routes::PluginAdminRoute>(
+            plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_));
+        router_.register_handler(std::make_shared<Routes::DashboardRoute>(logger_));
+
+        // Jobs API (CRUD + run history). Gated by the same Basic-auth middleware.
+        if (jobs_) {
+            router_.register_handler(std::make_shared<Routes::JobRoute>(jobs_, logger_));
+        }
+
+        if (logger_) {
+            logger_->info(std::string("Admin dashboard enabled at /admin (auth ") +
+                          (admin_.auth_required ? "required" : "disabled") + ")");
+        }
     }
 
     void CommandAgent::add_route(std::shared_ptr<IRouteHandler> handler) {

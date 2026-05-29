@@ -20,6 +20,11 @@
 // Workflow
 #include "workflow/WorkflowEngine.hpp"
 
+// Jobs
+#include "jobs/SqliteJobStore.hpp"
+#include "jobs/JobService.hpp"
+#include "jobs/RunJobCommand.hpp"
+
 // Utils
 #include "utils/Logger.hpp"
 
@@ -59,12 +64,34 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     services.register_singleton<Core::PluginManager>(plugin_manager);
 
     // Workflow Engine (factory - creates new instances)
-    services.register_factory<Workflow::IWorkflowEngine>([registry, logger_ptr]() {
+    auto engine_factory = [registry, logger_ptr]() {
         return std::make_shared<Workflow::WorkflowEngine>(
             registry,
             std::make_shared<Workflow::SyncStepExecutor>(),
             logger_ptr);
-    });
+    };
+    services.register_factory<Workflow::IWorkflowEngine>(
+        std::function<std::shared_ptr<Workflow::IWorkflowEngine>()>(engine_factory));
+
+    // Jobs store + service (Phase 2). A bad DB path must not crash startup;
+    // if the store cannot open, the jobs feature is simply unavailable.
+    auto jobs_db = config.get_string("jobs.db_path", "./orcha-jobs.db");
+    try {
+        auto job_store = std::make_shared<Jobs::SqliteJobStore>(jobs_db, logger_ptr);
+        services.register_singleton<Jobs::IJobStore>(job_store);
+        auto job_service = std::make_shared<Jobs::JobService>(
+            job_store, engine_factory, logger_ptr);
+        services.register_singleton<Jobs::JobService>(job_service);
+
+        // Register the built-in run_job command so workflows can invoke other
+        // jobs as sub-workflows. Holds a weak_ptr to JobService (no ref cycle).
+        if (!registry->register_command(
+                std::make_shared<Jobs::RunJobCommand>(job_service))) {
+            logger.warn("Could not register the 'run_job' command");
+        }
+    } catch (const std::exception& ex) {
+        logger.error(std::string("Job store unavailable (jobs disabled): ") + ex.what());
+    }
 }
 
 /**
@@ -169,14 +196,26 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     using namespace Orcha;
 
     auto server_config = Config::ServerConfig::from_config(config);
+    auto plugin_config = Config::PluginConfig::from_config(config);
+    auto admin_config = Config::AdminConfig::from_config(config);
     auto logger = services.get<Utils::ILogger>();
     auto registry = services.get<Core::ICommandRegistry>();
     auto engine = services.get<Workflow::IWorkflowEngine>();
+    auto plugins = services.get<Core::PluginManager>();
+    auto discovery = services.get<Core::IPluginDiscovery>();
+    auto job_service = services.try_get<Jobs::JobService>(); // may be null if store failed
 
-    // Create agent with injected dependencies
-    Agent::CommandAgent agent(registry, engine, logger);
+    // Create agent with injected dependencies (including the admin dashboard).
+    Agent::CommandAgent agent(
+        registry, engine, logger,
+        plugins, discovery, admin_config,
+        plugin_config.directory,
+        std::chrono::milliseconds(plugin_config.scan_interval_ms),
+        job_service);
 
     agent.start(server_config.port);
+
+    const bool admin_on = admin_config.is_serviceable();
 
     std::cout << "[Orcha] Listening on http://" << server_config.host
               << ":" << server_config.port << "/\n";
@@ -185,6 +224,16 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     std::cout << "  POST /workflow  - Execute workflow\n";
     std::cout << "  GET  /commands  - List commands\n";
     std::cout << "  GET  /swagger   - API documentation\n";
+    if (admin_on) {
+        std::cout << "  GET  /admin     - Admin dashboard"
+                  << (admin_config.auth_required ? " (Basic auth)" : "") << "\n";
+        std::cout << "  *    /api/plugins - Plugin admin API\n";
+        if (job_service) {
+            std::cout << "  *    /api/jobs    - Jobs admin API\n";
+        }
+    } else {
+        std::cout << "  (admin dashboard disabled - see logs)\n";
+    }
     std::cout << "[Orcha] Press Enter to exit...\n";
 
     std::cin.get();

@@ -6,6 +6,7 @@
 #include "PluginManager.hpp"
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace Orcha::Core {
 
@@ -224,16 +225,32 @@ namespace Orcha::Core {
             }
         }
 
+        // Snapshot registered command names so we can attribute the newly
+        // registered command(s) to this plugin (the command name frequently
+        // differs from the plugin/library name).
+        std::unordered_set<std::string> before;
+        for (auto& n : registry_->list_commands()) {
+            before.insert(n);
+        }
+
         // Load through registry
         if (!registry_->load_command_library(library_path.string())) {
             notify_error(meta.name, "Failed to load library: " + library_path.string());
             return false;
         }
 
+        std::vector<std::string> new_commands;
+        for (auto& n : registry_->list_commands()) {
+            if (!before.contains(n)) {
+                new_commands.push_back(n);
+            }
+        }
+
         // Track plugin
         {
             std::lock_guard lock(mutex_);
             loaded_plugins_[meta.name] = meta;
+            plugin_commands_[meta.name] = new_commands;
 
             if (std::filesystem::exists(library_path)) {
                 plugin_timestamps_[meta.name] = std::filesystem::last_write_time(library_path);
@@ -247,20 +264,38 @@ namespace Orcha::Core {
     }
 
     bool PluginManager::unload_plugin(const std::string& name) {
-        std::lock_guard lock(mutex_);
-
-        auto it = loaded_plugins_.find(name);
-        if (it == loaded_plugins_.end()) {
-            return false;
+        // Gather the commands this plugin registered. Do NOT hold the lock
+        // while calling the registry or notify_*: those acquire other locks
+        // (and notify_* re-acquires mutex_, which is non-recursive).
+        std::vector<std::string> commands;
+        {
+            std::lock_guard lock(mutex_);
+            auto it = loaded_plugins_.find(name);
+            if (it == loaded_plugins_.end()) {
+                return false;
+            }
+            auto cit = plugin_commands_.find(name);
+            if (cit != plugin_commands_.end() && !cit->second.empty()) {
+                commands = cit->second;
+            } else {
+                // Fallback for plugins loaded without command tracking.
+                commands.push_back(name);
+            }
         }
 
-        if (!registry_->unregister_command(name)) {
-            notify_error(name, "Failed to unregister command");
-            return false;
+        for (const auto& cmd : commands) {
+            if (!registry_->unregister_command(cmd)) {
+                notify_error(name, "Failed to unregister command: " + cmd);
+                return false;
+            }
         }
 
-        loaded_plugins_.erase(it);
-        plugin_timestamps_.erase(name);
+        {
+            std::lock_guard lock(mutex_);
+            loaded_plugins_.erase(name);
+            plugin_timestamps_.erase(name);
+            plugin_commands_.erase(name);
+        }
 
         logger_->info("Unloaded plugin: " + name);
         notify_unloaded(name);

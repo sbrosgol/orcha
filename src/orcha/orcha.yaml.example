@@ -1,0 +1,32 @@
+# Orcha configuration example.
+# Copy to orcha.yaml (or config/orcha.yaml) and edit. Any value can be
+# overridden by an environment variable, e.g. ORCHA_ADMIN_PASSWORD.
+
+server:
+  host: "0.0.0.0"
+  port: 8070
+  worker_threads: 4
+
+logging:
+  file: "./logs/orcha.log"
+  level: INFO
+  console_output: true
+
+plugins:
+  directory: "./commands"
+  auto_reload: false
+  scan_interval_ms: 5000
+
+# Admin dashboard (/admin) and admin API (/api/plugins).
+admin:
+  enabled: true
+  auth_required: true
+  username: "admin"
+  # The admin surface is DISABLED unless a password is set (fail closed) while
+  # auth_required is true. Set it here or via ORCHA_ADMIN_PASSWORD.
+  password: "change-me"
+  realm: "Orcha Admin"
+
+# Jobs: saved workflows + run history (SQLite-backed).
+jobs:
+  db_path: "./orcha-jobs.db"

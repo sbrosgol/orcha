@@ -84,8 +84,11 @@ namespace Orcha::Workflow {
         const std::string& input,
         const std::vector<WorkflowStepResult>& previous_results) {
 
+        // Capture the WHOLE dotted path in group 2. A repeated *capturing* group
+        // (\.\w+)* would only capture its last iteration, so nested references
+        // like {{step1.output.a.b}} would lose all but the final segment.
         static const std::regex placeholder_regex(
-            R"(\{\{step(\d+)\.output(\.[\w\d_]+)*\}\})");
+            R"(\{\{step(\d+)\.output((?:\.[\w\d_]+)*)\}\})");
 
         std::string result = input;
         std::smatch match;
