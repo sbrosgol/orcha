@@ -22,8 +22,8 @@ namespace Orcha::Tests::Unit {
         Workflow::WorkflowDefinition def;
         auto result = fixture.engine_->execute(def);
 
-        assert(result.success && "Empty workflow should succeed");
-        assert(result.step_results.empty() && "Should have no step results");
+        ORCHA_ASSERT(result.success && "Empty workflow should succeed");
+        ORCHA_ASSERT(result.step_results.empty() && "Should have no step results");
 
         std::cout << "  PASS: test_empty_workflow\n";
         fixture.TearDown();
@@ -56,9 +56,9 @@ namespace Orcha::Tests::Unit {
 
         auto result = fixture.engine_->execute(def);
 
-        assert(result.success && "Workflow should succeed");
-        assert(result.step_results.size() == 1 && "Should have one step result");
-        assert(result.step_results[0].success && "Step should succeed");
+        ORCHA_ASSERT(result.success && "Workflow should succeed");
+        ORCHA_ASSERT(result.step_results.size() == 1 && "Should have one step result");
+        ORCHA_ASSERT(result.step_results[0].success && "Step should succeed");
 
         std::cout << "  PASS: test_single_command_workflow\n";
         fixture.TearDown();
@@ -77,9 +77,9 @@ namespace Orcha::Tests::Unit {
 
         auto result = fixture.engine_->execute(def);
 
-        assert(!result.success && "Workflow should fail");
-        assert(!result.step_results.empty() && "Should have error result");
-        assert(result.step_results[0].error_message.find("not found") != std::string::npos);
+        ORCHA_ASSERT(!result.success && "Workflow should fail");
+        ORCHA_ASSERT(!result.step_results.empty() && "Should have error result");
+        ORCHA_ASSERT(result.step_results[0].error_message.find("not found") != std::string::npos);
 
         std::cout << "  PASS: test_command_not_found\n";
         fixture.TearDown();
@@ -102,8 +102,8 @@ namespace Orcha::Tests::Unit {
 
         auto result = fixture.engine_->execute(def);
 
-        assert(!result.success && "Workflow should fail");
-        assert(result.step_results.size() == 1 && "Should stop after first step");
+        ORCHA_ASSERT(!result.success && "Workflow should fail");
+        ORCHA_ASSERT(result.step_results.size() == 1 && "Should stop after first step");
 
         std::cout << "  PASS: test_command_failure_stops_workflow\n";
         fixture.TearDown();
@@ -132,9 +132,9 @@ namespace Orcha::Tests::Unit {
 
         auto result = fixture.engine_->execute(def);
 
-        assert(result.success && "Workflow should succeed");
-        assert(result.step_results.size() == 3 && "Should have three results");
-        assert(call_count == 3 && "Command should be called three times");
+        ORCHA_ASSERT(result.success && "Workflow should succeed");
+        ORCHA_ASSERT(result.step_results.size() == 3 && "Should have three results");
+        ORCHA_ASSERT(call_count == 3 && "Command should be called three times");
 
         std::cout << "  PASS: test_multiple_commands\n";
         fixture.TearDown();
@@ -151,10 +151,10 @@ namespace Orcha::Tests::Unit {
         fixture.services_->register_singleton<Core::ICommandRegistry>(registry);
 
         auto retrieved = fixture.services_->get<Core::ICommandRegistry>();
-        assert(retrieved.get() == registry.get() && "Should retrieve same instance");
+        ORCHA_ASSERT(retrieved.get() == registry.get() && "Should retrieve same instance");
 
-        assert(fixture.services_->has<Core::ICommandRegistry>());
-        assert(!fixture.services_->has<Utils::ILogger>());
+        ORCHA_ASSERT(fixture.services_->has<Core::ICommandRegistry>());
+        ORCHA_ASSERT(!fixture.services_->has<Utils::ILogger>());
 
         std::cout << "  PASS: test_service_locator\n";
         fixture.TearDown();
@@ -170,13 +170,13 @@ namespace Orcha::Tests::Unit {
         logger->error("Error message");
         logger->debug("Debug message");
 
-        assert(logger->entry_count() == 3);
-        assert(logger->has_message("Test message"));
-        assert(logger->has_message_at_level(Utils::LogLevel::ERROR, "Error"));
-        assert(logger->count_at_level(Utils::LogLevel::INFO) == 1);
+        ORCHA_ASSERT(logger->entry_count() == 3);
+        ORCHA_ASSERT(logger->has_message("Test message"));
+        ORCHA_ASSERT(logger->has_message_at_level(Utils::LogLevel::ERROR, "Error"));
+        ORCHA_ASSERT(logger->count_at_level(Utils::LogLevel::INFO) == 1);
 
         logger->clear();
-        assert(logger->entry_count() == 0);
+        ORCHA_ASSERT(logger->entry_count() == 0);
 
         std::cout << "  PASS: test_mock_logger\n";
     }

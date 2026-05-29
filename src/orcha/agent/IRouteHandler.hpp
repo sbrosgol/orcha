@@ -9,8 +9,42 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 
 namespace Orcha::Agent {
+
+    /**
+     * @brief True if @p path begins with @p prefix.
+     */
+    [[nodiscard]] inline bool path_starts_with(
+        const std::string& path, const std::string& prefix) {
+        return path.size() >= prefix.size() &&
+               path.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    /**
+     * @brief Split a path into '/'-separated, non-empty segments.
+     *
+     * "/api/plugins/foo/reload" -> {"api", "plugins", "foo", "reload"}
+     */
+    [[nodiscard]] inline std::vector<std::string> split_path(const std::string& path) {
+        std::vector<std::string> segments;
+        std::string current;
+        for (char c : path) {
+            if (c == '/') {
+                if (!current.empty()) {
+                    segments.push_back(current);
+                    current.clear();
+                }
+            } else {
+                current.push_back(c);
+            }
+        }
+        if (!current.empty()) {
+            segments.push_back(current);
+        }
+        return segments;
+    }
 
     /**
      * @struct RouteInfo
@@ -65,6 +99,13 @@ namespace Orcha::Agent {
     class Router {
     public:
         /**
+         * @brief A middleware inspects a request before handler dispatch.
+         * @return True if the middleware handled (e.g. rejected) the request,
+         *         short-circuiting further processing. False to continue.
+         */
+        using Middleware = std::function<bool(web::http::http_request&)>;
+
+        /**
          * @brief Register a route handler.
          */
         void register_handler(std::shared_ptr<IRouteHandler> handler) {
@@ -72,11 +113,26 @@ namespace Orcha::Agent {
         }
 
         /**
+         * @brief Register a middleware. Middleware run in registration order
+         *        before any handler is consulted.
+         */
+        void use(Middleware middleware) {
+            middleware_.push_back(std::move(middleware));
+        }
+
+        /**
          * @brief Route a request to the appropriate handler.
          * @param request The HTTP request.
-         * @return True if a handler was found.
+         * @return True if a handler (or middleware) processed the request.
          */
         bool route(web::http::http_request request) {
+            // Run middleware first; any one may short-circuit the request.
+            for (const auto& mw : middleware_) {
+                if (mw(request)) {
+                    return true;
+                }
+            }
+
             auto method = utility::conversions::to_utf8string(request.method());
             auto path = utility::conversions::to_utf8string(request.request_uri().path());
 
@@ -105,6 +161,7 @@ namespace Orcha::Agent {
 
     private:
         std::vector<std::shared_ptr<IRouteHandler>> handlers_;
+        std::vector<Middleware> middleware_;
     };
 
 } // namespace Orcha::Agent

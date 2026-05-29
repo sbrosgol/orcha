@@ -5,7 +5,7 @@
 #pragma once
 
 #include "../core/DependencyResolver.hpp"
-#include <cassert>
+#include "Assertions.hpp"
 #include <iostream>
 #include <algorithm>
 
@@ -89,8 +89,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Empty list should resolve");
-        assert(result.value().empty() && "Result should be empty");
+        ORCHA_ASSERT(result.is_ok() && "Empty list should resolve");
+        ORCHA_ASSERT(result.value().empty() && "Result should be empty");
 
         std::cout << "[PASS] test_empty_plugins\n";
         fixture.TearDown();
@@ -107,9 +107,9 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Single plugin should resolve");
-        assert(result.value().size() == 1 && "Should have one plugin");
-        assert(result.value()[0].name == "echo" && "Should be 'echo'");
+        ORCHA_ASSERT(result.is_ok() && "Single plugin should resolve");
+        ORCHA_ASSERT(result.value().size() == 1 && "Should have one plugin");
+        ORCHA_ASSERT(result.value()[0].name == "echo" && "Should be 'echo'");
 
         std::cout << "[PASS] test_single_plugin_no_deps\n";
         fixture.TearDown();
@@ -128,8 +128,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Independent plugins should resolve");
-        assert(result.value().size() == 3 && "Should have three plugins");
+        ORCHA_ASSERT(result.is_ok() && "Independent plugins should resolve");
+        ORCHA_ASSERT(result.value().size() == 3 && "Should have three plugins");
 
         std::cout << "[PASS] test_independent_plugins\n";
         fixture.TearDown();
@@ -149,9 +149,9 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Linear chain should resolve");
+        ORCHA_ASSERT(result.is_ok() && "Linear chain should resolve");
         auto& ordered = result.value();
-        assert(ordered.size() == 3 && "Should have three plugins");
+        ORCHA_ASSERT(ordered.size() == 3 && "Should have three plugins");
 
         // A must come before B, B must come before C
         fixture.assert_order(ordered, "A", "B");
@@ -180,9 +180,9 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Diamond pattern should resolve");
+        ORCHA_ASSERT(result.is_ok() && "Diamond pattern should resolve");
         auto& ordered = result.value();
-        assert(ordered.size() == 4 && "Should have four plugins");
+        ORCHA_ASSERT(ordered.size() == 4 && "Should have four plugins");
 
         // A must come before B and C
         fixture.assert_order(ordered, "A", "B");
@@ -207,8 +207,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_err() && "Circular dependency should fail");
-        assert(result.error().type == Core::DependencyError::Type::CircularDependency &&
+        ORCHA_ASSERT(result.is_err() && "Circular dependency should fail");
+        ORCHA_ASSERT(result.error().type == Core::DependencyError::Type::CircularDependency &&
                "Should be circular dependency error");
 
         std::cout << "[PASS] test_circular_dependency_simple\n";
@@ -228,8 +228,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_err() && "Circular dependency should fail");
-        assert(result.error().type == Core::DependencyError::Type::CircularDependency &&
+        ORCHA_ASSERT(result.is_err() && "Circular dependency should fail");
+        ORCHA_ASSERT(result.error().type == Core::DependencyError::Type::CircularDependency &&
                "Should be circular dependency error");
 
         std::cout << "[PASS] test_circular_dependency_complex\n";
@@ -247,8 +247,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_err() && "Self-dependency should fail");
-        assert(result.error().type == Core::DependencyError::Type::CircularDependency &&
+        ORCHA_ASSERT(result.is_err() && "Self-dependency should fail");
+        ORCHA_ASSERT(result.error().type == Core::DependencyError::Type::CircularDependency &&
                "Should be circular dependency error");
 
         std::cout << "[PASS] test_self_dependency\n";
@@ -266,11 +266,11 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_, true);
 
-        assert(result.is_err() && "Missing dependency should fail in strict mode");
-        assert(result.error().type == Core::DependencyError::Type::MissingDependency &&
+        ORCHA_ASSERT(result.is_err() && "Missing dependency should fail in strict mode");
+        ORCHA_ASSERT(result.error().type == Core::DependencyError::Type::MissingDependency &&
                "Should be missing dependency error");
-        assert(result.error().involved_plugins[0] == "A" && "Should report plugin A");
-        assert(result.error().involved_plugins[1] == "nonexistent" && "Should report missing dep");
+        ORCHA_ASSERT(result.error().involved_plugins[0] == "A" && "Should report plugin A");
+        ORCHA_ASSERT(result.error().involved_plugins[1] == "nonexistent" && "Should report missing dep");
 
         std::cout << "[PASS] test_missing_dependency_strict\n";
         fixture.TearDown();
@@ -288,8 +288,8 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_, false);
 
-        assert(result.is_ok() && "Missing dependency should succeed in non-strict mode");
-        assert(result.value().size() == 2 && "Should have both plugins");
+        ORCHA_ASSERT(result.is_ok() && "Missing dependency should succeed in non-strict mode");
+        ORCHA_ASSERT(result.value().size() == 2 && "Should have both plugins");
 
         std::cout << "[PASS] test_missing_dependency_non_strict\n";
         fixture.TearDown();
@@ -310,9 +310,9 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Multiple roots should resolve");
+        ORCHA_ASSERT(result.is_ok() && "Multiple roots should resolve");
         auto& ordered = result.value();
-        assert(ordered.size() == 4 && "Should have four plugins");
+        ORCHA_ASSERT(ordered.size() == 4 && "Should have four plugins");
 
         // A before B, C before D
         fixture.assert_order(ordered, "A", "B");
@@ -336,15 +336,15 @@ namespace Orcha::Tests {
 
         auto roots = Core::DependencyResolver::get_roots(fixture.plugins_);
 
-        assert(roots.size() == 2 && "Should have two roots (A and C)");
+        ORCHA_ASSERT(roots.size() == 2 && "Should have two roots (A and C)");
 
         bool has_a = std::any_of(roots.begin(), roots.end(),
                                   [](const auto& p) { return p.name == "A"; });
         bool has_c = std::any_of(roots.begin(), roots.end(),
                                   [](const auto& p) { return p.name == "C"; });
 
-        assert(has_a && "Should contain A as root");
-        assert(has_c && "Should contain C as root");
+        ORCHA_ASSERT(has_a && "Should contain A as root");
+        ORCHA_ASSERT(has_c && "Should contain C as root");
 
         std::cout << "[PASS] test_get_roots\n";
         fixture.TearDown();
@@ -361,7 +361,7 @@ namespace Orcha::Tests {
         fixture.add_plugin("A");
         fixture.add_plugin("B", {"A"});
 
-        assert(Core::DependencyResolver::can_resolve(fixture.plugins_) &&
+        ORCHA_ASSERT(Core::DependencyResolver::can_resolve(fixture.plugins_) &&
                "Valid deps should be resolvable");
 
         // Add circular
@@ -369,7 +369,7 @@ namespace Orcha::Tests {
         fixture.add_plugin("X", {"Y"});
         fixture.add_plugin("Y", {"X"});
 
-        assert(!Core::DependencyResolver::can_resolve(fixture.plugins_) &&
+        ORCHA_ASSERT(!Core::DependencyResolver::can_resolve(fixture.plugins_) &&
                "Circular deps should not be resolvable");
 
         std::cout << "[PASS] test_can_resolve\n";
@@ -400,9 +400,9 @@ namespace Orcha::Tests {
 
         auto result = Core::DependencyResolver::resolve(fixture.plugins_);
 
-        assert(result.is_ok() && "Complex scenario should resolve");
+        ORCHA_ASSERT(result.is_ok() && "Complex scenario should resolve");
         auto& ordered = result.value();
-        assert(ordered.size() == 6 && "Should have six plugins");
+        ORCHA_ASSERT(ordered.size() == 6 && "Should have six plugins");
 
         // Verify ordering constraints
         fixture.assert_order(ordered, "logging", "database");

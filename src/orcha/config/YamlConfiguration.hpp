@@ -6,6 +6,7 @@
 #pragma once
 
 #include "IConfiguration.hpp"
+#include "AdminConfig.hpp"
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <unordered_map>
@@ -146,5 +147,8 @@ namespace Orcha::Config {
             return cfg;
         }
     };
+
+    // AdminConfig lives in AdminConfig.hpp (included above) to avoid coupling
+    // the agent layer to the yaml-cpp backend.
 
 } // namespace Orcha::Config
