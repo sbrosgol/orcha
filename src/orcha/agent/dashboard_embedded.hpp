@@ -130,6 +130,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .runrow { cursor:pointer; }
     .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
             white-space:pre-wrap; word-break:break-word; }
+    .outcard { border:1px solid var(--line); border-radius:8px; margin:10px 0; overflow:hidden; }
+    .outcard .hd { display:flex; align-items:center; gap:10px; padding:8px 12px;
+                   background:var(--bg); border-bottom:1px solid var(--line); font-size:13px; }
+    .outcard .hd .sp { flex:1; }
+    .outcard pre { margin:0; padding:12px; max-height:280px; overflow:auto; font-size:12px;
+                   font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .outcard .err { color:var(--err); padding:10px 12px; font-size:13px; }
   </style>
 </head>
 <body>
@@ -370,6 +377,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           <span>Schedule: ${sched}</span> ${enBadge}
         </div>
         <div class="chartwrap"><canvas id="flow"></canvas><div id="fctip"></div></div>
+        <h3 style="margin:18px 0 8px; font-size:12px; text-transform:uppercase; color:var(--muted)">Run output</h3>
+        <div id="runOutput" class="muted">Run the job or pick a run below to see each step's output.</div>
         <h3 style="margin:18px 0 8px; font-size:12px; text-transform:uppercase; color:var(--muted)">Run history</h3>
         <div id="runs" class="muted">Loading runs...</div>`;
       $('runJob').onclick = ()=>runJob(j.id);
@@ -393,10 +402,35 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       } catch(e){ if(e.message!=='Unauthorized') toast('Toggle failed: '+e.message,'err'); }
     }
 
+    function fmtOutput(o){ try { return JSON.stringify(o, null, 2); } catch(e){ return String(o); } }
+
+    // Render each step's output (and error) for a run.
+    function renderRunOutput(run){
+      const el=$('runOutput'); if(!el) return;
+      const steps=Array.isArray(run.result)?run.result:[];
+      if(!steps.length){
+        el.innerHTML='<span class="muted">No step output for this run'+
+          (run.error?': '+esc(run.error):'')+'.</span>'; return;
+      }
+      const head=`<div class="muted" style="margin-bottom:8px">Run <code>${esc(run.id.slice(0,8))}</code>
+        · ${esc(run.trigger)} · <span class="badge ${esc(run.status)}">${esc(run.status)}</span>
+        · ${esc(run.started_at)}</div>`;
+      el.innerHTML=head+steps.map((s,i)=>{
+        const label='STEP '+(i+1)+(s.name?(' · '+esc(s.name)):'')+' · '+esc(s.command||'');
+        const st=s.success?'success':'failed';
+        const body=(!s.success && s.error_message)
+          ? `<div class="err">${esc(s.error_message)}</div>`+
+            (s.output!==undefined?`<pre>${esc(fmtOutput(s.output))}</pre>`:'')
+          : `<pre>${esc(fmtOutput(s.output))}</pre>`;
+        return `<div class="outcard"><div class="hd"><strong>${label}</strong>
+          <span class="sp"></span><span class="badge ${st}">${st}</span></div>${body}</div>`;
+      }).join('');
+    }
+
     async function runJob(id){
       try { const r=await api('/api/jobs/'+encodeURIComponent(id)+'/run',{method:'POST'});
         toast('Run '+r.status,(r.status==='success')?'ok':'err');
-        flow.applyRun(r); loadRuns(id);
+        flow.applyRun(r); renderRunOutput(r); loadRuns(id);
       } catch(e){ if(e.message!=='Unauthorized') toast('Run failed: '+e.message,'err'); }
     }
     async function delJob(j){
@@ -418,7 +452,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     }
     async function showRun(id){
       try { const r=await api('/api/runs/'+encodeURIComponent(id));
-        flow.applyRun(r);
+        flow.applyRun(r); renderRunOutput(r);
         toast('Loaded run '+r.id.slice(0,8)+' ('+r.status+')',(r.status==='success')?'ok':'err');
       } catch(e){ if(e.message!=='Unauthorized') toast(e.message,'err'); }
     }
