@@ -8,6 +8,7 @@
 #include <yaml-cpp/yaml.h>
 #include <regex>
 #include <algorithm>
+#include <ranges>
 
 namespace Orcha::Workflow {
 
@@ -90,6 +91,12 @@ namespace Orcha::Workflow {
         static const std::regex placeholder_regex(
             R"(\{\{step(\d+)\.output((?:\.[\w\d_]+)*)\}\})");
 
+        // Named references: {{steps.<name>.output.<path>}}. A step's optional
+        // name lets later steps reference it by name instead of brittle position.
+        // ("steps." prefix avoids any clash with the positional "stepN" form.)
+        static const std::regex named_regex(
+            R"(\{\{steps\.([A-Za-z_][\w]*)\.output((?:\.[\w\d_]+)*)\}\})");
+
         std::string result = input;
         std::smatch match;
 
@@ -104,6 +111,26 @@ namespace Orcha::Workflow {
                 auto value = navigate_output(
                     previous_results[step_index].output, field_path);
                 replacement = json_value_to_string(value);
+            }
+
+            result.replace(match.position(0), match.length(0), replacement);
+        }
+
+        while (std::regex_search(result, match, named_regex)) {
+            const std::string step_name = match[1].str();
+            const std::string field_path = match[2].str();
+            std::string replacement;
+
+            // Walk in reverse so the MOST RECENT step with this name wins when
+            // names are duplicated. This keeps resolution consistent with the
+            // parallel dependency analyzer, whose name_to_index map overwrites
+            // earlier entries and thus also resolves to the last such step.
+            for (const auto& prev : std::views::reverse(previous_results)) {
+                if (!prev.name.empty() && prev.name == step_name) {
+                    replacement = json_value_to_string(
+                        navigate_output(prev.output, field_path));
+                    break;
+                }
             }
 
             result.replace(match.position(0), match.length(0), replacement);
@@ -322,6 +349,7 @@ namespace Orcha::Workflow {
         result = executor_->execute_step(cmd, resolved_params);
         result.step_index = step_index;
         result.command_name = step.command_name;
+        result.name = step.name.value_or("");  // enables {{steps.<name>.output}} refs
 
         return result;
     }

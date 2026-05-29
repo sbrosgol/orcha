@@ -14,6 +14,7 @@
 #include "../../core/PluginManager.hpp"
 #include "../../core/IPluginDiscovery.hpp"
 #include "../../core/ICommandRegistry.hpp"
+#include "../../core/PluginDenylist.hpp"
 #include "../../utils/ILogger.hpp"
 
 #include <chrono>
@@ -34,13 +35,15 @@ namespace Orcha::Agent::Routes {
                          std::shared_ptr<Core::ICommandRegistry> registry,
                          std::string plugin_directory,
                          std::chrono::milliseconds watch_interval,
-                         std::shared_ptr<Utils::ILogger> logger = nullptr)
+                         std::shared_ptr<Utils::ILogger> logger = nullptr,
+                         std::shared_ptr<Core::IPluginDenylist> denylist = nullptr)
             : manager_(std::move(manager))
             , discovery_(std::move(discovery))
             , registry_(std::move(registry))
             , directory_(std::move(plugin_directory))
             , watch_interval_(watch_interval)
-            , logger_(std::move(logger)) {}
+            , logger_(std::move(logger))
+            , denylist_(std::move(denylist)) {}
 
         [[nodiscard]] bool can_handle(
             const std::string& method,
@@ -116,6 +119,7 @@ namespace Orcha::Agent::Routes {
             auto discovery = discovery_;
             auto registry = registry_;
             auto directory = directory_;
+            auto denylist = denylist_;
 
             pplx::create_task([=]() {
                 using web::json::value;
@@ -131,10 +135,12 @@ namespace Orcha::Agent::Routes {
                     plugins[idx++] = plugin_to_json(meta, "loaded");
                 }
 
-                // Available-but-not-loaded from disk.
+                // Available-but-not-loaded from disk. Denylisted ones are tagged
+                // "disabled" (won't auto-load on restart) vs plain "available".
                 for (const auto& meta : discovery->scan_plugins(directory)) {
                     if (!loaded_names.contains(meta.name)) {
-                        plugins[idx++] = plugin_to_json(meta, "available");
+                        const bool denied = denylist && denylist->contains(meta.name);
+                        plugins[idx++] = plugin_to_json(meta, denied ? "disabled" : "available");
                     }
                 }
 
@@ -223,17 +229,20 @@ namespace Orcha::Agent::Routes {
             auto discovery = discovery_;
             auto directory = directory_;
             auto logger = logger_;
+            auto denylist = denylist_;
 
             pplx::create_task([=]() {
                 bool ok = false;
                 std::string message;
 
                 if (action == "reload") {
+                    // Reload does NOT touch the denylist.
                     ok = manager->reload_plugin(name);
                     message = ok ? "Reloaded " + name
                                  : "Reload failed; plugin not loaded: " + name;
                 } else if (action == "disable") {
                     ok = manager->unload_plugin(name);
+                    if (ok && denylist) denylist->add(name); // persist: stays off across restarts
                     message = ok ? "Disabled " + name
                                  : "Disable failed; plugin not loaded: " + name;
                 } else if (action == "enable") {
@@ -250,6 +259,7 @@ namespace Orcha::Agent::Routes {
                         return reply_error(request, web::http::status_codes::NotFound,
                                            "No available plugin named: " + name);
                     }
+                    if (denylist) denylist->remove(name); // clear persisted disable
                     ok = manager->load_plugin(lib_path);
                     message = ok ? "Enabled " + name
                                  : "Enable failed (already loaded or load error): " + name;
@@ -319,6 +329,7 @@ namespace Orcha::Agent::Routes {
         std::string directory_;
         std::chrono::milliseconds watch_interval_;
         std::shared_ptr<Utils::ILogger> logger_;
+        std::shared_ptr<Core::IPluginDenylist> denylist_;
     };
 
 } // namespace Orcha::Agent::Routes

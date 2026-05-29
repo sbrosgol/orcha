@@ -122,6 +122,25 @@ walked multi-level paths. `{{job}}` is still not a placeholder (only
 `{{stepN.output…}}` is); the dashboard's New-job template was updated to a
 resolving example instead of the misleading `{{job}}`.
 
+### Named step references
+
+In addition to positional `{{stepN.output.<path>}}`, steps can be referenced by
+name: give a step a `name` and reference it as `{{steps.<name>.output.<path>}}`.
+This survives reordering. Positional refs still work; the `steps.` prefix avoids
+any clash with `stepN`. An unknown name resolves to empty (not an error).
+
+```json
+{ "steps": [
+  { "name": "fetch",  "command": "http_request", "params": { "url": "https://api.github.com/zen" } },
+  { "name": "report", "command": "echo", "params": { "message": "zen: {{steps.fetch.output.body}}" } }
+] }
+```
+
+Implementation: `WorkflowStepResult` carries the step `name`; the resolver does a
+second pass for the named form; the parallel dependency analyzer and the Canvas
+flow chart both map names to steps for edges. Example:
+`sample_workflows/http-named-steps.yaml`.
+
 ### Test-harness note
 
 `tests/JobStoreTests.hpp` uses `ORCHA_ASSERT` (always-on), not `<cassert>`'s

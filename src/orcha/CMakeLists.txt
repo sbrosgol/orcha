@@ -39,6 +39,7 @@ add_library(core STATIC
         core/CommandRegistry.hpp
         core/PluginManager.cpp
         core/PluginManager.hpp
+        core/PluginDenylist.hpp
 )
 
 add_library(logger STATIC
@@ -73,6 +74,9 @@ add_library(jobs STATIC
         jobs/SqliteJobStore.hpp
         jobs/JobService.hpp
         jobs/RunJobCommand.hpp
+        jobs/CronExpr.hpp
+        jobs/JobScheduler.cpp
+        jobs/JobScheduler.hpp
 )
 target_link_libraries(jobs PUBLIC core workflow logger
         cpprestsdk::cpprest unofficial::sqlite3::sqlite3)

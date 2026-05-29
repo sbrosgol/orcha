@@ -130,6 +130,15 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .runrow { cursor:pointer; }
     .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
             white-space:pre-wrap; word-break:break-word; }
+    .outcard { border:1px solid var(--line); border-radius:8px; margin:10px 0; overflow:hidden; }
+    .outcard .hd { display:flex; align-items:center; gap:10px; padding:8px 12px;
+                   background:var(--bg); border-bottom:1px solid var(--line); font-size:13px; }
+    .outcard .hd .sp { flex:1; }
+    .outcard pre { margin:0; padding:12px; max-height:280px; overflow:auto; font-size:12px;
+                   font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .outcard .err { color:var(--err); padding:10px 12px; font-size:13px; }
+    .outcard.flash { box-shadow:0 0 0 2px var(--accent); transition:box-shadow .2s; }
+    .runrow.sel td { background:var(--bg); }
   </style>
 </head>
 <body>
@@ -206,6 +215,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       <div class="bd">
         <div class="field"><label>Name</label><input id="jName" type="text" style="width:100%" /></div>
         <div class="field"><label>Description</label><input id="jDesc" type="text" style="width:100%" /></div>
+        <div class="field"><label>Schedule (cron, optional &mdash; "m h dom mon dow")</label>
+          <input id="jSchedule" type="text" placeholder="e.g. 0 9 * * 1-5  (blank = manual only)" style="width:100%" /></div>
+        <div class="field"><label style="display:flex; align-items:center; gap:8px; color:var(--fg)">
+          <input id="jEnabled" type="checkbox" /> Enabled (the scheduler runs this job when due)</label></div>
         <div class="field"><label>Definition (JSON with a "steps" array)</label>
           <textarea id="jDef" spellcheck="false"></textarea></div>
         <div class="login-err" id="modalErr"></div>
@@ -323,14 +336,20 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     });
 
     // ================= Jobs =================
-    let jobs=[], currentJob=null;
+    let jobs=[], currentJob=null, selectedRunId=null;
+
+    function markSelectedRun(){
+      document.querySelectorAll('.runrow').forEach(tr =>
+        tr.classList.toggle('sel', tr.dataset.run===selectedRunId));
+    }
 
     async function loadJobs(){
       try { const d=await api('/api/jobs'); jobs=d.jobs||[];
         $('jobsCount').textContent=jobs.length+' job(s)';
         $('jobItems').innerHTML = jobs.length ? jobs.map(j =>
           `<div class="item ${currentJob&&currentJob.id===j.id?'active':''}" data-job="${esc(j.id)}">
-             <div class="nm">${esc(j.name)}</div><div class="muted">${esc(j.description||'')}</div></div>`).join('')
+             <div class="nm">${esc(j.name)}${j.enabled?'':' <span class="muted">(disabled)</span>'}${j.schedule_cron?' <span class="muted">&#9201;</span>':''}</div>
+             <div class="muted">${esc(j.description||'')}</div></div>`).join('')
           : '<div class="pad muted">No jobs yet. Click "New job".</div>';
       } catch(e){ if(e.message!=='Unauthorized') toast('Failed to load jobs: '+e.message,'err'); }
     }
@@ -338,6 +357,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function selectJob(id){
       try {
         currentJob = await api('/api/jobs/'+encodeURIComponent(id));
+        selectedRunId = null; // re-auto-select the latest run for this job
         document.querySelectorAll('.joblist .item').forEach(x =>
           x.classList.toggle('active', x.dataset.job===id));
         renderJobDetail();
@@ -346,29 +366,79 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     function renderJobDetail(){
       const j=currentJob; if(!j){ return; }
+      const sched = j.schedule_cron
+        ? `<code>${esc(j.schedule_cron)}</code>` : '<span class="muted">manual only</span>';
+      const enBadge = j.enabled
+        ? '<span class="badge success">enabled</span>'
+        : '<span class="badge failed">disabled</span>';
       $('jobDetail').innerHTML = `
         <div class="toolbar">
           <strong style="font-size:15px">${esc(j.name)}</strong>
           <span class="muted">${esc(j.description||'')}</span>
           <span style="margin-left:auto"></span>
           <button class="btn primary" id="runJob">Run now</button>
+          <button class="btn" id="toggleJob">${j.enabled ? 'Disable' : 'Enable'}</button>
           <button class="btn" id="editJob">Edit</button>
           <button class="btn danger" id="delJob">Delete</button>
         </div>
+        <div class="muted" style="margin:-6px 0 12px; display:flex; gap:14px; align-items:center">
+          <span>Schedule: ${sched}</span> ${enBadge}
+        </div>
         <div class="chartwrap"><canvas id="flow"></canvas><div id="fctip"></div></div>
+        <h3 style="margin:18px 0 8px; font-size:12px; text-transform:uppercase; color:var(--muted)">Run output</h3>
+        <div id="runOutput" class="muted">Run the job or pick a run below to see each step's output.</div>
         <h3 style="margin:18px 0 8px; font-size:12px; text-transform:uppercase; color:var(--muted)">Run history</h3>
         <div id="runs" class="muted">Loading runs...</div>`;
       $('runJob').onclick = ()=>runJob(j.id);
+      $('toggleJob').onclick = ()=>toggleJob(j);
       $('editJob').onclick = ()=>openEditor(j);
       $('delJob').onclick = ()=>delJob(j);
       flow.setJob(j);
       loadRuns(j.id);
     }
 
+    async function toggleJob(j){
+      const payload = { name:j.name, description:j.description||'',
+                        definition:j.definition, enabled:!j.enabled };
+      if(j.schedule_cron) payload.schedule_cron = j.schedule_cron;
+      try {
+        await api('/api/jobs/'+encodeURIComponent(j.id),
+          {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        toast(j.enabled ? 'Disabled' : 'Enabled', 'ok');
+        await loadJobs();
+        await selectJob(j.id);
+      } catch(e){ if(e.message!=='Unauthorized') toast('Toggle failed: '+e.message,'err'); }
+    }
+
+    function fmtOutput(o){ try { return JSON.stringify(o, null, 2); } catch(e){ return String(o); } }
+
+    // Render each step's output (and error) for a run.
+    function renderRunOutput(run){
+      const el=$('runOutput'); if(!el) return;
+      const steps=Array.isArray(run.result)?run.result:[];
+      if(!steps.length){
+        el.innerHTML='<span class="muted">No step output for this run'+
+          (run.error?': '+esc(run.error):'')+'.</span>'; return;
+      }
+      const head=`<div class="muted" style="margin-bottom:8px">Run <code>${esc(run.id.slice(0,8))}</code>
+        · ${esc(run.trigger)} · <span class="badge ${esc(run.status)}">${esc(run.status)}</span>
+        · ${esc(run.started_at)}</div>`;
+      el.innerHTML=head+steps.map((s,i)=>{
+        const label='STEP '+(i+1)+(s.name?(' · '+esc(s.name)):'')+' · '+esc(s.command||'');
+        const st=s.success?'success':'failed';
+        const body=(!s.success && s.error_message)
+          ? `<div class="err">${esc(s.error_message)}</div>`+
+            (s.output!==undefined?`<pre>${esc(fmtOutput(s.output))}</pre>`:'')
+          : `<pre>${esc(fmtOutput(s.output))}</pre>`;
+        return `<div class="outcard" id="out-step-${i}"><div class="hd"><strong>${label}</strong>
+          <span class="sp"></span><span class="badge ${st}">${st}</span></div>${body}</div>`;
+      }).join('');
+    }
+
     async function runJob(id){
       try { const r=await api('/api/jobs/'+encodeURIComponent(id)+'/run',{method:'POST'});
         toast('Run '+r.status,(r.status==='success')?'ok':'err');
-        flow.applyRun(r); loadRuns(id);
+        selectedRunId=r.id; flow.applyRun(r); renderRunOutput(r); loadRuns(id);
       } catch(e){ if(e.message!=='Unauthorized') toast('Run failed: '+e.message,'err'); }
     }
     async function delJob(j){
@@ -382,15 +452,20 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function loadRuns(id){
       try { const d=await api('/api/jobs/'+encodeURIComponent(id)+'/runs?limit=20');
         const runs=d.runs||[];
+        // Auto-select the latest run (its full result is already in the list).
+        if(runs.length && (!selectedRunId || !runs.some(r=>r.id===selectedRunId))){
+          selectedRunId=runs[0].id; flow.applyRun(runs[0]); renderRunOutput(runs[0]);
+        }
         $('runs').innerHTML = runs.length ? `<table><thead><tr><th>Started</th><th>Trigger</th><th>Status</th></tr></thead>
-          <tbody>${runs.map(r=>`<tr class="runrow" data-run="${esc(r.id)}"><td>${esc(r.started_at)}</td>
+          <tbody>${runs.map(r=>`<tr class="runrow${r.id===selectedRunId?' sel':''}" data-run="${esc(r.id)}"><td>${esc(r.started_at)}</td>
             <td>${esc(r.trigger)}</td><td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}
           </tbody></table>` : '<span class="muted">No runs yet.</span>';
       } catch(e){ if(e.message!=='Unauthorized') $('runs').textContent='Failed to load runs.'; }
     }
     async function showRun(id){
       try { const r=await api('/api/runs/'+encodeURIComponent(id));
-        flow.applyRun(r);
+        selectedRunId=id; markSelectedRun();
+        flow.applyRun(r); renderRunOutput(r);
         toast('Loaded run '+r.id.slice(0,8)+' ('+r.status+')',(r.status==='success')?'ok':'err');
       } catch(e){ if(e.message!=='Unauthorized') toast(e.message,'err'); }
     }
@@ -408,14 +483,16 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // ---------- Editor modal ----------
     let editingId=null;
     const DEFAULT_DEF = JSON.stringify({steps:[
-      {command:"echo", params:{message:"Hello from Orcha"}},
-      {command:"echo", params:{message:"step 1 said: {{step1.output.echoed}}"}}
+      {name:"greet", command:"echo", params:{message:"Hello from Orcha"}},
+      {name:"repeat", command:"echo", params:{message:"greet said: {{steps.greet.output.echoed}}"}}
     ]}, null, 2);
     function openEditor(job){
       editingId = job ? job.id : null;
       $('modalTitle').textContent = job ? 'Edit job' : 'New job';
       $('jName').value = job ? job.name : '';
       $('jDesc').value = job ? (job.description||'') : '';
+      $('jSchedule').value = (job && job.schedule_cron) ? job.schedule_cron : '';
+      $('jEnabled').checked = job ? !!job.enabled : true;
       $('jDef').value  = job ? JSON.stringify(job.definition, null, 2) : DEFAULT_DEF;
       $('modalErr').textContent='';
       $('modal').classList.add('show');
@@ -425,7 +502,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       let def;
       try { def=JSON.parse($('jDef').value); }
       catch(e){ $('modalErr').textContent='Definition is not valid JSON: '+e.message; return; }
-      const payload={ name:$('jName').value.trim(), description:$('jDesc').value.trim(), definition:def };
+      const payload={ name:$('jName').value.trim(), description:$('jDesc').value.trim(),
+                      definition:def, enabled:$('jEnabled').checked };
+      const sched=$('jSchedule').value.trim();
+      if(sched) payload.schedule_cron=sched;   // omitted => cleared (manual only)
       if(!payload.name){ $('modalErr').textContent='Name is required.'; return; }
       try {
         if(editingId){ await api('/api/jobs/'+encodeURIComponent(editingId),
@@ -443,18 +523,25 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const NODE_W=158, NODE_H=46, COL_GAP=66, ROW_GAP=22, PAD=20;
       let canvas=null, ctx=null, tip=null;
       let nodes=[], edges=[], job=null, runStatus=null; // runStatus: array of bool|null per step
-      let hover=-1, sel=-1, drag=-1, dragDX=0, dragDY=0, dpr=1;
+      let hover=-1, sel=-1, drag=-1, dragDX=0, dragDY=0, dpr=1, downX=0, downY=0;
+      let onSelect=null; // callback(stepIndex) on node click (not drag)
 
       function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
       function parse(def){
         const steps=(def&&def.steps)||[];
         const n=steps.length;
+        const nameToIndex={};
+        for(let i=0;i<n;i++){ if(steps[i].name) nameToIndex[steps[i].name]=i; }
         const deps=Array.from({length:n},()=>new Set());
         for(let i=0;i<n;i++){
-          const s=JSON.stringify(steps[i].params||{});
-          const re=/\{\{\s*step(\d+)/g; let m;
+          const s=JSON.stringify(steps[i].params||{}); let m;
+          // positional {{stepN.output}}
+          const re=/\{\{\s*step(\d+)\b/g;
           while((m=re.exec(s))){ const k=parseInt(m[1],10)-1; if(k>=0&&k<n&&k!==i) deps[i].add(k); }
+          // named {{steps.<name>.output}}
+          const reN=/\{\{\s*steps\.([A-Za-z_]\w*)/g;
+          while((m=reN.exec(s))){ const k=nameToIndex[m[1]]; if(k!==undefined&&k!==i) deps[i].add(k); }
         }
         const level=new Array(n).fill(0);
         for(let it=0;it<n;it++) for(let i=0;i<n;i++) for(const d of deps[i]) level[i]=Math.max(level[i],level[d]+1);
@@ -462,7 +549,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         for(let i=0;i<n;i++){
           const L=level[i]; rowOf[L]=(rowOf[L]||0);
           const row=rowOf[L]++;
-          nodes.push({ i, cmd:(steps[i].command||'?'), params:steps[i].params||{},
+          nodes.push({ i, name:(steps[i].name||''), cmd:(steps[i].command||'?'), params:steps[i].params||{},
             x:PAD+L*(NODE_W+COL_GAP), y:PAD+row*(NODE_H+ROW_GAP) });
         }
         for(let i=0;i<n;i++) for(const d of deps[i]) edges.push([d,i]);
@@ -495,18 +582,18 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         ctx.clearRect(0,0,canvas.width,canvas.height);
         const line=cssVar('--line'), fg=cssVar('--fg'), muted=cssVar('--muted'),
               panel=cssVar('--panel'), accent=cssVar('--accent');
-        // edges
-        ctx.lineWidth=1.5;
+        // edges (use --muted, not --line: --line is too faint against the chart bg)
+        ctx.lineWidth=2;
         edges.forEach(([a,b])=>{
           const na=nodes[a], nb=nodes[b];
           const x1=na.x+NODE_W, y1=na.y+NODE_H/2, x2=nb.x, y2=nb.y+NODE_H/2;
           const hl = (hover===a||hover===b||sel===a||sel===b);
-          ctx.strokeStyle = hl?accent:line;
+          ctx.strokeStyle = hl?accent:muted;
           ctx.beginPath(); ctx.moveTo(x1,y1);
           const mx=(x1+x2)/2; ctx.bezierCurveTo(mx,y1,mx,y2,x2,y2); ctx.stroke();
           // arrowhead (points left into the target node's left edge)
-          ctx.fillStyle=hl?accent:line;
-          ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-7,y2-4); ctx.lineTo(x2-7,y2+4); ctx.closePath(); ctx.fill();
+          ctx.fillStyle=hl?accent:muted;
+          ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8,y2-5); ctx.lineTo(x2-8,y2+5); ctx.closePath(); ctx.fill();
         });
         // nodes
         nodes.forEach(nd=>{
@@ -520,7 +607,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ctx.lineWidth=(nd.i===sel||nd.i===hover)?2:1.2;
           ctx.strokeStyle=(nd.i===hover)?accent:c.stroke; ctx.stroke();
           ctx.fillStyle=muted; ctx.font='600 11px -apple-system,sans-serif';
-          ctx.fillText('STEP '+(nd.i+1), nd.x+12, nd.y+17);
+          let tag='STEP '+(nd.i+1)+(nd.name?(' · '+nd.name):'');
+          if(tag.length>22) tag=tag.slice(0,21)+'…';
+          ctx.fillText(tag, nd.x+12, nd.y+17);
           ctx.fillStyle=fg; ctx.font='13px -apple-system,sans-serif';
           let label=nd.cmd; if(label.length>18) label=label.slice(0,17)+'…';
           ctx.fillText(label, nd.x+12, nd.y+34);
@@ -533,7 +622,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       function bind(){
         canvas.addEventListener('mousedown', e=>{ const r=canvas.getBoundingClientRect();
           const mx=e.clientX-r.left, my=e.clientY-r.top; const i=hit(mx,my);
-          sel=i; if(i>=0){ drag=i; dragDX=mx-nodes[i].x; dragDY=my-nodes[i].y; } render(); });
+          sel=i; downX=e.clientX; downY=e.clientY;
+          if(i>=0){ drag=i; dragDX=mx-nodes[i].x; dragDY=my-nodes[i].y; } render(); });
         canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect();
           const mx=e.clientX-r.left, my=e.clientY-r.top;
           if(drag>=0){ nodes[drag].x=mx-dragDX; nodes[drag].y=my-dragDY; render(); return; }
@@ -541,15 +631,20 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           if(i!==hover){ hover=i; canvas.style.cursor=i>=0?'grab':'default'; render(); }
           if(i>=0){ const nd=nodes[i];
             tip.style.display='block'; tip.style.left=(nd.x+NODE_W+8)+'px'; tip.style.top=nd.y+'px';
-            tip.textContent='step'+(i+1)+' · '+nd.cmd+'\n'+JSON.stringify(nd.params,null,1).slice(0,260);
+            tip.textContent=(nd.name?('"'+nd.name+'"  '):'')+'step'+(i+1)+' · '+nd.cmd+'\n'+JSON.stringify(nd.params,null,1).slice(0,260);
           } else tip.style.display='none';
         });
-        window.addEventListener('mouseup', ()=>{ drag=-1; });
+        window.addEventListener('mouseup', e=>{
+          const moved = Math.abs(e.clientX-downX) + Math.abs(e.clientY-downY) > 4;
+          if(!moved && sel>=0 && onSelect) onSelect(sel); // click (not drag) -> jump to output
+          drag=-1;
+        });
         canvas.addEventListener('mouseleave', ()=>{ hover=-1; tip.style.display='none'; render(); });
       }
 
       return {
         get job(){ return job; },
+        setOnSelect(fn){ onSelect=fn; },
         setJob(j){ job=j; runStatus=null; sel=-1; hover=-1;
           canvas=$('flow'); ctx=canvas.getContext('2d'); tip=$('fctip');
           parse(j.definition); bind(); resize(); },
@@ -561,6 +656,15 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         resize, render
       };
     })();
+
+    // Clicking a flow-chart node jumps to (and flashes) that step's output card.
+    flow.setOnSelect(function(i){
+      const card=document.getElementById('out-step-'+i);
+      if(!card) return;
+      card.scrollIntoView({behavior:'smooth', block:'center'});
+      card.classList.add('flash');
+      setTimeout(()=>card.classList.remove('flash'), 1200);
+    });
 
     // ---------- Boot ----------
     if(getAuth()) enterApp(); else showLogin();

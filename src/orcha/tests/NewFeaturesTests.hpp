@@ -14,6 +14,7 @@
 #include "Assertions.hpp"
 #include "PluginAdminTests.hpp"
 #include "JobStoreTests.hpp"
+#include "CronTests.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -373,6 +374,9 @@ server:
 
         // Jobs (Phase 2)
         run_job_store_tests();
+
+        // Cron (Phase 3)
+        run_cron_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }

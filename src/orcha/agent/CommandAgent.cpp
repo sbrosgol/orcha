@@ -27,7 +27,8 @@ namespace Orcha::Agent {
         Config::AdminConfig admin,
         std::string plugin_dir,
         std::chrono::milliseconds watch_interval,
-        std::shared_ptr<Jobs::JobService> jobs)
+        std::shared_ptr<Jobs::JobService> jobs,
+        std::shared_ptr<Core::IPluginDenylist> denylist)
         : registry_(std::move(registry))
         , engine_(std::move(engine))
         , logger_(std::move(logger))
@@ -36,7 +37,8 @@ namespace Orcha::Agent {
         , admin_(std::move(admin))
         , plugin_dir_(std::move(plugin_dir))
         , watch_interval_(watch_interval)
-        , jobs_(std::move(jobs)) {
+        , jobs_(std::move(jobs))
+        , denylist_(std::move(denylist)) {
         setup_default_routes();
     }
 
@@ -91,7 +93,7 @@ namespace Orcha::Agent {
         router_.use(make_basic_auth(admin_, {"/api/"}, logger_));
 
         router_.register_handler(std::make_shared<Routes::PluginAdminRoute>(
-            plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_));
+            plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_, denylist_));
         router_.register_handler(std::make_shared<Routes::DashboardRoute>(logger_));
 
         // Jobs API (CRUD + run history). Gated by the same Basic-auth middleware.

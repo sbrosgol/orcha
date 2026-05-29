@@ -13,8 +13,10 @@
 #include "../agent/IRouteHandler.hpp"
 #include "../agent/routes/PluginAdminRoute.hpp"
 #include "../config/AdminConfig.hpp"
+#include "../core/PluginDenylist.hpp"
 
 #include "Assertions.hpp"
+#include <cstdio>
 #include <iostream>
 
 namespace Orcha::Tests {
@@ -144,6 +146,29 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_plugin_route_can_handle\n";
     }
 
+    // ========== Plugin denylist (Phase 3) ==========
+
+    inline void test_plugin_denylist() {
+        const std::string path = "/tmp/orcha_test_denylist.txt";
+        std::remove(path.c_str());
+        {
+            Core::FilePluginDenylist d(path);
+            ORCHA_ASSERT(!d.contains("a"));
+            d.add("a"); d.add("b"); d.add("a"); // idempotent
+            ORCHA_ASSERT(d.contains("a") && d.contains("b"));
+            ORCHA_ASSERT(d.list().size() == 2);
+            d.remove("a");
+            ORCHA_ASSERT(!d.contains("a") && d.contains("b"));
+        }
+        // A fresh instance must read the persisted file.
+        {
+            Core::FilePluginDenylist d2(path);
+            ORCHA_ASSERT(d2.contains("b") && !d2.contains("a"));
+        }
+        std::remove(path.c_str());
+        std::cout << "[PASS] test_plugin_denylist\n";
+    }
+
     // ========== Runner ==========
 
     inline void run_plugin_admin_tests() {
@@ -155,6 +180,7 @@ namespace Orcha::Tests {
         test_admin_config_serviceable();
         test_path_helpers();
         test_plugin_route_can_handle();
+        test_plugin_denylist();
     }
 
 } // namespace Orcha::Tests

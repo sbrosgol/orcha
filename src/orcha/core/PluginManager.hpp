@@ -8,6 +8,7 @@
 #include "IPluginDiscovery.hpp"
 #include "ICommandRegistry.hpp"
 #include "DependencyResolver.hpp"
+#include "PluginDenylist.hpp"
 #include "../utils/ILogger.hpp"
 #include <memory>
 #include <functional>
@@ -145,6 +146,14 @@ namespace Orcha::Core {
          */
         [[nodiscard]] bool is_watching() const { return watching_.load(); }
 
+        /**
+         * @brief Set the persistent denylist. Denylisted plugin names are skipped
+         *        when scanning a directory in load_plugins_from_directory.
+         */
+        void set_denylist(std::shared_ptr<IPluginDenylist> denylist) {
+            denylist_ = std::move(denylist);
+        }
+
         // Event callbacks
         void on_plugin_loaded(PluginCallback callback);
         void on_plugin_unloaded(PluginCallback callback);
@@ -159,6 +168,7 @@ namespace Orcha::Core {
         std::shared_ptr<IMutableCommandRegistry> registry_;
         std::shared_ptr<IPluginDiscovery> discovery_;
         std::shared_ptr<Utils::ILogger> logger_;
+        std::shared_ptr<IPluginDenylist> denylist_;
 
         mutable std::mutex mutex_;
         std::unordered_map<std::string, PluginMetadata> loaded_plugins_;

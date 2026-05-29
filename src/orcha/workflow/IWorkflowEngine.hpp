@@ -25,6 +25,7 @@ namespace Orcha::Workflow {
         std::string error_message;
         web::json::value output;
         std::string command_name;
+        std::string name;          // Optional step name (for {{steps.<name>.output}} refs)
         int step_index = -1;
 
         [[nodiscard]] web::json::value to_json() const {
@@ -34,6 +35,9 @@ namespace Orcha::Workflow {
             obj[U("output")] = output;
             if (!command_name.empty()) {
                 obj[U("command")] = web::json::value::string(command_name);
+            }
+            if (!name.empty()) {
+                obj[U("name")] = web::json::value::string(name);
             }
             if (step_index >= 0) {
                 obj[U("step")] = web::json::value::number(step_index);
