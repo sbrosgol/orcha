@@ -137,6 +137,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .outcard pre { margin:0; padding:12px; max-height:280px; overflow:auto; font-size:12px;
                    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
     .outcard .err { color:var(--err); padding:10px 12px; font-size:13px; }
+    .outcard.flash { box-shadow:0 0 0 2px var(--accent); transition:box-shadow .2s; }
+    .runrow.sel td { background:var(--bg); }
   </style>
 </head>
 <body>
@@ -334,7 +336,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     });
 
     // ================= Jobs =================
-    let jobs=[], currentJob=null;
+    let jobs=[], currentJob=null, selectedRunId=null;
+
+    function markSelectedRun(){
+      document.querySelectorAll('.runrow').forEach(tr =>
+        tr.classList.toggle('sel', tr.dataset.run===selectedRunId));
+    }
 
     async function loadJobs(){
       try { const d=await api('/api/jobs'); jobs=d.jobs||[];
@@ -350,6 +357,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function selectJob(id){
       try {
         currentJob = await api('/api/jobs/'+encodeURIComponent(id));
+        selectedRunId = null; // re-auto-select the latest run for this job
         document.querySelectorAll('.joblist .item').forEach(x =>
           x.classList.toggle('active', x.dataset.job===id));
         renderJobDetail();
@@ -422,7 +430,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ? `<div class="err">${esc(s.error_message)}</div>`+
             (s.output!==undefined?`<pre>${esc(fmtOutput(s.output))}</pre>`:'')
           : `<pre>${esc(fmtOutput(s.output))}</pre>`;
-        return `<div class="outcard"><div class="hd"><strong>${label}</strong>
+        return `<div class="outcard" id="out-step-${i}"><div class="hd"><strong>${label}</strong>
           <span class="sp"></span><span class="badge ${st}">${st}</span></div>${body}</div>`;
       }).join('');
     }
@@ -430,7 +438,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function runJob(id){
       try { const r=await api('/api/jobs/'+encodeURIComponent(id)+'/run',{method:'POST'});
         toast('Run '+r.status,(r.status==='success')?'ok':'err');
-        flow.applyRun(r); renderRunOutput(r); loadRuns(id);
+        selectedRunId=r.id; flow.applyRun(r); renderRunOutput(r); loadRuns(id);
       } catch(e){ if(e.message!=='Unauthorized') toast('Run failed: '+e.message,'err'); }
     }
     async function delJob(j){
@@ -444,14 +452,19 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function loadRuns(id){
       try { const d=await api('/api/jobs/'+encodeURIComponent(id)+'/runs?limit=20');
         const runs=d.runs||[];
+        // Auto-select the latest run (its full result is already in the list).
+        if(runs.length && (!selectedRunId || !runs.some(r=>r.id===selectedRunId))){
+          selectedRunId=runs[0].id; flow.applyRun(runs[0]); renderRunOutput(runs[0]);
+        }
         $('runs').innerHTML = runs.length ? `<table><thead><tr><th>Started</th><th>Trigger</th><th>Status</th></tr></thead>
-          <tbody>${runs.map(r=>`<tr class="runrow" data-run="${esc(r.id)}"><td>${esc(r.started_at)}</td>
+          <tbody>${runs.map(r=>`<tr class="runrow${r.id===selectedRunId?' sel':''}" data-run="${esc(r.id)}"><td>${esc(r.started_at)}</td>
             <td>${esc(r.trigger)}</td><td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}
           </tbody></table>` : '<span class="muted">No runs yet.</span>';
       } catch(e){ if(e.message!=='Unauthorized') $('runs').textContent='Failed to load runs.'; }
     }
     async function showRun(id){
       try { const r=await api('/api/runs/'+encodeURIComponent(id));
+        selectedRunId=id; markSelectedRun();
         flow.applyRun(r); renderRunOutput(r);
         toast('Loaded run '+r.id.slice(0,8)+' ('+r.status+')',(r.status==='success')?'ok':'err');
       } catch(e){ if(e.message!=='Unauthorized') toast(e.message,'err'); }
@@ -510,7 +523,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const NODE_W=158, NODE_H=46, COL_GAP=66, ROW_GAP=22, PAD=20;
       let canvas=null, ctx=null, tip=null;
       let nodes=[], edges=[], job=null, runStatus=null; // runStatus: array of bool|null per step
-      let hover=-1, sel=-1, drag=-1, dragDX=0, dragDY=0, dpr=1;
+      let hover=-1, sel=-1, drag=-1, dragDX=0, dragDY=0, dpr=1, downX=0, downY=0;
+      let onSelect=null; // callback(stepIndex) on node click (not drag)
 
       function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
@@ -608,7 +622,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       function bind(){
         canvas.addEventListener('mousedown', e=>{ const r=canvas.getBoundingClientRect();
           const mx=e.clientX-r.left, my=e.clientY-r.top; const i=hit(mx,my);
-          sel=i; if(i>=0){ drag=i; dragDX=mx-nodes[i].x; dragDY=my-nodes[i].y; } render(); });
+          sel=i; downX=e.clientX; downY=e.clientY;
+          if(i>=0){ drag=i; dragDX=mx-nodes[i].x; dragDY=my-nodes[i].y; } render(); });
         canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect();
           const mx=e.clientX-r.left, my=e.clientY-r.top;
           if(drag>=0){ nodes[drag].x=mx-dragDX; nodes[drag].y=my-dragDY; render(); return; }
@@ -619,12 +634,17 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             tip.textContent=(nd.name?('"'+nd.name+'"  '):'')+'step'+(i+1)+' · '+nd.cmd+'\n'+JSON.stringify(nd.params,null,1).slice(0,260);
           } else tip.style.display='none';
         });
-        window.addEventListener('mouseup', ()=>{ drag=-1; });
+        window.addEventListener('mouseup', e=>{
+          const moved = Math.abs(e.clientX-downX) + Math.abs(e.clientY-downY) > 4;
+          if(!moved && sel>=0 && onSelect) onSelect(sel); // click (not drag) -> jump to output
+          drag=-1;
+        });
         canvas.addEventListener('mouseleave', ()=>{ hover=-1; tip.style.display='none'; render(); });
       }
 
       return {
         get job(){ return job; },
+        setOnSelect(fn){ onSelect=fn; },
         setJob(j){ job=j; runStatus=null; sel=-1; hover=-1;
           canvas=$('flow'); ctx=canvas.getContext('2d'); tip=$('fctip');
           parse(j.definition); bind(); resize(); },
@@ -636,6 +656,15 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         resize, render
       };
     })();
+
+    // Clicking a flow-chart node jumps to (and flashes) that step's output card.
+    flow.setOnSelect(function(i){
+      const card=document.getElementById('out-step-'+i);
+      if(!card) return;
+      card.scrollIntoView({behavior:'smooth', block:'center'});
+      card.classList.add('flash');
+      setTimeout(()=>card.classList.remove('flash'), 1200);
+    });
 
     // ---------- Boot ----------
     if(getAuth()) enterApp(); else showLogin();
