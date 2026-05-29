@@ -528,18 +528,18 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         ctx.clearRect(0,0,canvas.width,canvas.height);
         const line=cssVar('--line'), fg=cssVar('--fg'), muted=cssVar('--muted'),
               panel=cssVar('--panel'), accent=cssVar('--accent');
-        // edges
-        ctx.lineWidth=1.5;
+        // edges (use --muted, not --line: --line is too faint against the chart bg)
+        ctx.lineWidth=2;
         edges.forEach(([a,b])=>{
           const na=nodes[a], nb=nodes[b];
           const x1=na.x+NODE_W, y1=na.y+NODE_H/2, x2=nb.x, y2=nb.y+NODE_H/2;
           const hl = (hover===a||hover===b||sel===a||sel===b);
-          ctx.strokeStyle = hl?accent:line;
+          ctx.strokeStyle = hl?accent:muted;
           ctx.beginPath(); ctx.moveTo(x1,y1);
           const mx=(x1+x2)/2; ctx.bezierCurveTo(mx,y1,mx,y2,x2,y2); ctx.stroke();
           // arrowhead (points left into the target node's left edge)
-          ctx.fillStyle=hl?accent:line;
-          ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-7,y2-4); ctx.lineTo(x2-7,y2+4); ctx.closePath(); ctx.fill();
+          ctx.fillStyle=hl?accent:muted;
+          ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8,y2-5); ctx.lineTo(x2-8,y2+5); ctx.closePath(); ctx.fill();
         });
         // nodes
         nodes.forEach(nd=>{
