@@ -213,6 +213,43 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_scheduler_fires\n";
     }
 
+    inline void test_named_step_reference() {
+        auto registry = std::make_shared<Core::CommandRegistry>();
+        // echo returns { echoed: <message> }
+        ORCHA_ASSERT(registry->register_command(std::make_shared<Mocks::MockCommand>("echo",
+            [](const web::json::value& p){
+                web::json::value o = web::json::value::object();
+                o[U("echoed")] = p.has_field(U("message"))
+                    ? p.at(U("message")) : web::json::value::string(U(""));
+                return o;
+            })));
+
+        Workflow::WorkflowEngine engine(
+            registry, std::make_shared<Workflow::SyncStepExecutor>(), nullptr);
+
+        // step 2 references step 1 BY NAME ("greet"), not by position.
+        auto def = Workflow::WorkflowDefinition::from_json(
+            web::json::value::parse(utility::conversions::to_string_t(
+                R"({"steps":[)"
+                R"({"name":"greet","command":"echo","params":{"message":"hi"}},)"
+                R"({"command":"echo","params":{"message":"got {{steps.greet.output.echoed}}"}}]})")));
+
+        auto res = engine.execute(def);
+        ORCHA_ASSERT(res.success);
+        ORCHA_ASSERT(res.step_results.size() == 2);
+        ORCHA_ASSERT(res.step_results[1].output.at(U("echoed")).as_string() == U("got hi"));
+
+        // A reference to an unknown step name resolves to empty (not an error).
+        auto def2 = Workflow::WorkflowDefinition::from_json(
+            web::json::value::parse(utility::conversions::to_string_t(
+                R"({"steps":[{"command":"echo","params":{"message":"x {{steps.nope.output.echoed}}"}}]})")));
+        auto res2 = engine.execute(def2);
+        ORCHA_ASSERT(res2.success);
+        ORCHA_ASSERT(res2.step_results[0].output.at(U("echoed")).as_string() == U("x "));
+
+        std::cout << "[PASS] test_named_step_reference\n";
+    }
+
     inline void run_job_store_tests() {
         std::cout << "\n-- Jobs (Phase 2) --\n";
         test_job_store_crud();
@@ -220,6 +257,7 @@ namespace Orcha::Tests {
         test_job_store_runs();
         test_job_route_can_handle();
         test_run_job_linking();
+        test_named_step_reference();
         test_scheduler_fires();
     }
 

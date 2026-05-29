@@ -436,8 +436,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // ---------- Editor modal ----------
     let editingId=null;
     const DEFAULT_DEF = JSON.stringify({steps:[
-      {command:"echo", params:{message:"Hello from Orcha"}},
-      {command:"echo", params:{message:"step 1 said: {{step1.output.echoed}}"}}
+      {name:"greet", command:"echo", params:{message:"Hello from Orcha"}},
+      {name:"repeat", command:"echo", params:{message:"greet said: {{steps.greet.output.echoed}}"}}
     ]}, null, 2);
     function openEditor(job){
       editingId = job ? job.id : null;
@@ -483,11 +483,17 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       function parse(def){
         const steps=(def&&def.steps)||[];
         const n=steps.length;
+        const nameToIndex={};
+        for(let i=0;i<n;i++){ if(steps[i].name) nameToIndex[steps[i].name]=i; }
         const deps=Array.from({length:n},()=>new Set());
         for(let i=0;i<n;i++){
-          const s=JSON.stringify(steps[i].params||{});
-          const re=/\{\{\s*step(\d+)/g; let m;
+          const s=JSON.stringify(steps[i].params||{}); let m;
+          // positional {{stepN.output}}
+          const re=/\{\{\s*step(\d+)\b/g;
           while((m=re.exec(s))){ const k=parseInt(m[1],10)-1; if(k>=0&&k<n&&k!==i) deps[i].add(k); }
+          // named {{steps.<name>.output}}
+          const reN=/\{\{\s*steps\.([A-Za-z_]\w*)/g;
+          while((m=reN.exec(s))){ const k=nameToIndex[m[1]]; if(k!==undefined&&k!==i) deps[i].add(k); }
         }
         const level=new Array(n).fill(0);
         for(let it=0;it<n;it++) for(let i=0;i<n;i++) for(const d of deps[i]) level[i]=Math.max(level[i],level[d]+1);
@@ -495,7 +501,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         for(let i=0;i<n;i++){
           const L=level[i]; rowOf[L]=(rowOf[L]||0);
           const row=rowOf[L]++;
-          nodes.push({ i, cmd:(steps[i].command||'?'), params:steps[i].params||{},
+          nodes.push({ i, name:(steps[i].name||''), cmd:(steps[i].command||'?'), params:steps[i].params||{},
             x:PAD+L*(NODE_W+COL_GAP), y:PAD+row*(NODE_H+ROW_GAP) });
         }
         for(let i=0;i<n;i++) for(const d of deps[i]) edges.push([d,i]);
@@ -553,7 +559,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ctx.lineWidth=(nd.i===sel||nd.i===hover)?2:1.2;
           ctx.strokeStyle=(nd.i===hover)?accent:c.stroke; ctx.stroke();
           ctx.fillStyle=muted; ctx.font='600 11px -apple-system,sans-serif';
-          ctx.fillText('STEP '+(nd.i+1), nd.x+12, nd.y+17);
+          let tag='STEP '+(nd.i+1)+(nd.name?(' · '+nd.name):'');
+          if(tag.length>22) tag=tag.slice(0,21)+'…';
+          ctx.fillText(tag, nd.x+12, nd.y+17);
           ctx.fillStyle=fg; ctx.font='13px -apple-system,sans-serif';
           let label=nd.cmd; if(label.length>18) label=label.slice(0,17)+'…';
           ctx.fillText(label, nd.x+12, nd.y+34);
@@ -574,7 +582,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           if(i!==hover){ hover=i; canvas.style.cursor=i>=0?'grab':'default'; render(); }
           if(i>=0){ const nd=nodes[i];
             tip.style.display='block'; tip.style.left=(nd.x+NODE_W+8)+'px'; tip.style.top=nd.y+'px';
-            tip.textContent='step'+(i+1)+' · '+nd.cmd+'\n'+JSON.stringify(nd.params,null,1).slice(0,260);
+            tip.textContent=(nd.name?('"'+nd.name+'"  '):'')+'step'+(i+1)+' · '+nd.cmd+'\n'+JSON.stringify(nd.params,null,1).slice(0,260);
           } else tip.style.display='none';
         });
         window.addEventListener('mouseup', ()=>{ drag=-1; });

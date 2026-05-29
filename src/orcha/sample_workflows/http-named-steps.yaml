@@ -1,0 +1,29 @@
+name: http-named-steps
+description: >
+  HTTP request flow using NAMED step references ({{steps.<name>.output.<path>}})
+  instead of positional ({{stepN.output...}}), so reordering steps won't break
+  references. Run from the dashboard (Jobs -> New job, paste the JSON form) or:
+  ./orcha sample_workflows/http-named-steps.yaml
+
+steps:
+  # Fetch a small text endpoint. The step is named "fetch" so later steps can
+  # reference it by name rather than position.
+  - name: fetch
+    command: http_request
+    params:
+      url: "https://api.github.com/zen"
+      method: GET
+      timeout_ms: 5000
+
+  # Reference the fetch step BY NAME. http_request returns
+  # { success, status_code, body, headers }.
+  - name: report
+    command: echo
+    params:
+      message: "GitHub zen says: {{steps.fetch.output.body}} (HTTP {{steps.fetch.output.status_code}})"
+
+  # Named references also compose: this reads the previous "report" step's output.
+  - name: confirm
+    command: echo
+    params:
+      message: "reported -> {{steps.report.output.echoed}}"

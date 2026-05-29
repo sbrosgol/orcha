@@ -64,24 +64,38 @@ namespace Orcha::Workflow {
                 deps[static_cast<int>(i)] = {static_cast<int>(i), {}, {}, 0};
             }
 
-            // Find dependencies based on placeholder references
+            // Map step name -> index, for named references.
+            std::unordered_map<std::string, int> name_to_index;
+            for (size_t i = 0; i < definition.steps.size(); ++i) {
+                if (definition.steps[i].name) {
+                    name_to_index[*definition.steps[i].name] = static_cast<int>(i);
+                }
+            }
+
+            // Find dependencies based on placeholder references, both positional
+            // ({{stepN.output}}) and named ({{steps.<name>.output}}).
             static const std::regex placeholder_regex(R"(\{\{step(\d+)\.output)");
+            static const std::regex named_regex(R"(\{\{steps\.([A-Za-z_][\w]*)\.output)");
+
+            auto add_dep = [&](size_t i, int ref) {
+                if (ref >= 0 && ref < static_cast<int>(i)) {
+                    deps[static_cast<int>(i)].depends_on.insert(ref);
+                    deps[ref].dependents.insert(static_cast<int>(i));
+                    deps[static_cast<int>(i)].in_degree++;
+                }
+            };
 
             for (size_t i = 0; i < definition.steps.size(); ++i) {
                 const auto& step = definition.steps[i];
-                auto referenced_steps = find_referenced_steps(step.params, placeholder_regex);
 
-                for (int ref : referenced_steps) {
-                    if (ref >= 0 && ref < static_cast<int>(i)) {
-                        // Step i depends on step ref
-                        deps[static_cast<int>(i)].depends_on.insert(ref);
-                        deps[ref].dependents.insert(static_cast<int>(i));
-                        deps[static_cast<int>(i)].in_degree++;
+                for (int ref : find_referenced_steps(step.params, placeholder_regex)) {
+                    add_dep(i, ref);
+                }
+                for (const auto& name : find_referenced_names(step.params, named_regex)) {
+                    if (auto it = name_to_index.find(name); it != name_to_index.end()) {
+                        add_dep(i, it->second);
                     }
                 }
-
-                // Also respect explicit 'depends_on' field if present
-                // (future enhancement - could add to WorkflowStep)
             }
 
             return deps;
@@ -186,6 +200,34 @@ namespace Orcha::Workflow {
             } else if (value.is_array()) {
                 for (const auto& elem : value.as_array()) {
                     find_refs_recursive(elem, pattern, refs);
+                }
+            }
+        }
+
+        // Named-reference variant: collects the captured step names.
+        [[nodiscard]] static std::unordered_set<std::string> find_referenced_names(
+            const web::json::value& params, const std::regex& pattern) {
+            std::unordered_set<std::string> names;
+            find_names_recursive(params, pattern, names);
+            return names;
+        }
+
+        static void find_names_recursive(
+            const web::json::value& value, const std::regex& pattern,
+            std::unordered_set<std::string>& names) {
+            if (value.is_string()) {
+                std::string str = value.as_string();
+                for (std::sregex_iterator it(str.begin(), str.end(), pattern), end;
+                     it != end; ++it) {
+                    names.insert((*it)[1].str());
+                }
+            } else if (value.is_object()) {
+                for (const auto& field : value.as_object()) {
+                    find_names_recursive(field.second, pattern, names);
+                }
+            } else if (value.is_array()) {
+                for (const auto& elem : value.as_array()) {
+                    find_names_recursive(elem, pattern, names);
                 }
             }
         }
