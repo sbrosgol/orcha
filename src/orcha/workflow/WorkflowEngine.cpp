@@ -8,6 +8,7 @@
 #include <yaml-cpp/yaml.h>
 #include <regex>
 #include <algorithm>
+#include <ranges>
 
 namespace Orcha::Workflow {
 
@@ -120,7 +121,11 @@ namespace Orcha::Workflow {
             const std::string field_path = match[2].str();
             std::string replacement;
 
-            for (const auto& prev : previous_results) {
+            // Walk in reverse so the MOST RECENT step with this name wins when
+            // names are duplicated. This keeps resolution consistent with the
+            // parallel dependency analyzer, whose name_to_index map overwrites
+            // earlier entries and thus also resolves to the last such step.
+            for (const auto& prev : std::views::reverse(previous_results)) {
                 if (!prev.name.empty() && prev.name == step_name) {
                     replacement = json_value_to_string(
                         navigate_output(prev.output, field_path));
