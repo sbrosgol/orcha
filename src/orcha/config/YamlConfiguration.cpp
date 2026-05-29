@@ -266,6 +266,8 @@ admin:
 
 jobs:
   db_path: "./orcha-jobs.db"
+  scheduler_enabled: true
+  scheduler_tick_seconds: 30
 )");
         config->merge_environment("ORCHA_");
         return config;

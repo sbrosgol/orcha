@@ -206,6 +206,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       <div class="bd">
         <div class="field"><label>Name</label><input id="jName" type="text" style="width:100%" /></div>
         <div class="field"><label>Description</label><input id="jDesc" type="text" style="width:100%" /></div>
+        <div class="field"><label>Schedule (cron, optional &mdash; "m h dom mon dow")</label>
+          <input id="jSchedule" type="text" placeholder="e.g. 0 9 * * 1-5  (blank = manual only)" style="width:100%" /></div>
+        <div class="field"><label style="display:flex; align-items:center; gap:8px; color:var(--fg)">
+          <input id="jEnabled" type="checkbox" /> Enabled (the scheduler runs this job when due)</label></div>
         <div class="field"><label>Definition (JSON with a "steps" array)</label>
           <textarea id="jDef" spellcheck="false"></textarea></div>
         <div class="login-err" id="modalErr"></div>
@@ -330,7 +334,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         $('jobsCount').textContent=jobs.length+' job(s)';
         $('jobItems').innerHTML = jobs.length ? jobs.map(j =>
           `<div class="item ${currentJob&&currentJob.id===j.id?'active':''}" data-job="${esc(j.id)}">
-             <div class="nm">${esc(j.name)}</div><div class="muted">${esc(j.description||'')}</div></div>`).join('')
+             <div class="nm">${esc(j.name)}${j.enabled?'':' <span class="muted">(disabled)</span>'}${j.schedule_cron?' <span class="muted">&#9201;</span>':''}</div>
+             <div class="muted">${esc(j.description||'')}</div></div>`).join('')
           : '<div class="pad muted">No jobs yet. Click "New job".</div>';
       } catch(e){ if(e.message!=='Unauthorized') toast('Failed to load jobs: '+e.message,'err'); }
     }
@@ -346,23 +351,46 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     function renderJobDetail(){
       const j=currentJob; if(!j){ return; }
+      const sched = j.schedule_cron
+        ? `<code>${esc(j.schedule_cron)}</code>` : '<span class="muted">manual only</span>';
+      const enBadge = j.enabled
+        ? '<span class="badge success">enabled</span>'
+        : '<span class="badge failed">disabled</span>';
       $('jobDetail').innerHTML = `
         <div class="toolbar">
           <strong style="font-size:15px">${esc(j.name)}</strong>
           <span class="muted">${esc(j.description||'')}</span>
           <span style="margin-left:auto"></span>
           <button class="btn primary" id="runJob">Run now</button>
+          <button class="btn" id="toggleJob">${j.enabled ? 'Disable' : 'Enable'}</button>
           <button class="btn" id="editJob">Edit</button>
           <button class="btn danger" id="delJob">Delete</button>
+        </div>
+        <div class="muted" style="margin:-6px 0 12px; display:flex; gap:14px; align-items:center">
+          <span>Schedule: ${sched}</span> ${enBadge}
         </div>
         <div class="chartwrap"><canvas id="flow"></canvas><div id="fctip"></div></div>
         <h3 style="margin:18px 0 8px; font-size:12px; text-transform:uppercase; color:var(--muted)">Run history</h3>
         <div id="runs" class="muted">Loading runs...</div>`;
       $('runJob').onclick = ()=>runJob(j.id);
+      $('toggleJob').onclick = ()=>toggleJob(j);
       $('editJob').onclick = ()=>openEditor(j);
       $('delJob').onclick = ()=>delJob(j);
       flow.setJob(j);
       loadRuns(j.id);
+    }
+
+    async function toggleJob(j){
+      const payload = { name:j.name, description:j.description||'',
+                        definition:j.definition, enabled:!j.enabled };
+      if(j.schedule_cron) payload.schedule_cron = j.schedule_cron;
+      try {
+        await api('/api/jobs/'+encodeURIComponent(j.id),
+          {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        toast(j.enabled ? 'Disabled' : 'Enabled', 'ok');
+        await loadJobs();
+        await selectJob(j.id);
+      } catch(e){ if(e.message!=='Unauthorized') toast('Toggle failed: '+e.message,'err'); }
     }
 
     async function runJob(id){
@@ -416,6 +444,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('modalTitle').textContent = job ? 'Edit job' : 'New job';
       $('jName').value = job ? job.name : '';
       $('jDesc').value = job ? (job.description||'') : '';
+      $('jSchedule').value = (job && job.schedule_cron) ? job.schedule_cron : '';
+      $('jEnabled').checked = job ? !!job.enabled : true;
       $('jDef').value  = job ? JSON.stringify(job.definition, null, 2) : DEFAULT_DEF;
       $('modalErr').textContent='';
       $('modal').classList.add('show');
@@ -425,7 +455,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       let def;
       try { def=JSON.parse($('jDef').value); }
       catch(e){ $('modalErr').textContent='Definition is not valid JSON: '+e.message; return; }
-      const payload={ name:$('jName').value.trim(), description:$('jDesc').value.trim(), definition:def };
+      const payload={ name:$('jName').value.trim(), description:$('jDesc').value.trim(),
+                      definition:def, enabled:$('jEnabled').checked };
+      const sched=$('jSchedule').value.trim();
+      if(sched) payload.schedule_cron=sched;   // omitted => cleared (manual only)
       if(!payload.name){ $('modalErr').textContent='Name is required.'; return; }
       try {
         if(editingId){ await api('/api/jobs/'+encodeURIComponent(editingId),

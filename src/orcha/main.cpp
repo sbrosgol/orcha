@@ -9,6 +9,7 @@
 // Core
 #include "core/CommandRegistry.hpp"
 #include "core/PluginManager.hpp"
+#include "core/PluginDenylist.hpp"
 #include "core/ServiceLocator.hpp"
 
 // Config
@@ -24,6 +25,7 @@
 #include "jobs/SqliteJobStore.hpp"
 #include "jobs/JobService.hpp"
 #include "jobs/RunJobCommand.hpp"
+#include "jobs/JobScheduler.hpp"
 
 // Utils
 #include "utils/Logger.hpp"
@@ -62,6 +64,12 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     auto plugin_manager = std::make_shared<Core::PluginManager>(
         registry, discovery, logger_ptr);
     services.register_singleton<Core::PluginManager>(plugin_manager);
+
+    // Persistent plugin denylist: disabled plugins stay unloaded across restarts.
+    auto denylist = std::make_shared<Core::FilePluginDenylist>(
+        config.get_string("plugins.denylist_path", "./orcha-disabled-plugins.txt"));
+    services.register_singleton<Core::IPluginDenylist>(denylist);
+    plugin_manager->set_denylist(denylist);
 
     // Workflow Engine (factory - creates new instances)
     auto engine_factory = [registry, logger_ptr]() {
@@ -204,6 +212,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     auto plugins = services.get<Core::PluginManager>();
     auto discovery = services.get<Core::IPluginDiscovery>();
     auto job_service = services.try_get<Jobs::JobService>(); // may be null if store failed
+    auto denylist = services.try_get<Core::IPluginDenylist>();
 
     // Create agent with injected dependencies (including the admin dashboard).
     Agent::CommandAgent agent(
@@ -211,9 +220,19 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
-        job_service);
+        job_service, denylist);
 
     agent.start(server_config.port);
+
+    // Cron scheduler (Phase 3): fire enabled jobs whose schedule_cron is due.
+    std::unique_ptr<Jobs::JobScheduler> scheduler;
+    const bool scheduler_enabled = config.get_bool("jobs.scheduler_enabled", true);
+    const auto scheduler_tick =
+        std::chrono::seconds(config.get_int("jobs.scheduler_tick_seconds", 30));
+    if (job_service && scheduler_enabled) {
+        scheduler = std::make_unique<Jobs::JobScheduler>(job_service, logger, scheduler_tick);
+        scheduler->start();
+    }
 
     const bool admin_on = admin_config.is_serviceable();
 
@@ -234,11 +253,16 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     } else {
         std::cout << "  (admin dashboard disabled - see logs)\n";
     }
+    if (scheduler) {
+        std::cout << "  [scheduler] cron scheduling active (tick "
+                  << scheduler_tick.count() << "s)\n";
+    }
     std::cout << "[Orcha] Press Enter to exit...\n";
 
     std::cin.get();
 
     logger->info("Shutting down Orcha...");
+    if (scheduler) scheduler->stop();
     agent.stop();
 
     std::cout << "[Orcha] Shutdown complete.\n";

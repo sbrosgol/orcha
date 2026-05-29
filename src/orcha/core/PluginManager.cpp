@@ -148,6 +148,20 @@ namespace Orcha::Core {
         logger_->info("Discovered " + std::to_string(plugins.size()) +
                      " plugin(s) in " + directory.string());
 
+        // Skip plugins on the persistent denylist (disabled via the admin API).
+        if (denylist_) {
+            std::erase_if(plugins, [this](const PluginMetadata& p) {
+                if (denylist_->contains(p.name)) {
+                    logger_->info("Skipping disabled plugin: " + p.name);
+                    return true;
+                }
+                return false;
+            });
+            if (plugins.empty()) {
+                return result;
+            }
+        }
+
         // Resolve dependencies and get load order
         auto resolve_result = DependencyResolver::resolve(plugins, strict_dependencies);
 

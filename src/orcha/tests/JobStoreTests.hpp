@@ -16,11 +16,13 @@
 #include "../jobs/SqliteJobStore.hpp"
 #include "../jobs/JobService.hpp"
 #include "../jobs/RunJobCommand.hpp"
+#include "../jobs/JobScheduler.hpp"
 #include "../agent/routes/JobRoute.hpp"
 #include "../core/CommandRegistry.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 #include "mocks/MockCommandRegistry.hpp"
 
+#include <ctime>
 #include <iostream>
 
 namespace Orcha::Tests {
@@ -167,6 +169,50 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_run_job_linking\n";
     }
 
+    inline void test_scheduler_fires() {
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto registry = std::make_shared<Core::CommandRegistry>();
+        ORCHA_ASSERT(registry->register_command(std::make_shared<Mocks::MockCommand>("echo",
+            [](const web::json::value&){ return web::json::value::object(); })));
+        auto factory = [registry]() -> std::shared_ptr<Workflow::IWorkflowEngine> {
+            return std::make_shared<Workflow::WorkflowEngine>(
+                registry, std::make_shared<Workflow::SyncStepExecutor>(), nullptr);
+        };
+        auto service = std::make_shared<Jobs::JobService>(store, factory, nullptr);
+
+        const auto def = web::json::value::parse(utility::conversions::to_string_t(
+            R"({"steps":[{"command":"echo","params":{}}]})"));
+
+        Jobs::JobDefinition on;   on.name = "tick"; on.enabled = true;
+        on.schedule_cron = "* * * * *"; on.definition = def;
+        ORCHA_ASSERT(store->create_job(on));
+
+        Jobs::JobDefinition off;  off.name = "off"; off.enabled = false;  // disabled
+        off.schedule_cron = "* * * * *"; off.definition = def;
+        ORCHA_ASSERT(store->create_job(off));
+
+        Jobs::JobDefinition noon; noon.name = "noon"; noon.enabled = true;
+        noon.schedule_cron = "0 12 * * *"; noon.definition = def;
+        ORCHA_ASSERT(store->create_job(noon));
+
+        Jobs::JobScheduler sched(service, nullptr, std::chrono::seconds(30));
+
+        auto utc = [](int y,int mo,int d,int h,int mi){
+            std::tm t{}; t.tm_year=y-1900; t.tm_mon=mo-1; t.tm_mday=d; t.tm_hour=h; t.tm_min=mi;
+            time_t e = timegm(&t); std::tm o{}; gmtime_r(&e,&o); return o; };
+
+        // 00:00 -> only "tick" (enabled, matches); "off" disabled; "noon" not due.
+        ORCHA_ASSERT(sched.evaluate(utc(2024,1,1,0,0)) == 1);
+        ORCHA_ASSERT(sched.evaluate(utc(2024,1,1,0,0)) == 0);   // de-duped within the minute
+        ORCHA_ASSERT(sched.evaluate(utc(2024,1,1,0,1)) == 1);   // new minute -> fires again
+        ORCHA_ASSERT(sched.evaluate(utc(2024,1,1,12,0)) == 2);  // "tick" + "noon"
+
+        auto runs = store->list_runs(on.id, 10);
+        ORCHA_ASSERT(!runs.empty() && runs[0].trigger == "schedule");
+
+        std::cout << "[PASS] test_scheduler_fires\n";
+    }
+
     inline void run_job_store_tests() {
         std::cout << "\n-- Jobs (Phase 2) --\n";
         test_job_store_crud();
@@ -174,6 +220,7 @@ namespace Orcha::Tests {
         test_job_store_runs();
         test_job_route_can_handle();
         test_run_job_linking();
+        test_scheduler_fires();
     }
 
 } // namespace Orcha::Tests

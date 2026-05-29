@@ -9,6 +9,7 @@
 #include "../core/ICommandRegistry.hpp"
 #include "../core/PluginManager.hpp"
 #include "../core/IPluginDiscovery.hpp"
+#include "../core/PluginDenylist.hpp"
 #include "../workflow/IWorkflowEngine.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 #include "../jobs/JobService.hpp"
@@ -53,7 +54,8 @@ namespace Orcha::Agent {
                     Config::AdminConfig admin = {},
                     std::string plugin_dir = "./commands",
                     std::chrono::milliseconds watch_interval = std::chrono::milliseconds(5000),
-                    std::shared_ptr<Jobs::JobService> jobs = nullptr);
+                    std::shared_ptr<Jobs::JobService> jobs = nullptr,
+                    std::shared_ptr<Core::IPluginDenylist> denylist = nullptr);
 
         ~CommandAgent();
 
@@ -96,6 +98,7 @@ namespace Orcha::Agent {
         std::string plugin_dir_;
         std::chrono::milliseconds watch_interval_;
         std::shared_ptr<Jobs::JobService> jobs_;
+        std::shared_ptr<Core::IPluginDenylist> denylist_;
 
         Router router_;
         std::unique_ptr<web::http::experimental::listener::http_listener> listener_;

@@ -16,6 +16,7 @@ plugins:
   directory: "./commands"
   auto_reload: false
   scan_interval_ms: 5000
+  denylist_path: "./orcha-disabled-plugins.txt"   # plugins disabled via the admin UI
 
 # Admin dashboard (/admin) and admin API (/api/plugins).
 admin:
@@ -27,6 +28,8 @@ admin:
   password: "change-me"
   realm: "Orcha Admin"
 
-# Jobs: saved workflows + run history (SQLite-backed).
+# Jobs: saved workflows + run history (SQLite-backed) + cron scheduler.
 jobs:
   db_path: "./orcha-jobs.db"
+  scheduler_enabled: true       # run due jobs (schedule_cron) on a timer
+  scheduler_tick_seconds: 30    # how often the scheduler checks (< 60)
