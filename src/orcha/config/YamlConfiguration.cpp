@@ -84,7 +84,9 @@ namespace Orcha::Config {
             if (!current.IsMap() || !current[segment]) {
                 return YAML::Node();  // Return null node
             }
-            current = current[segment];
+            // reset(), not operator=: assigning a YAML::Node rebinds the shared
+            // underlying node, which would overwrite root_ itself.
+            current.reset(current[segment]);
         }
 
         return current;
@@ -109,7 +111,7 @@ namespace Orcha::Config {
             if (!current[segments[i]]) {
                 current[segments[i]] = YAML::Node(YAML::NodeType::Map);
             }
-            current = current[segments[i]];
+            current.reset(current[segments[i]]);
         }
 
         current[segments.back()] = value;

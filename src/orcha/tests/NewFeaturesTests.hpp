@@ -52,6 +52,33 @@ logging:
         std::cout << "[PASS] test_config_validation_valid\n";
     }
 
+    // Regression: navigate_to_key used YAML::Node::operator=, which rebinds the
+    // shared node and clobbered root_ on the first lookup, so every later key
+    // in the file silently fell back to its default.
+    inline void test_config_repeated_lookups_keep_values() {
+        Config::YamlConfiguration yaml;
+        yaml.load_from_string(R"(
+server:
+  port: 8091
+admin:
+  password: "secret"
+jobs:
+  db_path: "./x.db"
+)");
+        Config::IMutableConfiguration& config = yaml;
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "first lookup");
+        ORCHA_ASSERT(config.get_string("admin.password", "") == "secret" && "second lookup");
+        ORCHA_ASSERT(config.get_string("jobs.db_path", "") == "./x.db" && "third lookup");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "repeat lookup");
+
+        config.set_string("admin.username", "root");
+        ORCHA_ASSERT(config.get_string("admin.username", "") == "root" && "set then get");
+        ORCHA_ASSERT(config.get_string("admin.password", "") == "secret" && "set keeps siblings");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "set keeps other sections");
+
+        std::cout << "[PASS] test_config_repeated_lookups_keep_values\n";
+    }
+
     inline void test_config_validation_invalid_port() {
         std::string yaml = R"(
 server:
@@ -349,6 +376,7 @@ server:
         test_config_validation_invalid_port();
         test_config_validation_invalid_log_level();
         test_config_validation_warnings();
+        test_config_repeated_lookups_keep_values();
 
         // Circuit Breaker
         std::cout << "\n-- Circuit Breaker --\n";
