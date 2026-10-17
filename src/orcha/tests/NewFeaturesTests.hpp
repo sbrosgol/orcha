@@ -15,6 +15,7 @@
 #include "PluginAdminTests.hpp"
 #include "JobStoreTests.hpp"
 #include "CronTests.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -77,6 +78,31 @@ jobs:
         ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "set keeps other sections");
 
         std::cout << "[PASS] test_config_repeated_lookups_keep_values\n";
+    }
+
+    // merge_environment maps every '_' to '.', so ORCHA_JOBS_DB_PATH used to be
+    // stored as "jobs.db.path" and never matched the "jobs.db_path" lookup.
+    inline void test_config_env_override_underscore_leaf_key() {
+        // Unique prefix so the test can't pick up the real ORCHA_* environment.
+        ::setenv("ORCHATEST_JOBS_DB_PATH", "/app/data/orcha-jobs.db", 1);
+        ::setenv("ORCHATEST_SERVER_PORT", "9000", 1);
+
+        Config::YamlConfiguration yaml;
+        yaml.load_from_string(R"(
+jobs:
+  db_path: "./orcha-jobs.db"
+server:
+  port: 8070
+)");
+        yaml.merge_environment("ORCHATEST_");
+        Config::IConfiguration& config = yaml;
+
+        ORCHA_ASSERT(config.get_string("jobs.db_path", "") == "/app/data/orcha-jobs.db" && "underscore leaf key overridden");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 9000 && "plain key still overridden");
+
+        ::unsetenv("ORCHATEST_JOBS_DB_PATH");
+        ::unsetenv("ORCHATEST_SERVER_PORT");
+        std::cout << "[PASS] test_config_env_override_underscore_leaf_key\n";
     }
 
     inline void test_config_validation_invalid_port() {
@@ -377,6 +403,7 @@ server:
         test_config_validation_invalid_log_level();
         test_config_validation_warnings();
         test_config_repeated_lookups_keep_values();
+        test_config_env_override_underscore_leaf_key();
 
         // Circuit Breaker
         std::cout << "\n-- Circuit Breaker --\n";

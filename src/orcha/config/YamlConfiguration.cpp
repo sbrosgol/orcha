@@ -69,8 +69,15 @@ namespace Orcha::Config {
             return root_;
         }
 
-        // Check environment overrides first
+        // Check environment overrides first. merge_environment maps every '_'
+        // to '.', so ORCHA_JOBS_DB_PATH is stored as "jobs.db.path"; also try
+        // the key in that form so leaf keys containing '_' can be overridden.
         auto env_it = env_overrides_.find(key);
+        if (env_it == env_overrides_.end()) {
+            std::string dotted = key;
+            std::replace(dotted.begin(), dotted.end(), '_', '.');
+            if (dotted != key) env_it = env_overrides_.find(dotted);
+        }
         if (env_it != env_overrides_.end()) {
             return YAML::Node(env_it->second);
         }
