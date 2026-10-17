@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpJson.hpp"
 #include "../swagger_embedded.hpp"
 #include "../../core/ICommandRegistry.hpp"
 #include "../../utils/ILogger.hpp"
@@ -33,18 +34,19 @@ namespace Orcha::Agent::Routes {
                    path == "/commands";
         }
 
-        void handle(web::http::http_request request) override {
-            auto path = utility::conversions::to_utf8string(request.request_uri().path());
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            const std::string& path = request.path;
 
             if (path == "/swagger") {
-                serve_swagger_ui(request);
+                return serve_swagger_ui();
             } else if (path == "/swagger.json") {
-                serve_openapi_spec(request);
+                return serve_openapi_spec();
             } else if (path == "/sample") {
-                serve_sample_workflow(request);
+                return serve_sample_workflow();
             } else if (path == "/commands") {
-                serve_commands_list(request);
+                return serve_commands_list();
             }
+            return reply_error(status::NotFound, "Unknown endpoint");
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {
@@ -57,147 +59,115 @@ namespace Orcha::Agent::Routes {
         }
 
     private:
-        void serve_swagger_ui(web::http::http_request request) {
-            pplx::create_task([request]() {
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("text/html; charset=utf-8"));
-                resp.set_body(Orcha::Agent::kSwaggerHtml);
-                request.reply(resp);
-            });
+        HttpResponse serve_swagger_ui() {
+            return HttpResponse::html(status::OK, Orcha::Agent::kSwaggerHtml);
         }
 
-        void serve_openapi_spec(web::http::http_request request) {
-            auto registry = registry_;
-
-            pplx::create_task([request, registry]() {
-                auto spec = generate_openapi_spec(registry);
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("application/json"));
-                resp.set_body(spec);
-                request.reply(resp);
-            });
+        HttpResponse serve_openapi_spec() {
+            auto spec = generate_openapi_spec(registry_);
+            return reply_json(status::OK, spec);
         }
 
-        void serve_sample_workflow(web::http::http_request request) {
-            pplx::create_task([request]() {
-                web::json::value sample = web::json::value::object();
-                web::json::value steps = web::json::value::array(1);
+        HttpResponse serve_sample_workflow() {
+            Orcha::Json sample = Orcha::Json::object();
+            Orcha::Json steps = Orcha::Json::array();
 
-                web::json::value step0 = web::json::value::object();
-                step0[U("command")] = web::json::value::string(U("echo"));
-                web::json::value params = web::json::value::object();
-                params[U("message")] = web::json::value::string(U("Hello, Orcha!"));
-                step0[U("params")] = params;
-                steps[0] = step0;
+            Orcha::Json step0 = Orcha::Json::object();
+            step0["command"] = "echo";
+            Orcha::Json params = Orcha::Json::object();
+            params["message"] = "Hello, Orcha!";
+            step0["params"] = params;
+            steps[0] = step0;
 
-                sample[U("steps")] = steps;
+            sample["steps"] = steps;
 
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("application/json"));
-                resp.set_body(sample);
-                request.reply(resp);
-            });
+            return reply_json(status::OK, sample);
         }
 
-        void serve_commands_list(web::http::http_request request) {
-            auto registry = registry_;
+        HttpResponse serve_commands_list() {
+            Orcha::Json result = Orcha::Json::object();
 
-            pplx::create_task([request, registry]() {
-                web::json::value result = web::json::value::object();
+            auto commands = registry_->list_commands();
+            Orcha::Json arr = Orcha::Json::array();
 
-                auto commands = registry->list_commands();
-                web::json::value arr = web::json::value::array(commands.size());
+            for (size_t i = 0; i < commands.size(); ++i) {
+                const auto& name = commands[i];
+                Orcha::Json cmd_info = Orcha::Json::object();
+                cmd_info["name"] = name;
 
-                for (size_t i = 0; i < commands.size(); ++i) {
-                    const auto& name = commands[i];
-                    web::json::value cmd_info = web::json::value::object();
-                    cmd_info[U("name")] = web::json::value::string(name);
+                if (auto cmd = registry_->get_command(name)) {
+                    auto meta = cmd->metadata();
+                    cmd_info["version"] = meta.version;
+                    cmd_info["description"] = meta.description;
 
-                    if (auto cmd = registry->get_command(name)) {
-                        auto meta = cmd->metadata();
-                        cmd_info[U("version")] = web::json::value::string(meta.version);
-                        cmd_info[U("description")] = web::json::value::string(meta.description);
-
-                        if (!meta.parameters.empty()) {
-                            web::json::value params = web::json::value::array(meta.parameters.size());
-                            for (size_t j = 0; j < meta.parameters.size(); ++j) {
-                                params[j] = meta.parameters[j].to_json();
-                            }
-                            cmd_info[U("parameters")] = params;
+                    if (!meta.parameters.empty()) {
+                        Orcha::Json params = Orcha::Json::array();
+                        for (size_t j = 0; j < meta.parameters.size(); ++j) {
+                            params[j] = meta.parameters[j].to_json();
                         }
+                        cmd_info["parameters"] = params;
                     }
-
-                    arr[i] = cmd_info;
                 }
 
-                result[U("commands")] = arr;
-                result[U("count")] = web::json::value::number(static_cast<int>(commands.size()));
+                arr[i] = cmd_info;
+            }
 
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("application/json"));
-                resp.set_body(result);
-                request.reply(resp);
-            });
+            result["commands"] = arr;
+            result["count"] = static_cast<int>(commands.size());
+
+            return reply_json(status::OK, result);
         }
 
         // ====================================================================
         // OpenAPI spec generation
         // ====================================================================
 
-        static web::json::value generate_openapi_spec(
+        static Orcha::Json generate_openapi_spec(
             std::shared_ptr<Core::ICommandRegistry> registry) {
 
-            using web::json::value;
+            using value = Orcha::Json;
 
             value spec = value::object();
-            spec[U("openapi")] = value::string(U("3.0.3"));
-            spec[U("info")] = build_info();
-            spec[U("servers")] = build_servers();
-            spec[U("tags")] = build_tags();
-            spec[U("components")] = build_components();
-            spec[U("paths")] = build_paths(registry);
+            spec["openapi"] = "3.0.3";
+            spec["info"] = build_info();
+            spec["servers"] = build_servers();
+            spec["tags"] = build_tags();
+            spec["components"] = build_components();
+            spec["paths"] = build_paths(registry);
             return spec;
         }
 
         // ---- Info / Servers / Tags ----------------------------------------
 
-        static web::json::value build_info() {
-            using web::json::value;
+        static Orcha::Json build_info() {
+            using value = Orcha::Json;
             value info = value::object();
-            info[U("title")] = value::string(U("Orcha API"));
-            info[U("version")] = value::string(Orcha::kVersion);
-            info[U("description")] = value::string(
-                U("Orcha is a plugin-based command orchestration engine. ")
-                U("Public endpoints expose workflow execution and discovery; ")
-                U("`/api/*` endpoints require Basic auth and are used by the ")
-                U("admin dashboard at `/admin`."));
+            info["title"] = "Orcha API";
+            info["version"] = Orcha::kVersion;
+            info["description"] = 
+                "Orcha is a plugin-based command orchestration engine. "
+                "Public endpoints expose workflow execution and discovery; "
+                "`/api/*` endpoints require Basic auth and are used by the "
+                "admin dashboard at `/admin`.";
 
             value license = value::object();
-            license[U("name")] = value::string(U("MIT"));
-            info[U("license")] = license;
+            license["name"] = "MIT";
+            info["license"] = license;
             return info;
         }
 
-        static web::json::value build_servers() {
-            using web::json::value;
-            value servers = value::array(1);
+        static Orcha::Json build_servers() {
+            using value = Orcha::Json;
+            value servers = value::array();
             value server0 = value::object();
-            server0[U("url")] = value::string(U("/"));
-            server0[U("description")] = value::string(U("Current host"));
+            server0["url"] = "/";
+            server0["description"] = "Current host";
             servers[0] = server0;
             return servers;
         }
 
-        static web::json::value build_tags() {
-            using web::json::value;
+        static Orcha::Json build_tags() {
+            using value = Orcha::Json;
             const std::pair<const char*, const char*> entries[] = {
                 {"System",   "Health and discovery"},
                 {"Workflow", "Ad-hoc workflow execution"},
@@ -206,12 +176,12 @@ namespace Orcha::Agent::Routes {
                 {"Runs",     "Execution history (admin)"},
                 {"Plugins",  "Plugin lifecycle (admin)"},
             };
-            value tags = value::array(std::size(entries));
+            value tags = value::array();
             for (size_t i = 0; i < std::size(entries); ++i) {
                 value t = value::object();
-                t[U("name")] = value::string(utility::conversions::to_string_t(entries[i].first));
-                t[U("description")] = value::string(
-                    utility::conversions::to_string_t(entries[i].second));
+                t["name"] = entries[i].first;
+                t["description"] = 
+                    entries[i].second;
                 tags[i] = t;
             }
             return tags;
@@ -219,804 +189,804 @@ namespace Orcha::Agent::Routes {
 
         // ---- Components: schemas + security -------------------------------
 
-        static web::json::value build_components() {
-            using web::json::value;
+        static Orcha::Json build_components() {
+            using value = Orcha::Json;
             value components = value::object();
 
             // Security schemes
             value security_schemes = value::object();
             value basic = value::object();
-            basic[U("type")] = value::string(U("http"));
-            basic[U("scheme")] = value::string(U("basic"));
-            basic[U("description")] = value::string(
-                U("Admin HTTP Basic credentials (see `admin.username` / `admin.password` in `orcha.yaml`)."));
-            security_schemes[U("basicAuth")] = basic;
-            components[U("securitySchemes")] = security_schemes;
+            basic["type"] = "http";
+            basic["scheme"] = "basic";
+            basic["description"] = 
+                "Admin HTTP Basic credentials (see `admin.username` / `admin.password` in `orcha.yaml`).";
+            security_schemes["basicAuth"] = basic;
+            components["securitySchemes"] = security_schemes;
 
             // Schemas
             value schemas = value::object();
-            schemas[U("Error")]            = schema_error();
-            schemas[U("WorkflowStep")]     = schema_workflow_step();
-            schemas[U("WorkflowRequest")]  = schema_workflow_request();
-            schemas[U("StepResult")]       = schema_step_result();
-            schemas[U("WorkflowResult")]   = schema_workflow_result();
-            schemas[U("CommandParameter")] = schema_command_parameter();
-            schemas[U("CommandInfo")]      = schema_command_info();
-            schemas[U("CommandsList")]     = schema_commands_list();
-            schemas[U("JobDefinition")]    = schema_job_definition();
-            schemas[U("JobInput")]         = schema_job_input();
-            schemas[U("JobsList")]         = schema_jobs_list();
-            schemas[U("RunRecord")]        = schema_run_record();
-            schemas[U("RunsList")]         = schema_runs_list();
-            schemas[U("PluginInfo")]       = schema_plugin_info();
-            schemas[U("PluginsList")]      = schema_plugins_list();
-            schemas[U("PluginActionResult")] = schema_plugin_action_result();
-            schemas[U("WatchStatus")]      = schema_watch_status();
-            schemas[U("WatchUpdate")]      = schema_watch_update();
-            components[U("schemas")] = schemas;
+            schemas["Error"]            = schema_error();
+            schemas["WorkflowStep"]     = schema_workflow_step();
+            schemas["WorkflowRequest"]  = schema_workflow_request();
+            schemas["StepResult"]       = schema_step_result();
+            schemas["WorkflowResult"]   = schema_workflow_result();
+            schemas["CommandParameter"] = schema_command_parameter();
+            schemas["CommandInfo"]      = schema_command_info();
+            schemas["CommandsList"]     = schema_commands_list();
+            schemas["JobDefinition"]    = schema_job_definition();
+            schemas["JobInput"]         = schema_job_input();
+            schemas["JobsList"]         = schema_jobs_list();
+            schemas["RunRecord"]        = schema_run_record();
+            schemas["RunsList"]         = schema_runs_list();
+            schemas["PluginInfo"]       = schema_plugin_info();
+            schemas["PluginsList"]      = schema_plugins_list();
+            schemas["PluginActionResult"] = schema_plugin_action_result();
+            schemas["WatchStatus"]      = schema_watch_status();
+            schemas["WatchUpdate"]      = schema_watch_update();
+            components["schemas"] = schemas;
 
             return components;
         }
 
         // Convenience: a $ref string.
-        static web::json::value ref(const utility::string_t& name) {
-            web::json::value r = web::json::value::object();
-            r[U("$ref")] = web::json::value::string(U("#/components/schemas/") + name);
+        static Orcha::Json ref(const std::string& name) {
+            Orcha::Json r = Orcha::Json::object();
+            r["$ref"] = "#/components/schemas/" + name;
             return r;
         }
 
         // Convenience: { "type": "string" } / "integer" / "boolean" / "object".
-        static web::json::value type_of(const utility::string_t& t) {
-            web::json::value v = web::json::value::object();
-            v[U("type")] = web::json::value::string(t);
+        static Orcha::Json type_of(const std::string& t) {
+            Orcha::Json v = Orcha::Json::object();
+            v["type"] = t;
             return v;
         }
 
-        static web::json::value type_with_desc(const utility::string_t& t,
-                                                const utility::string_t& desc) {
+        static Orcha::Json type_with_desc(const std::string& t,
+                                                const std::string& desc) {
             auto v = type_of(t);
-            v[U("description")] = web::json::value::string(desc);
+            v["description"] = desc;
             return v;
         }
 
         // ---- Schemas -------------------------------------------------------
 
-        static web::json::value schema_error() {
-            using web::json::value;
+        static Orcha::Json schema_error() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("error")] = type_of(U("string"));
-            s[U("properties")] = props;
-            value req = value::array(1);
-            req[0] = value::string(U("error"));
-            s[U("required")] = req;
+            props["error"] = type_of("string");
+            s["properties"] = props;
+            value req = value::array();
+            req[0] = "error";
+            s["required"] = req;
             return s;
         }
 
-        static web::json::value schema_workflow_step() {
-            using web::json::value;
+        static Orcha::Json schema_workflow_step() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("command")] = type_with_desc(U("string"),
-                U("Registered command name (see GET /commands)"));
-            value params = type_of(U("object"));
-            params[U("additionalProperties")] = value::boolean(true);
-            params[U("description")] = value::string(U("Command-specific parameters"));
-            props[U("params")] = params;
-            s[U("properties")] = props;
-            value req = value::array(1);
-            req[0] = value::string(U("command"));
-            s[U("required")] = req;
+            props["command"] = type_with_desc("string",
+                "Registered command name (see GET /commands)");
+            value params = type_of("object");
+            params["additionalProperties"] = true;
+            params["description"] = "Command-specific parameters";
+            props["params"] = params;
+            s["properties"] = props;
+            value req = value::array();
+            req[0] = "command";
+            s["required"] = req;
             return s;
         }
 
-        static web::json::value schema_workflow_request() {
-            using web::json::value;
+        static Orcha::Json schema_workflow_request() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
             value steps = value::object();
-            steps[U("type")] = value::string(U("array"));
-            steps[U("items")] = ref(U("WorkflowStep"));
-            props[U("steps")] = steps;
-            s[U("properties")] = props;
-            value req = value::array(1);
-            req[0] = value::string(U("steps"));
-            s[U("required")] = req;
+            steps["type"] = "array";
+            steps["items"] = ref("WorkflowStep");
+            props["steps"] = steps;
+            s["properties"] = props;
+            value req = value::array();
+            req[0] = "steps";
+            s["required"] = req;
             return s;
         }
 
-        static web::json::value schema_step_result() {
-            using web::json::value;
+        static Orcha::Json schema_step_result() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("success")] = type_of(U("boolean"));
-            props[U("output")] = type_of(U("object"));
-            props[U("error")] = type_of(U("string"));
-            s[U("properties")] = props;
+            props["success"] = type_of("boolean");
+            props["output"] = type_of("object");
+            props["error"] = type_of("string");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_workflow_result() {
-            using web::json::value;
+        static Orcha::Json schema_workflow_result() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("array"));
-            s[U("items")] = ref(U("StepResult"));
+            s["type"] = "array";
+            s["items"] = ref("StepResult");
             return s;
         }
 
-        static web::json::value schema_command_parameter() {
-            using web::json::value;
+        static Orcha::Json schema_command_parameter() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("name")] = type_of(U("string"));
-            props[U("type")] = type_of(U("string"));
-            props[U("description")] = type_of(U("string"));
-            props[U("required")] = type_of(U("boolean"));
-            s[U("properties")] = props;
+            props["name"] = type_of("string");
+            props["type"] = type_of("string");
+            props["description"] = type_of("string");
+            props["required"] = type_of("boolean");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_command_info() {
-            using web::json::value;
+        static Orcha::Json schema_command_info() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("name")] = type_of(U("string"));
-            props[U("version")] = type_of(U("string"));
-            props[U("description")] = type_of(U("string"));
+            props["name"] = type_of("string");
+            props["version"] = type_of("string");
+            props["description"] = type_of("string");
             value params = value::object();
-            params[U("type")] = value::string(U("array"));
-            params[U("items")] = ref(U("CommandParameter"));
-            props[U("parameters")] = params;
-            s[U("properties")] = props;
+            params["type"] = "array";
+            params["items"] = ref("CommandParameter");
+            props["parameters"] = params;
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_commands_list() {
-            using web::json::value;
+        static Orcha::Json schema_commands_list() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
             value items = value::object();
-            items[U("type")] = value::string(U("array"));
-            items[U("items")] = ref(U("CommandInfo"));
-            props[U("commands")] = items;
-            props[U("count")] = type_of(U("integer"));
-            s[U("properties")] = props;
+            items["type"] = "array";
+            items["items"] = ref("CommandInfo");
+            props["commands"] = items;
+            props["count"] = type_of("integer");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_job_definition() {
-            using web::json::value;
+        static Orcha::Json schema_job_definition() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("id")] = type_of(U("string"));
-            props[U("name")] = type_of(U("string"));
-            props[U("description")] = type_of(U("string"));
-            props[U("definition")] = ref(U("WorkflowRequest"));
-            props[U("enabled")] = type_of(U("boolean"));
-            value cron = type_of(U("string"));
-            cron[U("nullable")] = value::boolean(true);
-            cron[U("description")] = value::string(
-                U("Cron expression (5-field, UTC) or null"));
-            props[U("schedule_cron")] = cron;
-            props[U("created_at")] = type_of(U("string"));
-            props[U("updated_at")] = type_of(U("string"));
-            s[U("properties")] = props;
+            props["id"] = type_of("string");
+            props["name"] = type_of("string");
+            props["description"] = type_of("string");
+            props["definition"] = ref("WorkflowRequest");
+            props["enabled"] = type_of("boolean");
+            value cron = type_of("string");
+            cron["nullable"] = true;
+            cron["description"] = 
+                "Cron expression (5-field, UTC) or null";
+            props["schedule_cron"] = cron;
+            props["created_at"] = type_of("string");
+            props["updated_at"] = type_of("string");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_job_input() {
-            using web::json::value;
+        static Orcha::Json schema_job_input() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("name")] = type_of(U("string"));
-            props[U("description")] = type_of(U("string"));
-            props[U("definition")] = ref(U("WorkflowRequest"));
-            props[U("enabled")] = type_of(U("boolean"));
-            value cron = type_of(U("string"));
-            cron[U("nullable")] = value::boolean(true);
-            props[U("schedule_cron")] = cron;
-            s[U("properties")] = props;
-            value req = value::array(2);
-            req[0] = value::string(U("name"));
-            req[1] = value::string(U("definition"));
-            s[U("required")] = req;
+            props["name"] = type_of("string");
+            props["description"] = type_of("string");
+            props["definition"] = ref("WorkflowRequest");
+            props["enabled"] = type_of("boolean");
+            value cron = type_of("string");
+            cron["nullable"] = true;
+            props["schedule_cron"] = cron;
+            s["properties"] = props;
+            value req = value::array();
+            req[0] = "name";
+            req[1] = "definition";
+            s["required"] = req;
             return s;
         }
 
-        static web::json::value schema_jobs_list() {
-            using web::json::value;
+        static Orcha::Json schema_jobs_list() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
-            value props = value::object();
-            value items = value::object();
-            items[U("type")] = value::string(U("array"));
-            items[U("items")] = ref(U("JobDefinition"));
-            props[U("jobs")] = items;
-            props[U("count")] = type_of(U("integer"));
-            s[U("properties")] = props;
-            return s;
-        }
-
-        static web::json::value schema_run_record() {
-            using web::json::value;
-            value s = value::object();
-            s[U("type")] = value::string(U("object"));
-            value props = value::object();
-            props[U("id")] = type_of(U("string"));
-            value jid = type_of(U("string"));
-            jid[U("nullable")] = value::boolean(true);
-            jid[U("description")] = value::string(U("Null for ad-hoc /workflow runs"));
-            props[U("job_id")] = jid;
-            value trig = type_of(U("string"));
-            value trig_enum = value::array(3);
-            trig_enum[0] = value::string(U("manual"));
-            trig_enum[1] = value::string(U("api"));
-            trig_enum[2] = value::string(U("schedule"));
-            trig[U("enum")] = trig_enum;
-            props[U("trigger")] = trig;
-            value st = type_of(U("string"));
-            value st_enum = value::array(2);
-            st_enum[0] = value::string(U("success"));
-            st_enum[1] = value::string(U("failed"));
-            st[U("enum")] = st_enum;
-            props[U("status")] = st;
-            props[U("started_at")] = type_of(U("string"));
-            value fin = type_of(U("string"));
-            fin[U("nullable")] = value::boolean(true);
-            props[U("finished_at")] = fin;
-            props[U("result")] = ref(U("WorkflowResult"));
-            props[U("error")] = type_of(U("string"));
-            s[U("properties")] = props;
-            return s;
-        }
-
-        static web::json::value schema_runs_list() {
-            using web::json::value;
-            value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
             value items = value::object();
-            items[U("type")] = value::string(U("array"));
-            items[U("items")] = ref(U("RunRecord"));
-            props[U("runs")] = items;
-            props[U("count")] = type_of(U("integer"));
-            s[U("properties")] = props;
+            items["type"] = "array";
+            items["items"] = ref("JobDefinition");
+            props["jobs"] = items;
+            props["count"] = type_of("integer");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_plugin_info() {
-            using web::json::value;
+        static Orcha::Json schema_run_record() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("name")] = type_of(U("string"));
-            props[U("version")] = type_of(U("string"));
-            props[U("description")] = type_of(U("string"));
-            props[U("author")] = type_of(U("string"));
-            value status = type_of(U("string"));
-            value status_enum = value::array(3);
-            status_enum[0] = value::string(U("loaded"));
-            status_enum[1] = value::string(U("available"));
-            status_enum[2] = value::string(U("disabled"));
-            status[U("enum")] = status_enum;
-            props[U("status")] = status;
-            props[U("library_path")] = type_of(U("string"));
+            props["id"] = type_of("string");
+            value jid = type_of("string");
+            jid["nullable"] = true;
+            jid["description"] = "Null for ad-hoc /workflow runs";
+            props["job_id"] = jid;
+            value trig = type_of("string");
+            value trig_enum = value::array();
+            trig_enum[0] = "manual";
+            trig_enum[1] = "api";
+            trig_enum[2] = "schedule";
+            trig["enum"] = trig_enum;
+            props["trigger"] = trig;
+            value st = type_of("string");
+            value st_enum = value::array();
+            st_enum[0] = "success";
+            st_enum[1] = "failed";
+            st["enum"] = st_enum;
+            props["status"] = st;
+            props["started_at"] = type_of("string");
+            value fin = type_of("string");
+            fin["nullable"] = true;
+            props["finished_at"] = fin;
+            props["result"] = ref("WorkflowResult");
+            props["error"] = type_of("string");
+            s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_runs_list() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            value items = value::object();
+            items["type"] = "array";
+            items["items"] = ref("RunRecord");
+            props["runs"] = items;
+            props["count"] = type_of("integer");
+            s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_plugin_info() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            props["name"] = type_of("string");
+            props["version"] = type_of("string");
+            props["description"] = type_of("string");
+            props["author"] = type_of("string");
+            value status = type_of("string");
+            value status_enum = value::array();
+            status_enum[0] = "loaded";
+            status_enum[1] = "available";
+            status_enum[2] = "disabled";
+            status["enum"] = status_enum;
+            props["status"] = status;
+            props["library_path"] = type_of("string");
             value deps = value::object();
-            deps[U("type")] = value::string(U("array"));
-            deps[U("items")] = type_of(U("string"));
-            props[U("dependencies")] = deps;
+            deps["type"] = "array";
+            deps["items"] = type_of("string");
+            props["dependencies"] = deps;
             value params = value::object();
-            params[U("type")] = value::string(U("array"));
-            params[U("items")] = ref(U("CommandParameter"));
-            props[U("parameters")] = params;
-            s[U("properties")] = props;
+            params["type"] = "array";
+            params["items"] = ref("CommandParameter");
+            props["parameters"] = params;
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_plugins_list() {
-            using web::json::value;
+        static Orcha::Json schema_plugins_list() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("directory")] = type_of(U("string"));
-            props[U("watching")] = type_of(U("boolean"));
+            props["directory"] = type_of("string");
+            props["watching"] = type_of("boolean");
             value items = value::object();
-            items[U("type")] = value::string(U("array"));
-            items[U("items")] = ref(U("PluginInfo"));
-            props[U("plugins")] = items;
-            props[U("count")] = type_of(U("integer"));
+            items["type"] = "array";
+            items["items"] = ref("PluginInfo");
+            props["plugins"] = items;
+            props["count"] = type_of("integer");
             value cmds = value::object();
-            cmds[U("type")] = value::string(U("array"));
-            cmds[U("items")] = type_of(U("string"));
-            props[U("commands")] = cmds;
-            s[U("properties")] = props;
+            cmds["type"] = "array";
+            cmds["items"] = type_of("string");
+            props["commands"] = cmds;
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_plugin_action_result() {
-            using web::json::value;
+        static Orcha::Json schema_plugin_action_result() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("success")] = type_of(U("boolean"));
-            props[U("message")] = type_of(U("string"));
-            s[U("properties")] = props;
+            props["success"] = type_of("boolean");
+            props["message"] = type_of("string");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_watch_status() {
-            using web::json::value;
+        static Orcha::Json schema_watch_status() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("watching")] = type_of(U("boolean"));
-            s[U("properties")] = props;
+            props["watching"] = type_of("boolean");
+            s["properties"] = props;
             return s;
         }
 
-        static web::json::value schema_watch_update() {
-            using web::json::value;
+        static Orcha::Json schema_watch_update() {
+            using value = Orcha::Json;
             value s = value::object();
-            s[U("type")] = value::string(U("object"));
+            s["type"] = "object";
             value props = value::object();
-            props[U("enabled")] = type_of(U("boolean"));
-            s[U("properties")] = props;
-            value req = value::array(1);
-            req[0] = value::string(U("enabled"));
-            s[U("required")] = req;
+            props["enabled"] = type_of("boolean");
+            s["properties"] = props;
+            value req = value::array();
+            req[0] = "enabled";
+            s["required"] = req;
             return s;
         }
 
         // ---- Path builders -------------------------------------------------
 
         // Helper: a JSON response { description, content: { application/json: { schema: $ref } } }
-        static web::json::value json_response(const utility::string_t& description,
-                                              const utility::string_t& schema_name) {
-            using web::json::value;
+        static Orcha::Json json_response(const std::string& description,
+                                              const std::string& schema_name) {
+            using value = Orcha::Json;
             value r = value::object();
-            r[U("description")] = value::string(description);
+            r["description"] = description;
             value content = value::object();
             value app_json = value::object();
-            app_json[U("schema")] = ref(schema_name);
-            content[U("application/json")] = app_json;
-            r[U("content")] = content;
+            app_json["schema"] = ref(schema_name);
+            content["application/json"] = app_json;
+            r["content"] = content;
             return r;
         }
 
-        static web::json::value text_response(const utility::string_t& description) {
-            using web::json::value;
+        static Orcha::Json text_response(const std::string& description) {
+            using value = Orcha::Json;
             value r = value::object();
-            r[U("description")] = value::string(description);
+            r["description"] = description;
             value content = value::object();
             value text_plain = value::object();
             value schema = value::object();
-            schema[U("type")] = value::string(U("string"));
-            text_plain[U("schema")] = schema;
-            content[U("text/plain")] = text_plain;
-            r[U("content")] = content;
+            schema["type"] = "string";
+            text_plain["schema"] = schema;
+            content["text/plain"] = text_plain;
+            r["content"] = content;
             return r;
         }
 
-        static web::json::value simple_response(const utility::string_t& description) {
-            using web::json::value;
+        static Orcha::Json simple_response(const std::string& description) {
+            using value = Orcha::Json;
             value r = value::object();
-            r[U("description")] = value::string(description);
+            r["description"] = description;
             return r;
         }
 
-        static web::json::value error_response(const utility::string_t& description) {
-            return json_response(description, U("Error"));
+        static Orcha::Json error_response(const std::string& description) {
+            return json_response(description, "Error");
         }
 
         // Adds a `security: [{ basicAuth: [] }]` requirement.
-        static web::json::value basic_auth_security() {
-            using web::json::value;
-            value sec = value::array(1);
+        static Orcha::Json basic_auth_security() {
+            using value = Orcha::Json;
+            value sec = value::array();
             value s = value::object();
-            s[U("basicAuth")] = value::array(0);
+            s["basicAuth"] = value::array();
             sec[0] = s;
             return sec;
         }
 
-        static web::json::value tag(const utility::string_t& name) {
-            using web::json::value;
-            value arr = value::array(1);
-            arr[0] = value::string(name);
+        static Orcha::Json tag(const std::string& name) {
+            using value = Orcha::Json;
+            value arr = value::array();
+            arr[0] = name;
             return arr;
         }
 
-        static web::json::value path_param(const utility::string_t& name,
-                                           const utility::string_t& description) {
-            using web::json::value;
+        static Orcha::Json path_param(const std::string& name,
+                                           const std::string& description) {
+            using value = Orcha::Json;
             value p = value::object();
-            p[U("name")] = value::string(name);
-            p[U("in")] = value::string(U("path"));
-            p[U("required")] = value::boolean(true);
-            p[U("description")] = value::string(description);
-            p[U("schema")] = type_of(U("string"));
+            p["name"] = name;
+            p["in"] = "path";
+            p["required"] = true;
+            p["description"] = description;
+            p["schema"] = type_of("string");
             return p;
         }
 
-        static web::json::value query_int(const utility::string_t& name,
-                                          const utility::string_t& description,
+        static Orcha::Json query_int(const std::string& name,
+                                          const std::string& description,
                                           int default_value,
                                           int min_value,
                                           int max_value) {
-            using web::json::value;
+            using value = Orcha::Json;
             value p = value::object();
-            p[U("name")] = value::string(name);
-            p[U("in")] = value::string(U("query"));
-            p[U("required")] = value::boolean(false);
-            p[U("description")] = value::string(description);
+            p["name"] = name;
+            p["in"] = "query";
+            p["required"] = false;
+            p["description"] = description;
             value schema = value::object();
-            schema[U("type")] = value::string(U("integer"));
-            schema[U("default")] = value::number(default_value);
-            schema[U("minimum")] = value::number(min_value);
-            schema[U("maximum")] = value::number(max_value);
-            p[U("schema")] = schema;
+            schema["type"] = "integer";
+            schema["default"] = default_value;
+            schema["minimum"] = min_value;
+            schema["maximum"] = max_value;
+            p["schema"] = schema;
             return p;
         }
 
-        static web::json::value json_body(const utility::string_t& schema_name,
+        static Orcha::Json json_body(const std::string& schema_name,
                                           bool required = true) {
-            using web::json::value;
+            using value = Orcha::Json;
             value body = value::object();
-            body[U("required")] = value::boolean(required);
+            body["required"] = required;
             value content = value::object();
             value app_json = value::object();
-            app_json[U("schema")] = ref(schema_name);
-            content[U("application/json")] = app_json;
-            body[U("content")] = content;
+            app_json["schema"] = ref(schema_name);
+            content["application/json"] = app_json;
+            body["content"] = content;
             return body;
         }
 
         // ---- All paths -----------------------------------------------------
 
-        static web::json::value build_paths(
+        static Orcha::Json build_paths(
             std::shared_ptr<Core::ICommandRegistry> /*registry*/) {
-            using web::json::value;
+            using value = Orcha::Json;
             value paths = value::object();
 
             // Public
-            paths[U("/")]            = path_health();
-            paths[U("/workflow")]    = path_workflow();
-            paths[U("/commands")]    = path_commands();
-            paths[U("/sample")]      = path_sample();
+            paths["/"]            = path_health();
+            paths["/workflow"]    = path_workflow();
+            paths["/commands"]    = path_commands();
+            paths["/sample"]      = path_sample();
 
             // Admin: jobs
-            paths[U("/api/jobs")]                  = path_jobs_collection();
-            paths[U("/api/jobs/{id}")]             = path_job_item();
-            paths[U("/api/jobs/{id}/run")]         = path_job_run();
-            paths[U("/api/jobs/{id}/runs")]        = path_job_runs();
+            paths["/api/jobs"]                  = path_jobs_collection();
+            paths["/api/jobs/{id}"]             = path_job_item();
+            paths["/api/jobs/{id}/run"]         = path_job_run();
+            paths["/api/jobs/{id}/runs"]        = path_job_runs();
 
             // Admin: runs
-            paths[U("/api/runs")]                  = path_runs_collection();
-            paths[U("/api/runs/{id}")]             = path_run_item();
+            paths["/api/runs"]                  = path_runs_collection();
+            paths["/api/runs/{id}"]             = path_run_item();
 
             // Admin: plugins
-            paths[U("/api/plugins")]               = path_plugins_collection();
-            paths[U("/api/plugins/{name}")]        = path_plugin_item();
-            paths[U("/api/plugins/{name}/reload")] = path_plugin_action(U("reload"), U("Reload"));
-            paths[U("/api/plugins/{name}/enable")] = path_plugin_action(U("enable"), U("Enable"));
-            paths[U("/api/plugins/{name}/disable")]= path_plugin_action(U("disable"), U("Disable"));
-            paths[U("/api/plugins/_watch")]        = path_plugins_watch();
+            paths["/api/plugins"]               = path_plugins_collection();
+            paths["/api/plugins/{name}"]        = path_plugin_item();
+            paths["/api/plugins/{name}/reload"] = path_plugin_action("reload", "Reload");
+            paths["/api/plugins/{name}/enable"] = path_plugin_action("enable", "Enable");
+            paths["/api/plugins/{name}/disable"]= path_plugin_action("disable", "Disable");
+            paths["/api/plugins/_watch"]        = path_plugins_watch();
 
             return paths;
         }
 
         // -- Public paths ----------------------------------------------------
 
-        static web::json::value path_health() {
-            using web::json::value;
+        static Orcha::Json path_health() {
+            using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op[U("summary")] = value::string(U("Health check"));
-            op[U("description")] = value::string(
-                U("Returns a plain-text banner with quick links."));
-            op[U("tags")] = tag(U("System"));
+            op["summary"] = "Health check";
+            op["description"] = 
+                "Returns a plain-text banner with quick links.";
+            op["tags"] = tag("System");
             value responses = value::object();
-            responses[U("200")] = text_response(U("Banner"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = text_response("Banner");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
-        static web::json::value path_workflow() {
-            using web::json::value;
+        static Orcha::Json path_workflow() {
+            using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op[U("summary")] = value::string(U("Execute a workflow"));
-            op[U("description")] = value::string(
-                U("Executes the supplied steps and returns per-step results."));
-            op[U("tags")] = tag(U("Workflow"));
-            op[U("requestBody")] = json_body(U("WorkflowRequest"));
+            op["summary"] = "Execute a workflow";
+            op["description"] = 
+                "Executes the supplied steps and returns per-step results.";
+            op["tags"] = tag("Workflow");
+            op["requestBody"] = json_body("WorkflowRequest");
             value responses = value::object();
-            responses[U("200")] = json_response(U("Workflow result"), U("WorkflowResult"));
-            responses[U("415")] = error_response(U("Unsupported media type"));
-            responses[U("500")] = error_response(U("Execution error"));
-            op[U("responses")] = responses;
-            path[U("post")] = op;
+            responses["200"] = json_response("Workflow result", "WorkflowResult");
+            responses["415"] = error_response("Unsupported media type");
+            responses["500"] = error_response("Execution error");
+            op["responses"] = responses;
+            path["post"] = op;
             return path;
         }
 
-        static web::json::value path_commands() {
-            using web::json::value;
+        static Orcha::Json path_commands() {
+            using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op[U("summary")] = value::string(U("List available commands"));
-            op[U("tags")] = tag(U("Commands"));
+            op["summary"] = "List available commands";
+            op["tags"] = tag("Commands");
             value responses = value::object();
-            responses[U("200")] = json_response(U("Registered commands"), U("CommandsList"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Registered commands", "CommandsList");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
-        static web::json::value path_sample() {
-            using web::json::value;
+        static Orcha::Json path_sample() {
+            using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op[U("summary")] = value::string(U("Get sample workflow"));
-            op[U("description")] = value::string(
-                U("Returns a minimal workflow payload usable with POST /workflow."));
-            op[U("tags")] = tag(U("Workflow"));
+            op["summary"] = "Get sample workflow";
+            op["description"] = 
+                "Returns a minimal workflow payload usable with POST /workflow.";
+            op["tags"] = tag("Workflow");
             value responses = value::object();
-            responses[U("200")] = json_response(U("Sample workflow"), U("WorkflowRequest"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Sample workflow", "WorkflowRequest");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
         // -- Jobs paths ------------------------------------------------------
 
-        static web::json::value path_jobs_collection() {
-            using web::json::value;
+        static Orcha::Json path_jobs_collection() {
+            using value = Orcha::Json;
             value path = value::object();
 
             // GET
             value get_op = value::object();
-            get_op[U("summary")] = value::string(U("List jobs"));
-            get_op[U("tags")] = tag(U("Jobs"));
-            get_op[U("security")] = basic_auth_security();
+            get_op["summary"] = "List jobs";
+            get_op["tags"] = tag("Jobs");
+            get_op["security"] = basic_auth_security();
             value get_resp = value::object();
-            get_resp[U("200")] = json_response(U("Jobs"), U("JobsList"));
-            get_resp[U("401")] = error_response(U("Unauthorized"));
-            get_op[U("responses")] = get_resp;
-            path[U("get")] = get_op;
+            get_resp["200"] = json_response("Jobs", "JobsList");
+            get_resp["401"] = error_response("Unauthorized");
+            get_op["responses"] = get_resp;
+            path["get"] = get_op;
 
             // POST
             value post_op = value::object();
-            post_op[U("summary")] = value::string(U("Create a job"));
-            post_op[U("tags")] = tag(U("Jobs"));
-            post_op[U("security")] = basic_auth_security();
-            post_op[U("requestBody")] = json_body(U("JobInput"));
+            post_op["summary"] = "Create a job";
+            post_op["tags"] = tag("Jobs");
+            post_op["security"] = basic_auth_security();
+            post_op["requestBody"] = json_body("JobInput");
             value post_resp = value::object();
-            post_resp[U("201")] = json_response(U("Created"), U("JobDefinition"));
-            post_resp[U("400")] = error_response(U("Validation error"));
-            post_resp[U("401")] = error_response(U("Unauthorized"));
-            post_resp[U("409")] = error_response(U("Job name already exists"));
-            post_op[U("responses")] = post_resp;
-            path[U("post")] = post_op;
+            post_resp["201"] = json_response("Created", "JobDefinition");
+            post_resp["400"] = error_response("Validation error");
+            post_resp["401"] = error_response("Unauthorized");
+            post_resp["409"] = error_response("Job name already exists");
+            post_op["responses"] = post_resp;
+            path["post"] = post_op;
 
             return path;
         }
 
-        static web::json::value path_job_item() {
-            using web::json::value;
+        static Orcha::Json path_job_item() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = path_param(U("id"), U("Job ID"));
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("id", "Job ID");
+            path["parameters"] = params;
 
             value get_op = value::object();
-            get_op[U("summary")] = value::string(U("Get a job"));
-            get_op[U("tags")] = tag(U("Jobs"));
-            get_op[U("security")] = basic_auth_security();
+            get_op["summary"] = "Get a job";
+            get_op["tags"] = tag("Jobs");
+            get_op["security"] = basic_auth_security();
             value get_resp = value::object();
-            get_resp[U("200")] = json_response(U("Job"), U("JobDefinition"));
-            get_resp[U("404")] = error_response(U("Not found"));
-            get_op[U("responses")] = get_resp;
-            path[U("get")] = get_op;
+            get_resp["200"] = json_response("Job", "JobDefinition");
+            get_resp["404"] = error_response("Not found");
+            get_op["responses"] = get_resp;
+            path["get"] = get_op;
 
             value put_op = value::object();
-            put_op[U("summary")] = value::string(U("Update a job"));
-            put_op[U("tags")] = tag(U("Jobs"));
-            put_op[U("security")] = basic_auth_security();
-            put_op[U("requestBody")] = json_body(U("JobInput"));
+            put_op["summary"] = "Update a job";
+            put_op["tags"] = tag("Jobs");
+            put_op["security"] = basic_auth_security();
+            put_op["requestBody"] = json_body("JobInput");
             value put_resp = value::object();
-            put_resp[U("200")] = json_response(U("Updated"), U("JobDefinition"));
-            put_resp[U("400")] = error_response(U("Validation error"));
-            put_resp[U("404")] = error_response(U("Not found"));
-            put_resp[U("409")] = error_response(U("Name conflict"));
-            put_op[U("responses")] = put_resp;
-            path[U("put")] = put_op;
+            put_resp["200"] = json_response("Updated", "JobDefinition");
+            put_resp["400"] = error_response("Validation error");
+            put_resp["404"] = error_response("Not found");
+            put_resp["409"] = error_response("Name conflict");
+            put_op["responses"] = put_resp;
+            path["put"] = put_op;
 
             value del_op = value::object();
-            del_op[U("summary")] = value::string(U("Delete a job"));
-            del_op[U("tags")] = tag(U("Jobs"));
-            del_op[U("security")] = basic_auth_security();
+            del_op["summary"] = "Delete a job";
+            del_op["tags"] = tag("Jobs");
+            del_op["security"] = basic_auth_security();
             value del_resp = value::object();
-            del_resp[U("200")] = simple_response(U("Deleted"));
-            del_resp[U("404")] = error_response(U("Not found"));
-            del_op[U("responses")] = del_resp;
-            path[U("delete")] = del_op;
+            del_resp["200"] = simple_response("Deleted");
+            del_resp["404"] = error_response("Not found");
+            del_op["responses"] = del_resp;
+            path["delete"] = del_op;
 
             return path;
         }
 
-        static web::json::value path_job_run() {
-            using web::json::value;
+        static Orcha::Json path_job_run() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = path_param(U("id"), U("Job ID"));
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("id", "Job ID");
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(U("Run a job now"));
-            op[U("description")] = value::string(
-                U("Synchronously executes the job and returns the resulting run record."));
-            op[U("tags")] = tag(U("Jobs"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "Run a job now";
+            op["description"] = 
+                "Synchronously executes the job and returns the resulting run record.";
+            op["tags"] = tag("Jobs");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Run record"), U("RunRecord"));
-            responses[U("404")] = error_response(U("Not found"));
-            op[U("responses")] = responses;
-            path[U("post")] = op;
+            responses["200"] = json_response("Run record", "RunRecord");
+            responses["404"] = error_response("Not found");
+            op["responses"] = responses;
+            path["post"] = op;
             return path;
         }
 
-        static web::json::value path_job_runs() {
-            using web::json::value;
+        static Orcha::Json path_job_runs() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(2);
-            params[0] = path_param(U("id"), U("Job ID"));
-            params[1] = query_int(U("limit"), U("Max rows to return"), 50, 1, 1000);
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("id", "Job ID");
+            params[1] = query_int("limit", "Max rows to return", 50, 1, 1000);
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(U("Run history for a job"));
-            op[U("tags")] = tag(U("Runs"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "Run history for a job";
+            op["tags"] = tag("Runs");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Runs"), U("RunsList"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Runs", "RunsList");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
         // -- Runs paths ------------------------------------------------------
 
-        static web::json::value path_runs_collection() {
-            using web::json::value;
+        static Orcha::Json path_runs_collection() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = query_int(U("limit"), U("Max rows to return"), 50, 1, 1000);
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = query_int("limit", "Max rows to return", 50, 1, 1000);
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(U("Recent runs (all jobs + ad-hoc)"));
-            op[U("tags")] = tag(U("Runs"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "Recent runs (all jobs + ad-hoc)";
+            op["tags"] = tag("Runs");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Runs"), U("RunsList"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Runs", "RunsList");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
-        static web::json::value path_run_item() {
-            using web::json::value;
+        static Orcha::Json path_run_item() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = path_param(U("id"), U("Run ID"));
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("id", "Run ID");
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(U("Get a run"));
-            op[U("tags")] = tag(U("Runs"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "Get a run";
+            op["tags"] = tag("Runs");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Run"), U("RunRecord"));
-            responses[U("404")] = error_response(U("Not found"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Run", "RunRecord");
+            responses["404"] = error_response("Not found");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
         // -- Plugin paths ----------------------------------------------------
 
-        static web::json::value path_plugins_collection() {
-            using web::json::value;
+        static Orcha::Json path_plugins_collection() {
+            using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op[U("summary")] = value::string(U("List loaded and available plugins"));
-            op[U("tags")] = tag(U("Plugins"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "List loaded and available plugins";
+            op["tags"] = tag("Plugins");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Plugins"), U("PluginsList"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Plugins", "PluginsList");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
-        static web::json::value path_plugin_item() {
-            using web::json::value;
+        static Orcha::Json path_plugin_item() {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = path_param(U("name"), U("Plugin name"));
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("name", "Plugin name");
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(U("Get plugin metadata"));
-            op[U("tags")] = tag(U("Plugins"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = "Get plugin metadata";
+            op["tags"] = tag("Plugins");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Plugin"), U("PluginInfo"));
-            responses[U("404")] = error_response(U("Plugin not loaded"));
-            op[U("responses")] = responses;
-            path[U("get")] = op;
+            responses["200"] = json_response("Plugin", "PluginInfo");
+            responses["404"] = error_response("Plugin not loaded");
+            op["responses"] = responses;
+            path["get"] = op;
             return path;
         }
 
-        static web::json::value path_plugin_action(const utility::string_t& action,
-                                                   const utility::string_t& verb) {
-            using web::json::value;
+        static Orcha::Json path_plugin_action(const std::string& action,
+                                                   const std::string& verb) {
+            using value = Orcha::Json;
             value path = value::object();
-            value params = value::array(1);
-            params[0] = path_param(U("name"), U("Plugin name"));
-            path[U("parameters")] = params;
+            value params = value::array();
+            params[0] = path_param("name", "Plugin name");
+            path["parameters"] = params;
 
             value op = value::object();
-            op[U("summary")] = value::string(verb + U(" a plugin"));
-            op[U("description")] = value::string(
-                action == U("enable")
-                    ? U("Loads an available plugin from disk and clears any persisted disable.")
-                : action == U("disable")
-                    ? U("Unloads a plugin and persists it as disabled so it stays off across restarts.")
-                    : U("Reloads a loaded plugin (does not touch the denylist)."));
-            op[U("tags")] = tag(U("Plugins"));
-            op[U("security")] = basic_auth_security();
+            op["summary"] = verb + " a plugin";
+            op["description"] = 
+                action == "enable"
+                    ? "Loads an available plugin from disk and clears any persisted disable."
+                : action == "disable"
+                    ? "Unloads a plugin and persists it as disabled so it stays off across restarts."
+                    : "Reloads a loaded plugin (does not touch the denylist).";
+            op["tags"] = tag("Plugins");
+            op["security"] = basic_auth_security();
             value responses = value::object();
-            responses[U("200")] = json_response(U("Action succeeded"), U("PluginActionResult"));
-            responses[U("404")] = error_response(U("Plugin not found"));
-            responses[U("409")] = json_response(U("Action failed"), U("PluginActionResult"));
-            op[U("responses")] = responses;
-            path[U("post")] = op;
+            responses["200"] = json_response("Action succeeded", "PluginActionResult");
+            responses["404"] = error_response("Plugin not found");
+            responses["409"] = json_response("Action failed", "PluginActionResult");
+            op["responses"] = responses;
+            path["post"] = op;
             return path;
         }
 
-        static web::json::value path_plugins_watch() {
-            using web::json::value;
+        static Orcha::Json path_plugins_watch() {
+            using value = Orcha::Json;
             value path = value::object();
 
             value get_op = value::object();
-            get_op[U("summary")] = value::string(U("Directory watcher status"));
-            get_op[U("tags")] = tag(U("Plugins"));
-            get_op[U("security")] = basic_auth_security();
+            get_op["summary"] = "Directory watcher status";
+            get_op["tags"] = tag("Plugins");
+            get_op["security"] = basic_auth_security();
             value get_resp = value::object();
-            get_resp[U("200")] = json_response(U("Watch status"), U("WatchStatus"));
-            get_op[U("responses")] = get_resp;
-            path[U("get")] = get_op;
+            get_resp["200"] = json_response("Watch status", "WatchStatus");
+            get_op["responses"] = get_resp;
+            path["get"] = get_op;
 
             value put_op = value::object();
-            put_op[U("summary")] = value::string(U("Enable or disable the watcher"));
-            put_op[U("tags")] = tag(U("Plugins"));
-            put_op[U("security")] = basic_auth_security();
-            put_op[U("requestBody")] = json_body(U("WatchUpdate"));
+            put_op["summary"] = "Enable or disable the watcher";
+            put_op["tags"] = tag("Plugins");
+            put_op["security"] = basic_auth_security();
+            put_op["requestBody"] = json_body("WatchUpdate");
             value put_resp = value::object();
-            put_resp[U("200")] = json_response(U("Watch status"), U("WatchStatus"));
-            put_resp[U("400")] = error_response(U("Invalid body"));
-            put_op[U("responses")] = put_resp;
-            path[U("put")] = put_op;
+            put_resp["200"] = json_response("Watch status", "WatchStatus");
+            put_resp["400"] = error_response("Invalid body");
+            put_op["responses"] = put_resp;
+            path["put"] = put_op;
 
             return path;
         }

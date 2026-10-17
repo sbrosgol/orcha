@@ -12,8 +12,23 @@
       "version>=": "1.88.0"
     },
     {
-      "name": "cpprestsdk",
-      "version>=": "2.10.19#3"
+      "name": "boost-asio",
+      "version>=": "1.88.0"
+    },
+    {
+      "name": "boost-beast",
+      "version>=": "1.88.0"
+    },
+    {
+      "name": "boost-url",
+      "version>=": "1.88.0"
+    },
+    {
+      "name": "nlohmann-json",
+      "version>=": "3.11.3"
+    },
+    {
+      "name": "openssl"
     },
     {
       "name": "yaml-cpp",

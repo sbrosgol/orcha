@@ -11,10 +11,9 @@
 #include "routes/DashboardRoute.hpp"
 #include "routes/JobRoute.hpp"
 #include "AuthMiddleware.hpp"
+#include "HttpJson.hpp"
 
-using namespace web;
-using namespace web::http;
-using namespace web::http::experimental::listener;
+#include <iostream>
 
 namespace Orcha::Agent {
 
@@ -112,33 +111,28 @@ namespace Orcha::Agent {
     }
 
     void CommandAgent::start(unsigned short port) {
-        const auto uri_string = utility::conversions::to_string_t(
-            "http://0.0.0.0:" + std::to_string(port) + "/");
-        const uri_builder uri(uri_string);
-
-        listener_ = std::make_unique<http_listener>(uri.to_uri());
-        listener_->support([this](const http_request& request) {
-            handle_request(request);
-        });
+        server_ = std::make_unique<HttpServer>(
+            [this](const HttpRequest& request) { return handle_request(request); },
+            logger_);
 
         if (logger_) {
             logger_->info("CommandAgent starting on port " + std::to_string(port));
         }
 
         try {
-            listener_->open().wait();
+            server_->start(port);
             std::cout << "[Orcha] CommandAgent listening on port " << port << '\n';
 
             if (logger_) {
                 logger_->info("CommandAgent listening on port " + std::to_string(port));
             }
         } catch (const std::exception& ex) {
-            std::cerr << "[Orcha] Failed to open HTTP listener on port "
+            std::cerr << "[Orcha] Failed to start HTTP server on port "
                       << port << ": " << ex.what() << '\n';
 
             if (logger_) {
                 logger_->error(
-                    "Failed to open HTTP listener on port " +
+                    "Failed to start HTTP server on port " +
                     std::to_string(port) + ": " + ex.what());
             }
             throw;
@@ -146,55 +140,28 @@ namespace Orcha::Agent {
     }
 
     void CommandAgent::stop() const {
-        if (listener_) {
-            listener_->close().wait();
+        if (server_) {
+            server_->stop();
         }
     }
 
-    void CommandAgent::handle_request(http_request request) {
-        // Defend against requests like `GET //admin HTTP/1.1` — cpprest parses
-        // the leading `//` as the URI authority introducer (RFC 3986), so the
-        // first path segment ends up in `request_uri().host()` and the real
-        // path is truncated. Detect this and rewrite the request URI with the
-        // leading slashes collapsed before anything else inspects the path.
-        {
-            const auto raw = utility::conversions::to_utf8string(
-                request.request_uri().to_string());
-            if (raw.size() >= 2 && raw[0] == '/' && raw[1] == '/') {
-                size_t i = 0;
-                while (i < raw.size() && raw[i] == '/') ++i;
-                const std::string fixed = "/" + raw.substr(i);
-                request.set_request_uri(
-                    web::uri(utility::conversions::to_string_t(fixed)));
-            }
-        }
-
-        auto path = request.request_uri().path();
-        auto method = request.method();
-
+    HttpResponse CommandAgent::handle_request(const HttpRequest& request) {
+        // Note: the `GET //admin` leading-slash defense now lives in the server's
+        // target parsing (HttpServer.cpp), so request.path is already normalized.
         if (logger_) {
-            logger_->info(
-                "Received " + utility::conversions::to_utf8string(method) +
-                " request at path: " + utility::conversions::to_utf8string(path));
+            logger_->info("Received " + request.method +
+                          " request at path: " + request.path);
         }
 
-        // Try to route the request
-        if (router_.route(request)) {
-            return;
+        if (auto resp = router_.route(request)) {
+            return *resp;
         }
 
-        // No handler found - return 404
-        pplx::create_task([request]() {
-            http_response resp(status_codes::NotFound);
-            resp.headers().add(header_names::content_type, U("application/json"));
-
-            json::value error;
-            error[U("error")] = json::value::string(U("Endpoint not found"));
-            error[U("path")] = json::value::string(request.request_uri().path());
-            resp.set_body(error);
-
-            request.reply(resp);
-        });
+        // No handler found - return 404.
+        Orcha::Json error = Orcha::Json::object();
+        error["error"] = "Endpoint not found";
+        error["path"] = request.path;
+        return reply_json(status::NotFound, error);
     }
 
 } // namespace Orcha::Agent

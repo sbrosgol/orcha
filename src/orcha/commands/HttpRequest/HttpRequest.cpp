@@ -3,10 +3,8 @@
 //
 
 #include "../../core/ICommand.hpp"
+#include "../HttpClient.hpp"
 #include "core/Version.hpp"
-
-#include <cpprest/http_client.h>
-#include <cpprest/json.h>
 
 #include <chrono>
 #include <stdexcept>
@@ -16,67 +14,52 @@ class HttpRequest final : public Orcha::Core::ICommand {
 public:
     [[nodiscard]] std::string name() const override { return "http_request"; }
 
-    web::json::value execute(const web::json::value& params) override {
-        using namespace web;
-        using namespace utility;
-
+    Orcha::Json execute(const Orcha::Json& params) override {
         try {
-            json::value result;
-            if (!params.has_field(U("url"))) {
+            if (!params.contains("url")) {
                 throw std::runtime_error("'url' parameter is required");
             }
-            const auto url = params.at(U("url")).as_string();
 
-            const std::string method_str = params.has_field(U("method"))
-                ? conversions::to_utf8string(params.at(U("method")).as_string())
-                : "GET";
-            const auto method = resolve_method(method_str);
+            Orcha::Http::Request req;
+            req.url = params.at("url").get<std::string>();
+            req.method = normalize_method(params.value("method", std::string("GET")));
 
-            http::http_request request(method);
-
-            if (params.has_field(U("headers")) && params.at(U("headers")).is_object()) {
-                for (const auto& kv : params.at(U("headers")).as_object()) {
-                    if (kv.second.is_string()) {
-                        request.headers().add(kv.first, kv.second.as_string());
+            if (params.contains("headers") && params.at("headers").is_object()) {
+                for (const auto& [key, value] : params.at("headers").items()) {
+                    if (value.is_string()) {
+                        req.headers.emplace_back(key, value.get<std::string>());
                     }
                 }
             }
 
-            if (params.has_field(U("body"))) {
-                const auto& body = params.at(U("body"));
-                if (body.is_string()) {
-                    request.set_body(body.as_string());
-                } else {
-                    // Accept structured JSON bodies too.
-                    request.set_body(body);
-                }
+            if (params.contains("body")) {
+                const auto& body = params.at("body");
+                // Accept either a raw string body or a structured JSON body.
+                req.body = body.is_string() ? body.get<std::string>() : body.dump();
             }
 
-            http::client::http_client_config config;
-            if (params.has_field(U("timeout_ms"))) {
-                config.set_timeout(std::chrono::milliseconds(
-                    params.at(U("timeout_ms")).as_integer()));
+            if (params.contains("timeout_ms")) {
+                req.timeout = std::chrono::milliseconds(
+                    params.at("timeout_ms").get<long long>());
             }
 
-            http::client::http_client client(url, config);
-            const auto response  = client.request(request).get();
-            const auto status    = response.status_code();
-            const auto body_str  = response.extract_string().get();
+            const Orcha::Http::Response response = Orcha::Http::perform(req);
 
-            result[U("success")]     = json::value::boolean(status >= 200 && status < 300);
-            result[U("status_code")] = json::value::number(static_cast<int>(status));
-            result[U("body")]        = json::value::string(body_str);
+            Orcha::Json result = Orcha::Json::object();
+            result["success"]     = response.status >= 200 && response.status < 300;
+            result["status_code"] = response.status;
+            result["body"]        = response.body;
 
-            json::value headers_out = json::value::object();
-            for (const auto& h : response.headers()) {
-                headers_out[h.first] = json::value::string(h.second);
+            Orcha::Json headers_out = Orcha::Json::object();
+            for (const auto& [k, v] : response.headers) {
+                headers_out[k] = v;
             }
-            result[U("headers")] = headers_out;
+            result["headers"] = headers_out;
             return result;
         } catch (const std::exception& ex) {
-            json::value err;
-            err[U("success")] = json::value(false);
-            err[U("error")]   = json::value::string(conversions::to_string_t(ex.what()));
+            Orcha::Json err = Orcha::Json::object();
+            err["success"] = false;
+            err["error"]   = ex.what();
             return err;
         }
     }
@@ -133,35 +116,34 @@ public:
     // The default validate() would reject non-string bodies; override to permit
     // either string or structured JSON, while still checking required/url types.
     [[nodiscard]] Orcha::Core::Result<void, Orcha::Core::ValidationError> validate(
-        const web::json::value& params) const override {
+        const Orcha::Json& params) const override {
         using R = Orcha::Core::Result<void, Orcha::Core::ValidationError>;
-        if (!params.has_field(U("url"))) {
+        if (!params.contains("url")) {
             return R::Err({"url", "Required parameter missing"});
         }
-        if (!params.at(U("url")).is_string()) {
+        if (!params.at("url").is_string()) {
             return R::Err({"url", "Expected string type"});
         }
-        if (params.has_field(U("method")) && !params.at(U("method")).is_string()) {
+        if (params.contains("method") && !params.at("method").is_string()) {
             return R::Err({"method", "Expected string type"});
         }
-        if (params.has_field(U("headers")) && !params.at(U("headers")).is_object()) {
+        if (params.contains("headers") && !params.at("headers").is_object()) {
             return R::Err({"headers", "Expected object type"});
         }
-        if (params.has_field(U("timeout_ms")) && !params.at(U("timeout_ms")).is_integer()) {
+        if (params.contains("timeout_ms") && !params.at("timeout_ms").is_number_integer()) {
             return R::Err({"timeout_ms", "Expected integer type"});
         }
         return R::Ok();
     }
 
 private:
-    static web::http::method resolve_method(const std::string& m) {
-        using namespace web::http;
-        if (m == "GET")    return methods::GET;
-        if (m == "POST")   return methods::POST;
-        if (m == "PUT")    return methods::PUT;
-        if (m == "PATCH")  return methods::PATCH;
-        if (m == "DELETE") return methods::DEL;
-        if (m == "HEAD")   return methods::HEAD;
+    // Normalize/validate the method name; Boost.Beast maps the verb itself.
+    static std::string normalize_method(std::string m) {
+        for (auto& c : m) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (m == "GET" || m == "POST" || m == "PUT" || m == "PATCH" ||
+            m == "DELETE" || m == "HEAD") {
+            return m;
+        }
         throw std::runtime_error("Unsupported HTTP method: " + m);
     }
 };

@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <cpprest/json.h>
+#include "../core/Json.hpp"
 #include <chrono>
 #include <iomanip>
 #include <optional>
@@ -59,54 +59,48 @@ namespace Orcha::Jobs {
         std::string id;
         std::string name;
         std::string description;
-        web::json::value definition = web::json::value::object(); ///< { "steps": [...] }
+        Json definition = Json::object(); ///< { "steps": [...] }
         std::optional<std::string> schedule_cron;                 ///< Cron expr (Phase 3).
         bool enabled = true;
         std::string created_at;
         std::string updated_at;
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value o = web::json::value::object();
-            o[U("id")] = web::json::value::string(utility::conversions::to_string_t(id));
-            o[U("name")] = web::json::value::string(utility::conversions::to_string_t(name));
-            o[U("description")] = web::json::value::string(
-                utility::conversions::to_string_t(description));
-            o[U("definition")] = definition;
-            o[U("enabled")] = web::json::value::boolean(enabled);
+        [[nodiscard]] Json to_json() const {
+            Json o = Json::object();
+            o["id"] = id;
+            o["name"] = name;
+            o["description"] = description;
+            o["definition"] = definition;
+            o["enabled"] = enabled;
             if (schedule_cron) {
-                o[U("schedule_cron")] = web::json::value::string(
-                    utility::conversions::to_string_t(*schedule_cron));
+                o["schedule_cron"] = *schedule_cron;
             } else {
-                o[U("schedule_cron")] = web::json::value::null();
+                o["schedule_cron"] = nullptr;
             }
-            o[U("created_at")] = web::json::value::string(
-                utility::conversions::to_string_t(created_at));
-            o[U("updated_at")] = web::json::value::string(
-                utility::conversions::to_string_t(updated_at));
+            o["created_at"] = created_at;
+            o["updated_at"] = updated_at;
             return o;
         }
 
         /**
          * @brief Build from request JSON (id/timestamps are assigned by the store).
          */
-        static JobDefinition from_json(const web::json::value& j) {
+        static JobDefinition from_json(const Json& j) {
             JobDefinition d;
-            if (j.has_field(U("name"))) {
-                d.name = utility::conversions::to_utf8string(j.at(U("name")).as_string());
+            if (j.contains("name")) {
+                d.name = j.at("name").get<std::string>();
             }
-            if (j.has_field(U("description")) && j.at(U("description")).is_string()) {
-                d.description = utility::conversions::to_utf8string(
-                    j.at(U("description")).as_string());
+            if (j.contains("description") && j.at("description").is_string()) {
+                d.description = j.at("description").get<std::string>();
             }
-            if (j.has_field(U("definition"))) {
-                d.definition = j.at(U("definition"));
+            if (j.contains("definition")) {
+                d.definition = j.at("definition");
             }
-            if (j.has_field(U("enabled")) && j.at(U("enabled")).is_boolean()) {
-                d.enabled = j.at(U("enabled")).as_bool();
+            if (j.contains("enabled") && j.at("enabled").is_boolean()) {
+                d.enabled = j.at("enabled").get<bool>();
             }
-            if (j.has_field(U("schedule_cron")) && j.at(U("schedule_cron")).is_string()) {
-                d.schedule_cron = utility::conversions::to_utf8string(
-                    j.at(U("schedule_cron")).as_string());
+            if (j.contains("schedule_cron") && j.at("schedule_cron").is_string()) {
+                d.schedule_cron = j.at("schedule_cron").get<std::string>();
             }
             return d;
         }
@@ -123,24 +117,19 @@ namespace Orcha::Jobs {
         std::string status;                     ///< "success" | "failed"
         std::string started_at;
         std::optional<std::string> finished_at;
-        web::json::value result = web::json::value::null();
+        Json result = Json(nullptr);
         std::string error;
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value o = web::json::value::object();
-            o[U("id")] = web::json::value::string(utility::conversions::to_string_t(id));
-            o[U("job_id")] = job_id
-                ? web::json::value::string(utility::conversions::to_string_t(*job_id))
-                : web::json::value::null();
-            o[U("trigger")] = web::json::value::string(utility::conversions::to_string_t(trigger));
-            o[U("status")] = web::json::value::string(utility::conversions::to_string_t(status));
-            o[U("started_at")] = web::json::value::string(
-                utility::conversions::to_string_t(started_at));
-            o[U("finished_at")] = finished_at
-                ? web::json::value::string(utility::conversions::to_string_t(*finished_at))
-                : web::json::value::null();
-            o[U("result")] = result;
-            o[U("error")] = web::json::value::string(utility::conversions::to_string_t(error));
+        [[nodiscard]] Json to_json() const {
+            Json o = Json::object();
+            o["id"] = id;
+            o["job_id"] = job_id ? Json(*job_id) : Json(nullptr);
+            o["trigger"] = trigger;
+            o["status"] = status;
+            o["started_at"] = started_at;
+            o["finished_at"] = finished_at ? Json(*finished_at) : Json(nullptr);
+            o["result"] = result;
+            o["error"] = error;
             return o;
         }
     };

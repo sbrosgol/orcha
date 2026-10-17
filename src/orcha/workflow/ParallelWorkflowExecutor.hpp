@@ -7,6 +7,7 @@
 #include "IWorkflowEngine.hpp"
 #include "WorkflowEngine.hpp"
 #include "RollbackOrchestrator.hpp"
+#include "../core/Json.hpp"
 #include "../core/ICommandRegistry.hpp"
 #include "../core/CircuitBreaker.hpp"
 #include "../utils/ILogger.hpp"
@@ -170,7 +171,7 @@ namespace Orcha::Workflow {
 
     private:
         [[nodiscard]] static std::unordered_set<int> find_referenced_steps(
-            const web::json::value& params,
+            const Orcha::Json& params,
             const std::regex& pattern) {
 
             std::unordered_set<int> refs;
@@ -179,12 +180,12 @@ namespace Orcha::Workflow {
         }
 
         static void find_refs_recursive(
-            const web::json::value& value,
+            const Orcha::Json& value,
             const std::regex& pattern,
             std::unordered_set<int>& refs) {
 
             if (value.is_string()) {
-                std::string str = value.as_string();
+                std::string str = value.get<std::string>();
                 std::sregex_iterator it(str.begin(), str.end(), pattern);
                 std::sregex_iterator end;
 
@@ -194,11 +195,11 @@ namespace Orcha::Workflow {
                     ++it;
                 }
             } else if (value.is_object()) {
-                for (const auto& field : value.as_object()) {
-                    find_refs_recursive(field.second, pattern, refs);
+                for (const auto& [key, val] : value.items()) {
+                    find_refs_recursive(val, pattern, refs);
                 }
             } else if (value.is_array()) {
-                for (const auto& elem : value.as_array()) {
+                for (const auto& elem : value) {
                     find_refs_recursive(elem, pattern, refs);
                 }
             }
@@ -206,27 +207,27 @@ namespace Orcha::Workflow {
 
         // Named-reference variant: collects the captured step names.
         [[nodiscard]] static std::unordered_set<std::string> find_referenced_names(
-            const web::json::value& params, const std::regex& pattern) {
+            const Orcha::Json& params, const std::regex& pattern) {
             std::unordered_set<std::string> names;
             find_names_recursive(params, pattern, names);
             return names;
         }
 
         static void find_names_recursive(
-            const web::json::value& value, const std::regex& pattern,
+            const Orcha::Json& value, const std::regex& pattern,
             std::unordered_set<std::string>& names) {
             if (value.is_string()) {
-                std::string str = value.as_string();
+                std::string str = value.get<std::string>();
                 for (std::sregex_iterator it(str.begin(), str.end(), pattern), end;
                      it != end; ++it) {
                     names.insert((*it)[1].str());
                 }
             } else if (value.is_object()) {
-                for (const auto& field : value.as_object()) {
-                    find_names_recursive(field.second, pattern, names);
+                for (const auto& [key, val] : value.items()) {
+                    find_names_recursive(val, pattern, names);
                 }
             } else if (value.is_array()) {
-                for (const auto& elem : value.as_array()) {
+                for (const auto& elem : value) {
                     find_names_recursive(elem, pattern, names);
                 }
             }
@@ -396,17 +397,6 @@ namespace Orcha::Workflow {
             }
 
             return result;
-        }
-
-        /**
-         * @brief Execute workflow asynchronously.
-         */
-        [[nodiscard]] pplx::task<WorkflowResult> execute_async(
-            const WorkflowDefinition& definition) {
-
-            return pplx::create_task([this, definition]() {
-                return execute(definition);
-            });
         }
 
         /**

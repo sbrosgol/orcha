@@ -16,6 +16,7 @@
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpJson.hpp"
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
 
@@ -37,41 +38,39 @@ namespace Orcha::Agent::Routes {
                    path == "/api/runs" || path_starts_with(path, "/api/runs/");
         }
 
-        void handle(web::http::http_request request) override {
-            const auto method = utility::conversions::to_utf8string(request.method());
-            const auto path = utility::conversions::to_utf8string(request.request_uri().path());
-            const auto seg = split_path(path); // {"api","jobs",...} or {"api","runs",...}
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            const std::string& method = request.method;
+            const auto seg = split_path(request.path); // {"api","jobs",...} or {"api","runs",...}
 
             const std::string& root = seg[1];
 
             if (root == "runs") {
                 if (seg.size() == 2 && method == "GET") return list_runs(request, std::nullopt);
-                if (seg.size() == 3 && method == "GET") return get_run(request, seg[2]);
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
+                if (seg.size() == 3 && method == "GET") return get_run(seg[2]);
+                return reply_error(status::MethodNotAllowed,
                                    "Unsupported /api/runs request");
             }
 
             // root == "jobs"
             if (seg.size() == 2) {
-                if (method == "GET") return list_jobs(request);
+                if (method == "GET") return list_jobs();
                 if (method == "POST") return create_job(request);
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
-                                   "Use GET or POST /api/jobs");
+                return reply_error(status::MethodNotAllowed, "Use GET or POST /api/jobs");
             }
             if (seg.size() == 3) {
-                if (method == "GET") return get_job(request, seg[2]);
+                if (method == "GET") return get_job(seg[2]);
                 if (method == "PUT") return update_job(request, seg[2]);
-                if (method == "DELETE") return delete_job(request, seg[2]);
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
+                if (method == "DELETE") return delete_job(seg[2]);
+                return reply_error(status::MethodNotAllowed,
                                    "Use GET, PUT or DELETE /api/jobs/{id}");
             }
             if (seg.size() == 4 && seg[3] == "run" && method == "POST") {
-                return run_job(request, seg[2]);
+                return run_job(seg[2]);
             }
             if (seg.size() == 4 && seg[3] == "runs" && method == "GET") {
                 return list_runs(request, seg[2]);
             }
-            reply_error(request, web::http::status_codes::NotFound, "Unknown jobs endpoint");
+            return reply_error(status::NotFound, "Unknown jobs endpoint");
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {
@@ -91,141 +90,110 @@ namespace Orcha::Agent::Routes {
     private:
         // ---- Jobs ----
 
-        void list_jobs(web::http::http_request request) {
-            auto service = service_;
-            pplx::create_task([=]() {
-                auto jobs = service->store()->list_jobs();
-                web::json::value arr = web::json::value::array(jobs.size());
-                for (size_t i = 0; i < jobs.size(); ++i) arr[i] = jobs[i].to_json();
-                web::json::value out = web::json::value::object();
-                out[U("jobs")] = arr;
-                out[U("count")] = web::json::value::number(static_cast<int>(jobs.size()));
-                reply_json(request, web::http::status_codes::OK, out);
-            });
+        HttpResponse list_jobs() {
+            auto jobs = service_->store()->list_jobs();
+            Orcha::Json arr = Orcha::Json::array();
+            for (const auto& job : jobs) arr.push_back(job.to_json());
+            Orcha::Json out = Orcha::Json::object();
+            out["jobs"] = arr;
+            out["count"] = static_cast<int>(jobs.size());
+            return reply_json(status::OK, out);
         }
 
-        void get_job(web::http::http_request request, std::string id) {
-            auto service = service_;
-            pplx::create_task([=]() {
-                if (auto job = service->store()->get_job(id))
-                    reply_json(request, web::http::status_codes::OK, job->to_json());
-                else
-                    reply_error(request, web::http::status_codes::NotFound, "No such job: " + id);
-            });
+        HttpResponse get_job(const std::string& id) {
+            if (auto job = service_->store()->get_job(id))
+                return reply_json(status::OK, job->to_json());
+            return reply_error(status::NotFound, "No such job: " + id);
         }
 
-        void create_job(web::http::http_request request) {
-            auto service = service_;
-            auto logger = logger_;
-            request.extract_json().then([=](pplx::task<web::json::value> bt) {
-                Jobs::JobDefinition job;
-                try {
-                    job = Jobs::JobDefinition::from_json(bt.get());
-                } catch (const std::exception& ex) {
-                    return reply_error(request, web::http::status_codes::BadRequest,
-                                       std::string("Invalid JSON body: ") + ex.what());
-                }
-                if (auto err = validate(job)) {
-                    return reply_error(request, web::http::status_codes::BadRequest, *err);
-                }
-                if (service->store()->get_job_by_name(job.name)) {
-                    return reply_error(request, web::http::status_codes::Conflict,
-                                       "A job named '" + job.name + "' already exists");
-                }
-                if (!service->store()->create_job(job)) {
-                    return reply_error(request, web::http::status_codes::InternalError,
-                                       "Failed to create job");
-                }
-                if (logger) logger->info("Created job '" + job.name + "'");
-                reply_json(request, web::http::status_codes::Created, job.to_json());
-            });
+        HttpResponse create_job(const HttpRequest& request) {
+            Jobs::JobDefinition job;
+            try {
+                job = Jobs::JobDefinition::from_json(Orcha::Json::parse(request.body));
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest,
+                                   std::string("Invalid JSON body: ") + ex.what());
+            }
+            if (auto err = validate(job)) {
+                return reply_error(status::BadRequest, *err);
+            }
+            if (service_->store()->get_job_by_name(job.name)) {
+                return reply_error(status::Conflict,
+                                   "A job named '" + job.name + "' already exists");
+            }
+            if (!service_->store()->create_job(job)) {
+                return reply_error(status::InternalError, "Failed to create job");
+            }
+            if (logger_) logger_->info("Created job '" + job.name + "'");
+            return reply_json(status::Created, job.to_json());
         }
 
-        void update_job(web::http::http_request request, std::string id) {
-            auto service = service_;
-            request.extract_json().then([=](pplx::task<web::json::value> bt) {
-                auto existing = service->store()->get_job(id);
-                if (!existing) {
-                    return reply_error(request, web::http::status_codes::NotFound,
-                                       "No such job: " + id);
-                }
-                Jobs::JobDefinition job;
-                try {
-                    job = Jobs::JobDefinition::from_json(bt.get());
-                } catch (const std::exception& ex) {
-                    return reply_error(request, web::http::status_codes::BadRequest,
-                                       std::string("Invalid JSON body: ") + ex.what());
-                }
-                if (auto err = validate(job)) {
-                    return reply_error(request, web::http::status_codes::BadRequest, *err);
-                }
-                // Name uniqueness (allow keeping the same name on this job).
-                if (auto byName = service->store()->get_job_by_name(job.name);
-                    byName && byName->id != id) {
-                    return reply_error(request, web::http::status_codes::Conflict,
-                                       "A job named '" + job.name + "' already exists");
-                }
-                job.id = id;
-                job.created_at = existing->created_at;
-                if (!service->store()->update_job(job)) {
-                    return reply_error(request, web::http::status_codes::InternalError,
-                                       "Failed to update job");
-                }
-                auto updated = service->store()->get_job(id);
-                reply_json(request, web::http::status_codes::OK,
-                           updated ? updated->to_json() : job.to_json());
-            });
+        HttpResponse update_job(const HttpRequest& request, const std::string& id) {
+            auto existing = service_->store()->get_job(id);
+            if (!existing) {
+                return reply_error(status::NotFound, "No such job: " + id);
+            }
+            Jobs::JobDefinition job;
+            try {
+                job = Jobs::JobDefinition::from_json(Orcha::Json::parse(request.body));
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest,
+                                   std::string("Invalid JSON body: ") + ex.what());
+            }
+            if (auto err = validate(job)) {
+                return reply_error(status::BadRequest, *err);
+            }
+            // Name uniqueness (allow keeping the same name on this job).
+            if (auto byName = service_->store()->get_job_by_name(job.name);
+                byName && byName->id != id) {
+                return reply_error(status::Conflict,
+                                   "A job named '" + job.name + "' already exists");
+            }
+            job.id = id;
+            job.created_at = existing->created_at;
+            if (!service_->store()->update_job(job)) {
+                return reply_error(status::InternalError, "Failed to update job");
+            }
+            auto updated = service_->store()->get_job(id);
+            return reply_json(status::OK,
+                              updated ? updated->to_json() : job.to_json());
         }
 
-        void delete_job(web::http::http_request request, std::string id) {
-            auto service = service_;
-            pplx::create_task([=]() {
-                if (service->store()->delete_job(id)) {
-                    web::json::value out = web::json::value::object();
-                    out[U("success")] = web::json::value::boolean(true);
-                    reply_json(request, web::http::status_codes::OK, out);
-                } else {
-                    reply_error(request, web::http::status_codes::NotFound, "No such job: " + id);
-                }
-            });
+        HttpResponse delete_job(const std::string& id) {
+            if (service_->store()->delete_job(id)) {
+                Orcha::Json out = Orcha::Json::object();
+                out["success"] = true;
+                return reply_json(status::OK, out);
+            }
+            return reply_error(status::NotFound, "No such job: " + id);
         }
 
-        void run_job(web::http::http_request request, std::string id) {
-            auto service = service_;
-            pplx::create_task([=]() {
-                auto run = service->run_job(id, "manual");
-                if (!run) {
-                    return reply_error(request, web::http::status_codes::NotFound,
-                                       "No such job: " + id);
-                }
-                reply_json(request, web::http::status_codes::OK, run->to_json());
-            });
+        HttpResponse run_job(const std::string& id) {
+            auto run = service_->run_job(id, "manual");
+            if (!run) {
+                return reply_error(status::NotFound, "No such job: " + id);
+            }
+            return reply_json(status::OK, run->to_json());
         }
 
         // ---- Runs ----
 
-        void list_runs(web::http::http_request request, std::optional<std::string> job_id) {
-            auto service = service_;
+        HttpResponse list_runs(const HttpRequest& request,
+                               std::optional<std::string> job_id) {
             const size_t limit = parse_limit(request, 50);
-            pplx::create_task([=]() {
-                auto runs = service->store()->list_runs(job_id, limit);
-                web::json::value arr = web::json::value::array(runs.size());
-                for (size_t i = 0; i < runs.size(); ++i) arr[i] = runs[i].to_json();
-                web::json::value out = web::json::value::object();
-                out[U("runs")] = arr;
-                out[U("count")] = web::json::value::number(static_cast<int>(runs.size()));
-                reply_json(request, web::http::status_codes::OK, out);
-            });
+            auto runs = service_->store()->list_runs(job_id, limit);
+            Orcha::Json arr = Orcha::Json::array();
+            for (const auto& run : runs) arr.push_back(run.to_json());
+            Orcha::Json out = Orcha::Json::object();
+            out["runs"] = arr;
+            out["count"] = static_cast<int>(runs.size());
+            return reply_json(status::OK, out);
         }
 
-        void get_run(web::http::http_request request, std::string id) {
-            auto service = service_;
-            pplx::create_task([=]() {
-                if (auto run = service->store()->get_run(id))
-                    reply_json(request, web::http::status_codes::OK, run->to_json());
-                else
-                    reply_error(request, web::http::status_codes::NotFound, "No such run: " + id);
-            });
+        HttpResponse get_run(const std::string& id) {
+            if (auto run = service_->store()->get_run(id))
+                return reply_json(status::OK, run->to_json());
+            return reply_error(status::NotFound, "No such run: " + id);
         }
 
         // ---- Helpers ----
@@ -233,41 +201,21 @@ namespace Orcha::Agent::Routes {
         /// Returns an error message if the job is invalid, else nullopt.
         static std::optional<std::string> validate(const Jobs::JobDefinition& job) {
             if (job.name.empty()) return "Job 'name' is required";
-            if (!job.definition.has_field(U("steps")) ||
-                !job.definition.at(U("steps")).is_array()) {
+            if (!job.definition.contains("steps") ||
+                !job.definition.at("steps").is_array()) {
                 return "Job 'definition' must contain a 'steps' array";
             }
             return std::nullopt;
         }
 
-        static size_t parse_limit(const web::http::http_request& request, size_t def) {
-            auto q = web::uri::split_query(request.request_uri().query());
-            auto it = q.find(U("limit"));
-            if (it != q.end()) {
+        static size_t parse_limit(const HttpRequest& request, size_t def) {
+            if (auto v = request.query_param("limit")) {
                 try {
-                    long v = std::stol(utility::conversions::to_utf8string(it->second));
-                    if (v > 0 && v <= 1000) return static_cast<size_t>(v);
+                    long n = std::stol(*v);
+                    if (n > 0 && n <= 1000) return static_cast<size_t>(n);
                 } catch (...) { /* ignore */ }
             }
             return def;
-        }
-
-        static void reply_json(web::http::http_request request,
-                               web::http::status_code code,
-                               const web::json::value& body) {
-            web::http::http_response resp(code);
-            resp.headers().add(web::http::header_names::content_type, U("application/json"));
-            resp.set_body(body);
-            request.reply(resp);
-        }
-
-        static void reply_error(web::http::http_request request,
-                                web::http::status_code code,
-                                const std::string& message) {
-            web::json::value body = web::json::value::object();
-            body[U("error")] = web::json::value::string(
-                utility::conversions::to_string_t(message));
-            reply_json(request, code, body);
         }
 
         std::shared_ptr<Jobs::JobService> service_;

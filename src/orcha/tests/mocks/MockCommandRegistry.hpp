@@ -93,7 +93,7 @@ namespace Orcha::Tests::Mocks {
     class MockCommand : public Core::ICommand {
     public:
         explicit MockCommand(std::string name,
-                           std::function<web::json::value(const web::json::value&)> execute_fn = nullptr)
+                           std::function<Orcha::Json(const Orcha::Json&)> execute_fn = nullptr)
             : name_(std::move(name))
             , execute_fn_(std::move(execute_fn)) {}
 
@@ -101,7 +101,7 @@ namespace Orcha::Tests::Mocks {
             return name_;
         }
 
-        web::json::value execute(const web::json::value& params) override {
+        Orcha::Json execute(const Orcha::Json& params) override {
             ++execute_count_;
             last_params_ = params;
 
@@ -110,7 +110,7 @@ namespace Orcha::Tests::Mocks {
             }
 
             // Default: return empty object
-            return web::json::value::object();
+            return Orcha::Json::object();
         }
 
         [[nodiscard]] Core::CommandMetadata metadata() const override {
@@ -123,18 +123,18 @@ namespace Orcha::Tests::Mocks {
         // ========== Mock Verification ==========
 
         int execute_count() const { return execute_count_; }
-        const web::json::value& last_params() const { return last_params_; }
+        const Orcha::Json& last_params() const { return last_params_; }
 
         void reset_stats() {
             execute_count_ = 0;
-            last_params_ = web::json::value();
+            last_params_ = Orcha::Json();
         }
 
     private:
         std::string name_;
-        std::function<web::json::value(const web::json::value&)> execute_fn_;
+        std::function<Orcha::Json(const Orcha::Json&)> execute_fn_;
         int execute_count_ = 0;
-        web::json::value last_params_;
+        Orcha::Json last_params_;
     };
 
     /**
@@ -151,7 +151,7 @@ namespace Orcha::Tests::Mocks {
             return name_;
         }
 
-        web::json::value execute(const web::json::value&) override {
+        Orcha::Json execute(const Orcha::Json&) override {
             throw std::runtime_error(error_message_);
         }
 

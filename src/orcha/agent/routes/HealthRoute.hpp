@@ -25,24 +25,17 @@ namespace Orcha::Agent::Routes {
             return method == "GET" && (path == "/" || path.empty());
         }
 
-        void handle(web::http::http_request request) override {
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            (void)request;
             if (logger_) {
                 logger_->debug("Health check endpoint hit");
             }
-
-            pplx::create_task([request]() {
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    "text/plain; charset=utf-8");
-                resp.set_body(
-                    "Orcha Command Agent is running.\n"
-                    "POST your workflow JSON (application/json) to /workflow\n"
-                    "OpenAPI UI: /swagger\n"
-                    "Spec: /swagger.json\n"
-                    "Commands: /commands\n");
-                request.reply(resp);
-            });
+            return HttpResponse::text(status::OK,
+                "Orcha Command Agent is running.\n"
+                "POST your workflow JSON (application/json) to /workflow\n"
+                "OpenAPI UI: /swagger\n"
+                "Spec: /swagger.json\n"
+                "Commands: /commands\n");
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {

@@ -6,10 +6,10 @@
 #pragma once
 
 #include "IRouteHandler.hpp"
+#include "HttpJson.hpp"
 #include "../config/AdminConfig.hpp"
 #include "../utils/ILogger.hpp"
 
-#include <cpprest/http_listener.h>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -114,16 +114,10 @@ namespace Orcha::Agent {
          * dashboard renders its own custom login view instead and attaches the
          * Authorization header to its fetch() calls.
          */
-        inline void send_unauthorized(web::http::http_request& request) {
-            web::http::http_response resp(web::http::status_codes::Unauthorized);
-            resp.headers().add(
-                web::http::header_names::content_type, U("application/json"));
-
-            web::json::value body = web::json::value::object();
-            body[U("error")] = web::json::value::string(U("Unauthorized"));
-            resp.set_body(body);
-
-            request.reply(resp);
+        inline HttpResponse unauthorized_response() {
+            Orcha::Json body = Orcha::Json::object();
+            body["error"] = "Unauthorized";
+            return reply_json(status::Unauthorized, body);
         }
 
     } // namespace detail
@@ -146,27 +140,24 @@ namespace Orcha::Agent {
 
         return [cfg = std::move(cfg),
                 prefixes = std::move(protected_prefixes),
-                logger = std::move(logger)](web::http::http_request& request) -> bool {
+                logger = std::move(logger)](
+                   const HttpRequest& request) -> std::optional<HttpResponse> {
 
-            const auto path =
-                utility::conversions::to_utf8string(request.request_uri().path());
+            const std::string& path = request.path;
 
             const bool guarded = std::any_of(
                 prefixes.begin(), prefixes.end(),
                 [&](const std::string& p) { return path_starts_with(path, p); });
 
             if (!guarded || !cfg.auth_required) {
-                return false; // not our concern -> continue dispatch
+                return std::nullopt; // not our concern -> continue dispatch
             }
 
-            const auto auth_header = request.headers().find(U("Authorization"));
-            if (auth_header != request.headers().end()) {
-                const auto value =
-                    utility::conversions::to_utf8string(auth_header->second);
-                if (auto creds = detail::parse_basic_auth(value)) {
+            if (auto value = request.header("Authorization")) {
+                if (auto creds = detail::parse_basic_auth(*value)) {
                     if (detail::constant_time_equals(creds->user, cfg.username) &&
                         detail::constant_time_equals(creds->pass, cfg.password)) {
-                        return false; // authenticated -> continue dispatch
+                        return std::nullopt; // authenticated -> continue dispatch
                     }
                 }
             }
@@ -174,8 +165,7 @@ namespace Orcha::Agent {
             if (logger) {
                 logger->warn("Rejected unauthenticated admin request to " + path);
             }
-            detail::send_unauthorized(request);
-            return true; // handled (rejected)
+            return detail::unauthorized_response(); // handled (rejected)
         };
     }
 

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "IWorkflowEngine.hpp"
+#include "../core/Json.hpp"
 #include "../core/ICommandRegistry.hpp"
 #include "../utils/ILogger.hpp"
 #include <vector>
@@ -57,26 +58,26 @@ namespace Orcha::Workflow {
         std::vector<RollbackStepResult> step_results;
         std::string trigger_reason;     // Why rollback was triggered
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value obj;
-            obj[U("initiated")] = web::json::value::boolean(initiated);
-            obj[U("all_successful")] = web::json::value::boolean(all_successful);
-            obj[U("steps_rolled_back")] = web::json::value::number(steps_rolled_back);
-            obj[U("steps_failed")] = web::json::value::number(steps_failed);
-            obj[U("trigger_reason")] = web::json::value::string(trigger_reason);
+        [[nodiscard]] Orcha::Json to_json() const {
+            Orcha::Json obj;
+            obj["initiated"] = initiated;
+            obj["all_successful"] = all_successful;
+            obj["steps_rolled_back"] = steps_rolled_back;
+            obj["steps_failed"] = steps_failed;
+            obj["trigger_reason"] = trigger_reason;
 
-            web::json::value steps = web::json::value::array(step_results.size());
+            Orcha::Json steps = Orcha::Json::array();
             for (size_t i = 0; i < step_results.size(); ++i) {
-                web::json::value step;
-                step[U("command")] = web::json::value::string(step_results[i].command_name);
-                step[U("step_index")] = web::json::value::number(step_results[i].step_index);
-                step[U("success")] = web::json::value::boolean(step_results[i].success);
+                Orcha::Json step;
+                step["command"] = step_results[i].command_name;
+                step["step_index"] = step_results[i].step_index;
+                step["success"] = step_results[i].success;
                 if (!step_results[i].error_message.empty()) {
-                    step[U("error")] = web::json::value::string(step_results[i].error_message);
+                    step["error"] = step_results[i].error_message;
                 }
-                steps[i] = step;
+                steps.push_back(step);
             }
-            obj[U("steps")] = steps;
+            obj["steps"] = steps;
 
             return obj;
         }
@@ -89,8 +90,8 @@ namespace Orcha::Workflow {
     struct CompletedStep {
         int step_index;
         std::string command_name;
-        web::json::value original_params;
-        web::json::value output;
+        Orcha::Json original_params;
+        Orcha::Json output;
         bool supports_rollback;
     };
 
@@ -119,8 +120,8 @@ namespace Orcha::Workflow {
          */
         void record_completed_step(int step_index,
                                    const std::string& command_name,
-                                   const web::json::value& params,
-                                   const web::json::value& output) {
+                                   const Orcha::Json& params,
+                                   const Orcha::Json& output) {
             auto cmd = registry_->get_command(command_name);
             bool supports_rollback = cmd && cmd->metadata().supports_rollback;
 

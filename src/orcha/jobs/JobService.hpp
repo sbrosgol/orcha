@@ -64,7 +64,7 @@ namespace Orcha::Jobs {
             } catch (const std::exception& ex) {
                 run.status = "failed";
                 run.error = ex.what();
-                run.result = web::json::value::null();
+                run.result = Orcha::Json(nullptr);
                 if (logger_) logger_->error("Job '" + job->name + "' threw: " + ex.what());
             }
 
@@ -79,7 +79,7 @@ namespace Orcha::Jobs {
         RunRecord record_run(const std::optional<std::string>& job_id,
                              const std::string& trigger,
                              bool success,
-                             const web::json::value& result,
+                             const Orcha::Json& result,
                              const std::string& error,
                              const std::string& started_at = "") {
             RunRecord run;

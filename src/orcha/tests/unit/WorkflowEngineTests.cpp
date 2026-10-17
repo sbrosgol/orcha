@@ -37,19 +37,19 @@ namespace Orcha::Tests::Unit {
         fixture.SetUp();
 
         // Add echo command mock
-        fixture.add_mock_command("echo", [](const web::json::value& params) {
-            web::json::value result;
-            result[U("echoed")] = params.has_field(U("message"))
-                ? params.at(U("message"))
-                : web::json::value::string(U(""));
+        fixture.add_mock_command("echo", [](const Orcha::Json& params) {
+            Orcha::Json result;
+            result["echoed"] = params.contains("message")
+                ? params.at("message")
+                : Orcha::Json("");
             return result;
         });
 
         // Create workflow
         auto def = fixture.create_workflow({
             {"echo", [] {
-                web::json::value p;
-                p[U("message")] = web::json::value::string(U("Hello"));
+                Orcha::Json p;
+                p["message"] = "Hello";
                 return p;
             }()}
         });
@@ -72,7 +72,7 @@ namespace Orcha::Tests::Unit {
         fixture.SetUp();
 
         auto def = fixture.create_workflow({
-            {"nonexistent", web::json::value::object()}
+            {"nonexistent", Orcha::Json::object()}
         });
 
         auto result = fixture.engine_->execute(def);
@@ -96,8 +96,8 @@ namespace Orcha::Tests::Unit {
         fixture.add_mock_command("echo");
 
         auto def = fixture.create_workflow({
-            {"fail", web::json::value::object()},
-            {"echo", web::json::value::object()}
+            {"fail", Orcha::Json::object()},
+            {"echo", Orcha::Json::object()}
         });
 
         auto result = fixture.engine_->execute(def);
@@ -117,17 +117,17 @@ namespace Orcha::Tests::Unit {
         fixture.SetUp();
 
         int call_count = 0;
-        fixture.add_mock_command("step", [&call_count](const web::json::value&) {
+        fixture.add_mock_command("step", [&call_count](const Orcha::Json&) {
             ++call_count;
-            web::json::value r;
-            r[U("count")] = web::json::value::number(call_count);
+            Orcha::Json r;
+            r["count"] = call_count;
             return r;
         });
 
         auto def = fixture.create_workflow({
-            {"step", web::json::value::object()},
-            {"step", web::json::value::object()},
-            {"step", web::json::value::object()}
+            {"step", Orcha::Json::object()},
+            {"step", Orcha::Json::object()},
+            {"step", Orcha::Json::object()}
         });
 
         auto result = fixture.engine_->execute(def);

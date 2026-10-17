@@ -4,6 +4,7 @@
 //
 
 #include "PluginManager.hpp"
+#include "Json.hpp"
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
@@ -75,7 +76,7 @@ namespace Orcha::Core {
             std::stringstream buffer;
             buffer << file.rdbuf();
 
-            auto json = web::json::value::parse(buffer.str());
+            auto json = Orcha::Json::parse(buffer.str());
             auto meta = PluginMetadata::from_json(json, manifest_path.parent_path());
             meta.manifest_path = manifest_path;
 

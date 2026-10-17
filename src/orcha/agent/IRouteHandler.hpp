@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include <cpprest/http_listener.h>
+#include "Http.hpp"
+#include <optional>
 #include <string>
 #include <vector>
 #include <memory>
@@ -78,12 +79,11 @@ namespace Orcha::Agent {
             const std::string& path) const = 0;
 
         /**
-         * @brief Handle an HTTP request.
-         * @param request The HTTP request to handle.
-         *
-         * The handler is responsible for calling request.reply().
+         * @brief Handle an HTTP request and produce a response.
+         * @param request The parsed HTTP request.
+         * @return The response to send.
          */
-        virtual void handle(web::http::http_request request) = 0;
+        [[nodiscard]] virtual HttpResponse handle(const HttpRequest& request) = 0;
 
         /**
          * @brief Get information about routes handled.
@@ -100,10 +100,11 @@ namespace Orcha::Agent {
     public:
         /**
          * @brief A middleware inspects a request before handler dispatch.
-         * @return True if the middleware handled (e.g. rejected) the request,
-         *         short-circuiting further processing. False to continue.
+         * @return A response to short-circuit processing (e.g. a 401), or
+         *         std::nullopt to continue to the next middleware/handler.
          */
-        using Middleware = std::function<bool(web::http::http_request&)>;
+        using Middleware =
+            std::function<std::optional<HttpResponse>(const HttpRequest&)>;
 
         /**
          * @brief Register a route handler.
@@ -123,26 +124,23 @@ namespace Orcha::Agent {
         /**
          * @brief Route a request to the appropriate handler.
          * @param request The HTTP request.
-         * @return True if a handler (or middleware) processed the request.
+         * @return The handler/middleware response, or std::nullopt if no handler
+         *         matched (the caller should then produce a 404).
          */
-        bool route(web::http::http_request request) {
+        [[nodiscard]] std::optional<HttpResponse> route(const HttpRequest& request) {
             // Run middleware first; any one may short-circuit the request.
             for (const auto& mw : middleware_) {
-                if (mw(request)) {
-                    return true;
+                if (auto resp = mw(request)) {
+                    return resp;
                 }
             }
-
-            auto method = utility::conversions::to_utf8string(request.method());
-            auto path = utility::conversions::to_utf8string(request.request_uri().path());
 
             for (const auto& handler : handlers_) {
-                if (handler->can_handle(method, path)) {
-                    handler->handle(std::move(request));
-                    return true;
+                if (handler->can_handle(request.method, request.path)) {
+                    return handler->handle(request);
                 }
             }
-            return false;
+            return std::nullopt;
         }
 
         /**

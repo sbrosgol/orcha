@@ -1,8 +1,7 @@
 #include "../../core/ICommand.hpp"
-#include <cpprest/json.h>
-#include <cpprest/filestream.h>
-#include <cpprest/http_client.h>
+#include "../HttpClient.hpp"
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -35,7 +34,7 @@ std::string make_download_url(const std::string& version, const std::string& rel
 #else
 #  if defined(__APPLE__)
 #    if defined(__arm64__)
-    const std::string triple = "aarch64-apple-darwin";
+    constexpr std::string triple = "aarch64-apple-darwin";
 #    else
     const std::string triple = "x86_64-apple-darwin";
 #    endif
@@ -72,20 +71,17 @@ const char* extract_dir_name() {
 
 class PythonDownloader final : public Orcha::Core::ICommand {
 public:
-    web::json::value execute(const web::json::value& params) override {
-        using namespace web;
-        json::value result;
+    Orcha::Json execute(const Orcha::Json& params) override {
+        Orcha::Json result = Orcha::Json::object();
 
         std::string version = kDefaultPythonVersion;
         std::string release_tag = kDefaultPbsReleaseTag;
         if (params.is_object()) {
-            if (params.has_field(U("version"))) {
-                version = utility::conversions::to_utf8string(
-                    params.at(U("version")).as_string());
+            if (params.contains("version") && params.at("version").is_string()) {
+                version = params.at("version").get<std::string>();
             }
-            if (params.has_field(U("release_tag"))) {
-                release_tag = utility::conversions::to_utf8string(
-                    params.at(U("release_tag")).as_string());
+            if (params.contains("release_tag") && params.at("release_tag").is_string()) {
+                release_tag = params.at("release_tag").get<std::string>();
             }
         }
 
@@ -97,18 +93,20 @@ public:
             std::cout << "Downloading embedded Python " << version
                       << " from: " << url << std::endl;
 
-            http::client::http_client client(utility::conversions::to_string_t(url));
-            const auto response = client.request(http::methods::GET).get();
-            if (response.status_code() / 100 != 2) {
+            const Orcha::Http::Response response = Orcha::Http::get(url);
+            if (response.status / 100 != 2) {
                 throw std::runtime_error(
-                    "HTTP " + std::to_string(response.status_code()) + " for " + url);
+                    "HTTP " + std::to_string(response.status) + " for " + url);
             }
 
-            const concurrency::streams::ostream out =
-                concurrency::streams::fstream::open_ostream(
-                    utility::conversions::to_string_t(archive)).get();
-            (void)response.body().read_to_end(out.streambuf()).wait();
-            (void)out.close().wait();
+            {
+                std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+                if (!out) {
+                    throw std::runtime_error("Cannot open output file: " + archive);
+                }
+                out.write(response.body.data(),
+                          static_cast<std::streamsize>(response.body.size()));
+            }
             std::cout << "Download complete: " << archive << std::endl;
 
             // Fresh extraction directory each run so we don't mix versions.
@@ -155,16 +153,13 @@ public:
 #endif
 
             std::cout << "Embedded Python is ready at: " << py_path << std::endl;
-            result[U("path")] = json::value::string(
-                utility::conversions::to_string_t(py_path));
-            result[U("version")] = json::value::string(
-                utility::conversions::to_string_t(version));
-            result[U("success")] = json::value(true);
+            result["path"] = py_path;
+            result["version"] = version;
+            result["success"] = true;
         } catch (const std::exception& ex) {
             std::cout << "Error: " << ex.what() << std::endl;
-            result[U("success")] = json::value(false);
-            result[U("error")] = json::value::string(
-                utility::conversions::to_string_t(ex.what()));
+            result["success"] = false;
+            result["error"] = ex.what();
         }
 
         return result;

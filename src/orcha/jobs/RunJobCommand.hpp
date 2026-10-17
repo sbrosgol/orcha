@@ -47,16 +47,15 @@ namespace Orcha::Jobs {
             return meta;
         }
 
-        web::json::value execute(const web::json::value& params) override {
+        Orcha::Json execute(const Orcha::Json& params) override {
             auto svc = service_.lock();
             if (!svc) {
                 throw std::runtime_error("run_job: job service is unavailable");
             }
-            if (!params.has_field(U("job")) || !params.at(U("job")).is_string()) {
+            if (!params.contains("job") || !params.at("job").is_string()) {
                 throw std::runtime_error("run_job: required string parameter 'job' is missing");
             }
-            const std::string ref =
-                utility::conversions::to_utf8string(params.at(U("job")).as_string());
+            const std::string ref = params.at("job").get<std::string>();
 
             // Resolve by id first, then by name.
             auto job = svc->store()->get_job(ref);
@@ -93,20 +92,17 @@ namespace Orcha::Jobs {
                     "run_job: sub-job '" + job->name + "' failed: " + run->error);
             }
 
-            web::json::value out = web::json::value::object();
-            out[U("job")] = web::json::value::string(
-                utility::conversions::to_string_t(job->name));
-            out[U("run_id")] = web::json::value::string(
-                utility::conversions::to_string_t(run->id));
-            out[U("status")] = web::json::value::string(
-                utility::conversions::to_string_t(run->status));
-            out[U("result")] = run->result;
+            Orcha::Json out = Orcha::Json::object();
+            out["job"] = job->name;
+            out["run_id"] = run->id;
+            out["status"] = run->status;
+            out["result"] = run->result;
             // Convenience: surface the sub-job's last step output as "last".
-            if (run->result.is_array() && run->result.as_array().size() > 0) {
-                const auto& arr = run->result.as_array();
+            if (run->result.is_array() && run->result.size() > 0) {
+                const auto& arr = run->result;
                 const auto& last_step = arr.at(arr.size() - 1);
-                if (last_step.has_field(U("output"))) {
-                    out[U("last")] = last_step.at(U("output"));
+                if (last_step.contains("output")) {
+                    out["last"] = last_step.at("output");
                 }
             }
             return out;

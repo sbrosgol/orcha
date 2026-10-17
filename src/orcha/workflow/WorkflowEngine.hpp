@@ -7,6 +7,7 @@
 
 #include "IWorkflowEngine.hpp"
 #include "../core/ICommandRegistry.hpp"
+#include "../core/Json.hpp"
 #include "../utils/ILogger.hpp"
 #include <mutex>
 #include <future>
@@ -21,7 +22,7 @@ namespace Orcha::Workflow {
     public:
         [[nodiscard]] WorkflowStepResult execute_step(
             const std::shared_ptr<Core::ICommand>& cmd,
-            const web::json::value& params) override;
+            const Orcha::Json& params) override;
     };
 
     /**
@@ -39,8 +40,8 @@ namespace Orcha::Workflow {
          * @param previous_results Results from previous steps.
          * @return JSON with placeholders resolved.
          */
-        [[nodiscard]] static web::json::value resolve(
-            const web::json::value& input,
+        [[nodiscard]] static Orcha::Json resolve(
+            const Orcha::Json& input,
             const std::vector<WorkflowStepResult>& previous_results);
 
     private:
@@ -48,12 +49,12 @@ namespace Orcha::Workflow {
             const std::string& input,
             const std::vector<WorkflowStepResult>& previous_results);
 
-        [[nodiscard]] static web::json::value navigate_output(
-            const web::json::value& output,
+        [[nodiscard]] static Orcha::Json navigate_output(
+            const Orcha::Json& output,
             const std::string& field_path);
 
         [[nodiscard]] static std::string json_value_to_string(
-            const web::json::value& value);
+            const Orcha::Json& value);
     };
 
     /**
@@ -79,11 +80,8 @@ namespace Orcha::Workflow {
         // IWorkflowEngine interface
         [[nodiscard]] WorkflowResult execute(const WorkflowDefinition& definition) override;
 
-        [[nodiscard]] pplx::task<WorkflowResult> execute_async(
-            const WorkflowDefinition& definition) override;
-
-        [[nodiscard]] pplx::task<web::json::value> execute_json(
-            const web::json::value& workflow_json) override;
+        [[nodiscard]] Orcha::Json execute_json(
+            const Orcha::Json& workflow_json) override;
 
         /**
          * @brief Execute workflow from YAML file path.

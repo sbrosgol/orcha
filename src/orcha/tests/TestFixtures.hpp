@@ -10,6 +10,7 @@
 #include "mocks/MockLogger.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 #include "../core/ServiceLocator.hpp"
+#include "../core/Json.hpp"
 #include <memory>
 #include <stdexcept>
 
@@ -40,7 +41,7 @@ namespace Orcha::Tests {
          * @brief Add a mock command that returns specific output.
          */
         void add_mock_command(const std::string& name,
-                             std::function<web::json::value(const web::json::value&)> fn = nullptr) {
+                             std::function<Orcha::Json(const Orcha::Json&)> fn = nullptr) {
             registry_->add_command(std::make_shared<Mocks::MockCommand>(name, fn));
         }
 
@@ -56,7 +57,7 @@ namespace Orcha::Tests {
          * @brief Create a simple workflow definition.
          */
         static Workflow::WorkflowDefinition create_workflow(
-            std::initializer_list<std::pair<std::string, web::json::value>> steps) {
+            std::initializer_list<std::pair<std::string, Orcha::Json>> steps) {
 
             Workflow::WorkflowDefinition def;
             for (const auto& [cmd_name, params] : steps) {
@@ -110,8 +111,8 @@ namespace Orcha::Tests {
         /**
          * @brief Execute a command and return result.
          */
-        web::json::value execute_command(Core::ICommand& cmd,
-                                        const web::json::value& params) {
+        Orcha::Json execute_command(Core::ICommand& cmd,
+                                        const Orcha::Json& params) {
             return cmd.execute(params);
         }
 
@@ -120,17 +121,17 @@ namespace Orcha::Tests {
          */
         Core::Result<void, Core::ValidationError> validate_params(
             Core::ICommand& cmd,
-            const web::json::value& params) {
+            const Orcha::Json& params) {
             return cmd.validate(params);
         }
 
         /**
          * @brief Create JSON params from key-value pairs.
          */
-        static web::json::value make_params(
-            std::initializer_list<std::pair<std::string, web::json::value>> pairs) {
+        static Orcha::Json make_params(
+            std::initializer_list<std::pair<std::string, Orcha::Json>> pairs) {
 
-            web::json::value params = web::json::value::object();
+            Orcha::Json params = Orcha::Json::object();
             for (const auto& [key, value] : pairs) {
                 params[key] = value;
             }

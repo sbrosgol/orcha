@@ -15,6 +15,7 @@
 #include "PluginAdminTests.hpp"
 #include "JobStoreTests.hpp"
 #include "CronTests.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -50,6 +51,58 @@ logging:
         ORCHA_ASSERT(result.issues.empty() && "Should have no issues");
 
         std::cout << "[PASS] test_config_validation_valid\n";
+    }
+
+    // Regression: navigate_to_key used YAML::Node::operator=, which rebinds the
+    // shared node and clobbered root_ on the first lookup, so every later key
+    // in the file silently fell back to its default.
+    inline void test_config_repeated_lookups_keep_values() {
+        Config::YamlConfiguration yaml;
+        yaml.load_from_string(R"(
+server:
+  port: 8091
+admin:
+  password: "secret"
+jobs:
+  db_path: "./x.db"
+)");
+        Config::IMutableConfiguration& config = yaml;
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "first lookup");
+        ORCHA_ASSERT(config.get_string("admin.password", "") == "secret" && "second lookup");
+        ORCHA_ASSERT(config.get_string("jobs.db_path", "") == "./x.db" && "third lookup");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "repeat lookup");
+
+        config.set_string("admin.username", "root");
+        ORCHA_ASSERT(config.get_string("admin.username", "") == "root" && "set then get");
+        ORCHA_ASSERT(config.get_string("admin.password", "") == "secret" && "set keeps siblings");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 8091 && "set keeps other sections");
+
+        std::cout << "[PASS] test_config_repeated_lookups_keep_values\n";
+    }
+
+    // merge_environment maps every '_' to '.', so ORCHA_JOBS_DB_PATH used to be
+    // stored as "jobs.db.path" and never matched the "jobs.db_path" lookup.
+    inline void test_config_env_override_underscore_leaf_key() {
+        // Unique prefix so the test can't pick up the real ORCHA_* environment.
+        ::setenv("ORCHATEST_JOBS_DB_PATH", "/app/data/orcha-jobs.db", 1);
+        ::setenv("ORCHATEST_SERVER_PORT", "9000", 1);
+
+        Config::YamlConfiguration yaml;
+        yaml.load_from_string(R"(
+jobs:
+  db_path: "./orcha-jobs.db"
+server:
+  port: 8070
+)");
+        yaml.merge_environment("ORCHATEST_");
+        Config::IConfiguration& config = yaml;
+
+        ORCHA_ASSERT(config.get_string("jobs.db_path", "") == "/app/data/orcha-jobs.db" && "underscore leaf key overridden");
+        ORCHA_ASSERT(config.get_int("server.port", 0) == 9000 && "plain key still overridden");
+
+        ::unsetenv("ORCHATEST_JOBS_DB_PATH");
+        ::unsetenv("ORCHATEST_SERVER_PORT");
+        std::cout << "[PASS] test_config_env_override_underscore_leaf_key\n";
     }
 
     inline void test_config_validation_invalid_port() {
@@ -188,10 +241,10 @@ server:
 
         Workflow::RollbackOrchestrator orchestrator(registry, logger);
 
-        web::json::value params;
-        params[U("key")] = web::json::value::string("value");
-        web::json::value output;
-        output[U("result")] = web::json::value::string("success");
+        Orcha::Json params;
+        params["key"] = "value";
+        Orcha::Json output;
+        output["result"] = "success";
 
         orchestrator.record_completed_step(0, "cmd1", params, output);
         orchestrator.record_completed_step(1, "cmd2", params, output);
@@ -225,11 +278,11 @@ server:
 
         Workflow::WorkflowStep step1;
         step1.command_name = "echo";
-        step1.params = web::json::value::object();
+        step1.params = Orcha::Json::object();
 
         Workflow::WorkflowStep step2;
         step2.command_name = "echo";
-        step2.params = web::json::value::object();
+        step2.params = Orcha::Json::object();
 
         def.steps = {step1, step2};
 
@@ -246,12 +299,12 @@ server:
 
         Workflow::WorkflowStep step1;
         step1.command_name = "echo";
-        step1.params = web::json::value::object();
+        step1.params = Orcha::Json::object();
 
         Workflow::WorkflowStep step2;
         step2.command_name = "echo";
-        web::json::value params2;
-        params2[U("message")] = web::json::value::string("Result: {{step1.output.value}}");
+        Orcha::Json params2;
+        params2["message"] = "Result: {{step1.output.value}}";
         step2.params = params2;
 
         def.steps = {step1, step2};
@@ -272,18 +325,18 @@ server:
 
         Workflow::WorkflowStep step0, step1, step2, step3;
         step0.command_name = "echo";
-        step0.params = web::json::value::object();
+        step0.params = Orcha::Json::object();
 
         step1.command_name = "echo";
-        step1.params = web::json::value::object();
+        step1.params = Orcha::Json::object();
 
         step2.command_name = "echo";
-        step2.params = web::json::value::object();
+        step2.params = Orcha::Json::object();
 
-        web::json::value params3;
-        params3[U("a")] = web::json::value::string("{{step1.output}}");
-        params3[U("b")] = web::json::value::string("{{step2.output}}");
-        params3[U("c")] = web::json::value::string("{{step3.output}}");
+        Orcha::Json params3;
+        params3["a"] = "{{step1.output}}";
+        params3["b"] = "{{step2.output}}";
+        params3["c"] = "{{step3.output}}";
         step3.command_name = "aggregate";
         step3.params = params3;
 
@@ -305,10 +358,10 @@ server:
 
             Workflow::WorkflowStep step0, step1;
             step0.command_name = "echo";
-            step0.params = web::json::value::object();
+            step0.params = Orcha::Json::object();
 
-            web::json::value params1;
-            params1[U("input")] = web::json::value::string("{{step1.output}}");
+            Orcha::Json params1;
+            params1["input"] = "{{step1.output}}";
             step1.command_name = "process";
             step1.params = params1;
 
@@ -324,10 +377,10 @@ server:
 
             Workflow::WorkflowStep step0, step1;
             step0.command_name = "echo";
-            step0.params = web::json::value::object();
+            step0.params = Orcha::Json::object();
 
             step1.command_name = "echo";
-            step1.params = web::json::value::object();
+            step1.params = Orcha::Json::object();
 
             def.steps = {step0, step1};
 
@@ -349,6 +402,8 @@ server:
         test_config_validation_invalid_port();
         test_config_validation_invalid_log_level();
         test_config_validation_warnings();
+        test_config_repeated_lookups_keep_values();
+        test_config_env_override_underscore_leaf_key();
 
         // Circuit Breaker
         std::cout << "\n-- Circuit Breaker --\n";

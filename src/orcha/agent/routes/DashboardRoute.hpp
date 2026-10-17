@@ -26,18 +26,13 @@ namespace Orcha::Agent::Routes {
             return method == "GET" && (path == "/admin" || path == "/admin/");
         }
 
-        void handle(web::http::http_request request) override {
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            (void)request;
             if (logger_) {
                 logger_->debug("Serving admin dashboard");
             }
-            pplx::create_task([request]() {
-                web::http::http_response resp(web::http::status_codes::OK);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("text/html; charset=utf-8"));
-                resp.set_body(Orcha::Agent::kDashboardHtml);
-                request.reply(resp);
-            });
+            return HttpResponse::html(status::OK,
+                                      std::string(Orcha::Agent::kDashboardHtml));
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {

@@ -1,5 +1,4 @@
 #include "../../core/ICommand.hpp"
-#include <cpprest/json.h>
 #include <pqxx/pqxx>
 #include <iostream>
 #include <regex>
@@ -44,25 +43,21 @@ class PostgresCreator final : public Orcha::Core::ICommand {
 public:
     [[nodiscard]] std::string name() const override { return "create_pg_db"; }
 
-    web::json::value execute(const web::json::value& params) override {
-        using namespace web;
-        using namespace utility;
-
-        json::value result;
+    Orcha::Json execute(const Orcha::Json& params) override {
+        Orcha::Json result;
         try {
             auto get_str = [&](const char* key, const std::string& def = std::string()) -> std::string {
-                if (params.has_field(conversions::to_string_t(key))) {
-                    return conversions::to_utf8string(
-                        params.at(conversions::to_string_t(key)).as_string());
+                if (params.contains(key)) {
+                    return params.at(key).get<std::string>();
                 }
                 return def;
             };
             auto get_bool = [&](const char* key, bool def) -> bool {
-                if (params.has_field(conversions::to_string_t(key))) {
-                    const auto& v = params.at(conversions::to_string_t(key));
-                    if (v.is_boolean()) return v.as_bool();
+                if (params.contains(key)) {
+                    const auto& v = params.at(key);
+                    if (v.is_boolean()) return v.get<bool>();
                     if (v.is_string()) {
-                        const auto s = conversions::to_utf8string(v.as_string());
+                        const auto s = v.get<std::string>();
                         return s == "1" || s == "true" || s == "TRUE" || s == "yes";
                     }
                 }
@@ -120,9 +115,9 @@ public:
 
             if (exists) {
                 if (if_not_exists) {
-                    result[U("success")] = json::value(true);
-                    result[U("dbname")] = json::value::string(conversions::to_string_t(dbname));
-                    result[U("created")] = json::value(false);
+                    result["success"] = true;
+                    result["dbname"] = dbname;
+                    result["created"] = false;
                     return result;
                 }
                 throw std::runtime_error("Database already exists: " + dbname);
@@ -141,20 +136,19 @@ public:
                 ntx.exec(sql.str());
             }
 
-            result[U("success")] = json::value(true);
-            result[U("dbname")] = json::value::string(conversions::to_string_t(dbname));
-            result[U("created")] = json::value(true);
+            result["success"] = true;
+            result["dbname"] = dbname;
+            result["created"] = true;
             return result;
         } catch (const pqxx::sql_error& ex) {
             std::cerr << "PostgreSQL error: " << ex.what() << " [query: " << ex.query() << "]\n";
-            result[U("success")] = json::value(false);
-            result[U("error")] = json::value::string(
-                conversions::to_string_t(std::string("PostgreSQL error: ") + ex.what()));
+            result["success"] = false;
+            result["error"] = std::string("PostgreSQL error: ") + ex.what();
             return result;
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << '\n';
-            result[U("success")] = json::value(false);
-            result[U("error")] = json::value::string(conversions::to_string_t(ex.what()));
+            result["success"] = false;
+            result["error"] = std::string(ex.what());
             return result;
         }
     }

@@ -6,6 +6,7 @@
 #pragma once
 
 #include "IRouteHandler.hpp"
+#include "HttpServer.hpp"
 #include "../core/ICommandRegistry.hpp"
 #include "../core/PluginManager.hpp"
 #include "../core/IPluginDiscovery.hpp"
@@ -15,7 +16,6 @@
 #include "../jobs/JobService.hpp"
 #include "../utils/ILogger.hpp"
 #include "../config/AdminConfig.hpp"
-#include <cpprest/http_listener.h>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -85,7 +85,7 @@ namespace Orcha::Agent {
         Router& router() { return router_; }
 
     private:
-        void handle_request(web::http::http_request request);
+        HttpResponse handle_request(const HttpRequest& request);
         void setup_default_routes();
         void setup_admin_routes();
 
@@ -101,7 +101,7 @@ namespace Orcha::Agent {
         std::shared_ptr<Core::IPluginDenylist> denylist_;
 
         Router router_;
-        std::unique_ptr<web::http::experimental::listener::http_listener> listener_;
+        std::unique_ptr<HttpServer> server_;
     };
 
 } // namespace Orcha::Agent

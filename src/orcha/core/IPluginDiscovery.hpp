@@ -9,7 +9,7 @@
 #include <vector>
 #include <optional>
 #include <filesystem>
-#include <cpprest/json.h>
+#include "Json.hpp"
 #include "ICommand.hpp"
 
 namespace Orcha::Core {
@@ -20,7 +20,7 @@ namespace Orcha::Core {
      */
     struct PluginMetadata {
         std::string name;
-        std::string version = Orcha::kVersion;
+        std::string version = kVersion;
         std::string description;
         std::string author;
         std::vector<std::string> tags;
@@ -29,82 +29,82 @@ namespace Orcha::Core {
         std::filesystem::path library_path;
         std::filesystem::path manifest_path;
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value obj;
-            obj[U("name")] = web::json::value::string(name);
-            obj[U("version")] = web::json::value::string(version);
-            obj[U("description")] = web::json::value::string(description);
+        [[nodiscard]] Json to_json() const {
+            Json obj = Json::object();
+            obj["name"] = name;
+            obj["version"] = version;
+            obj["description"] = description;
             if (!author.empty()) {
-                obj[U("author")] = web::json::value::string(author);
+                obj["author"] = author;
             }
 
             if (!tags.empty()) {
-                web::json::value arr = web::json::value::array(tags.size());
-                for (size_t i = 0; i < tags.size(); ++i) {
-                    arr[i] = web::json::value::string(tags[i]);
+                Json arr = Json::array();
+                for (const auto& tag : tags) {
+                    arr.push_back(tag);
                 }
-                obj[U("tags")] = arr;
+                obj["tags"] = arr;
             }
 
             if (!parameters.empty()) {
-                web::json::value params = web::json::value::array(parameters.size());
-                for (size_t i = 0; i < parameters.size(); ++i) {
-                    params[i] = parameters[i].to_json();
+                Json params = Json::array();
+                for (const auto& param : parameters) {
+                    params.push_back(param.to_json());
                 }
-                obj[U("parameters")] = params;
+                obj["parameters"] = params;
             }
 
             return obj;
         }
 
-        static PluginMetadata from_json(const web::json::value& json,
+        static PluginMetadata from_json(const Json& json,
                                         const std::filesystem::path& base_path) {
             PluginMetadata meta;
-            if (json.has_field(U("name"))) {
-                meta.name = json.at(U("name")).as_string();
+            if (json.contains("name")) {
+                meta.name = json.at("name").get<std::string>();
             }
-            if (json.has_field(U("version"))) {
-                meta.version = json.at(U("version")).as_string();
+            if (json.contains("version")) {
+                meta.version = json.at("version").get<std::string>();
             }
-            if (json.has_field(U("description"))) {
-                meta.description = json.at(U("description")).as_string();
+            if (json.contains("description")) {
+                meta.description = json.at("description").get<std::string>();
             }
-            if (json.has_field(U("author"))) {
-                meta.author = json.at(U("author")).as_string();
+            if (json.contains("author")) {
+                meta.author = json.at("author").get<std::string>();
             }
-            if (json.has_field(U("entry_point"))) {
-                meta.library_path = base_path / json.at(U("entry_point")).as_string();
+            if (json.contains("entry_point")) {
+                meta.library_path = base_path / json.at("entry_point").get<std::string>();
             }
-            if (json.has_field(U("tags")) && json.at(U("tags")).is_array()) {
-                for (const auto& tag : json.at(U("tags")).as_array()) {
-                    meta.tags.push_back(tag.as_string());
+            if (json.contains("tags") && json.at("tags").is_array()) {
+                for (const auto& tag : json.at("tags")) {
+                    meta.tags.push_back(tag.get<std::string>());
                 }
             }
-            if (json.has_field(U("dependencies")) && json.at(U("dependencies")).is_array()) {
-                for (const auto& dep : json.at(U("dependencies")).as_array()) {
-                    meta.dependencies.push_back(dep.as_string());
+            if (json.contains("dependencies") && json.at("dependencies").is_array()) {
+                for (const auto& dep : json.at("dependencies")) {
+                    meta.dependencies.push_back(dep.get<std::string>());
                 }
             }
-            if (json.has_field(U("parameters")) && json.at(U("parameters")).is_array()) {
-                for (const auto& param : json.at(U("parameters")).as_array()) {
+            if (json.contains("parameters") && json.at("parameters").is_array()) {
+                for (const auto& param : json.at("parameters")) {
                     CommandParameter cp;
-                    if (param.has_field(U("name"))) {
-                        cp.name = param.at(U("name")).as_string();
+                    if (param.contains("name")) {
+                        cp.name = param.at("name").get<std::string>();
                     }
-                    if (param.has_field(U("type"))) {
-                        cp.type = param.at(U("type")).as_string();
+                    if (param.contains("type")) {
+                        cp.type = param.at("type").get<std::string>();
                     }
-                    if (param.has_field(U("required"))) {
-                        cp.required = param.at(U("required")).as_bool();
+                    if (param.contains("required")) {
+                        cp.required = param.at("required").get<bool>();
                     }
-                    if (param.has_field(U("description"))) {
-                        cp.description = param.at(U("description")).as_string();
+                    if (param.contains("description")) {
+                        cp.description = param.at("description").get<std::string>();
                     }
-                    if (param.has_field(U("default"))) {
-                        cp.default_value = param.at(U("default")).as_string();
+                    if (param.contains("default")) {
+                        cp.default_value = param.at("default").get<std::string>();
                     }
-                    if (param.has_field(U("example"))) {
-                        cp.example = param.at(U("example")).as_string();
+                    if (param.contains("example")) {
+                        cp.example = param.at("example").get<std::string>();
                     }
                     meta.parameters.push_back(cp);
                 }

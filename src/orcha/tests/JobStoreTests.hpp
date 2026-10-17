@@ -31,9 +31,9 @@ namespace Orcha::Tests {
         Jobs::JobDefinition d;
         d.name = name;
         d.description = "test job";
-        d.definition = web::json::value::parse(utility::conversions::to_string_t(
+        d.definition = Orcha::Json::parse(
             R"({"steps":[{"command":"echo","params":{"message":"a"}},)"
-            R"({"command":"echo","params":{"message":"{{step1.output.message}}"}}]})"));
+            R"({"command":"echo","params":{"message":"{{step1.output.message}}"}}]})");
         return d;
     }
 
@@ -47,7 +47,7 @@ namespace Orcha::Tests {
 
         auto got = store.get_job(job.id);
         ORCHA_ASSERT(got && got->name == "alpha");
-        ORCHA_ASSERT(got->definition.at(U("steps")).as_array().size() == 2);
+        ORCHA_ASSERT(got->definition.at("steps").size() == 2);
 
         auto byName = store.get_job_by_name("alpha");
         ORCHA_ASSERT(byName && byName->id == job.id);
@@ -84,7 +84,7 @@ namespace Orcha::Tests {
 
         Jobs::RunRecord r1;
         r1.job_id = job.id; r1.trigger = "manual"; r1.status = "success";
-        r1.result = web::json::value::array();
+        r1.result = Orcha::Json::array();
         ORCHA_ASSERT(store.insert_run(r1));
         ORCHA_ASSERT(!r1.id.empty());
 
@@ -121,10 +121,10 @@ namespace Orcha::Tests {
 
         // Mock "echo" command: returns { echoed: <message> }.
         ORCHA_ASSERT(registry->register_command(std::make_shared<Mocks::MockCommand>("echo",
-            [](const web::json::value& p){
-                web::json::value o = web::json::value::object();
-                o[U("echoed")] = p.has_field(U("message"))
-                    ? p.at(U("message")) : web::json::value::string(U(""));
+            [](const Orcha::Json& p){
+                Orcha::Json o = Orcha::Json::object();
+                o["echoed"] = p.contains("message")
+                    ? p.at("message") : Orcha::Json("");
                 return o;
             })));
 
@@ -136,32 +136,32 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(registry->register_command(std::make_shared<Jobs::RunJobCommand>(service)));
 
         Jobs::JobDefinition leaf; leaf.name = "leaf";
-        leaf.definition = web::json::value::parse(utility::conversions::to_string_t(
-            R"({"steps":[{"command":"echo","params":{"message":"hi"}}]})"));
+        leaf.definition = Orcha::Json::parse(
+            R"({"steps":[{"command":"echo","params":{"message":"hi"}}]})");
         ORCHA_ASSERT(store->create_job(leaf));
 
         // Parent runs leaf, then echoes a NESTED reference into the sub-job's
         // last step output -> also exercises the multi-level placeholder fix.
         Jobs::JobDefinition parent; parent.name = "parent";
-        parent.definition = web::json::value::parse(utility::conversions::to_string_t(
+        parent.definition = Orcha::Json::parse(
             R"({"steps":[{"command":"run_job","params":{"job":"leaf"}},)"
-            R"({"command":"echo","params":{"message":"leaf said {{step1.output.last.echoed}}"}}]})"));
+            R"({"command":"echo","params":{"message":"leaf said {{step1.output.last.echoed}}"}}]})");
         ORCHA_ASSERT(store->create_job(parent));
 
         auto run = service->run_job(parent.id, "manual");
         ORCHA_ASSERT(run && run->status == "success");
-        ORCHA_ASSERT(run->result.is_array() && run->result.as_array().size() == 2);
+        ORCHA_ASSERT(run->result.is_array() && run->result.size() == 2);
 
-        const auto& stepOut = run->result.as_array().at(0).at(U("output"));
-        ORCHA_ASSERT(stepOut.at(U("status")).as_string() == U("success"));
+        const auto& stepOut = run->result.at(0).at("output");
+        ORCHA_ASSERT(stepOut.at("status").get<std::string>() == "success");
         // Nested placeholder {{step1.output.last.echoed}} must resolve fully.
-        const auto& step2 = run->result.as_array().at(1).at(U("output"));
-        ORCHA_ASSERT(step2.at(U("echoed")).as_string() == U("leaf said hi"));
+        const auto& step2 = run->result.at(1).at("output");
+        ORCHA_ASSERT(step2.at("echoed").get<std::string>() == "leaf said hi");
 
         // Self-referential job must fail via the cycle guard (not hang/crash).
         Jobs::JobDefinition loop; loop.name = "loop";
-        loop.definition = web::json::value::parse(utility::conversions::to_string_t(
-            R"({"steps":[{"command":"run_job","params":{"job":"loop"}}]})"));
+        loop.definition = Orcha::Json::parse(
+            R"({"steps":[{"command":"run_job","params":{"job":"loop"}}]})");
         ORCHA_ASSERT(store->create_job(loop));
         auto looprun = service->run_job(loop.id, "manual");
         ORCHA_ASSERT(looprun && looprun->status == "failed");
@@ -173,15 +173,15 @@ namespace Orcha::Tests {
         auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
         auto registry = std::make_shared<Core::CommandRegistry>();
         ORCHA_ASSERT(registry->register_command(std::make_shared<Mocks::MockCommand>("echo",
-            [](const web::json::value&){ return web::json::value::object(); })));
+            [](const Orcha::Json&){ return Orcha::Json::object(); })));
         auto factory = [registry]() -> std::shared_ptr<Workflow::IWorkflowEngine> {
             return std::make_shared<Workflow::WorkflowEngine>(
                 registry, std::make_shared<Workflow::SyncStepExecutor>(), nullptr);
         };
         auto service = std::make_shared<Jobs::JobService>(store, factory, nullptr);
 
-        const auto def = web::json::value::parse(utility::conversions::to_string_t(
-            R"({"steps":[{"command":"echo","params":{}}]})"));
+        const auto def = Orcha::Json::parse(
+            R"({"steps":[{"command":"echo","params":{}}]})");
 
         Jobs::JobDefinition on;   on.name = "tick"; on.enabled = true;
         on.schedule_cron = "* * * * *"; on.definition = def;
@@ -217,10 +217,10 @@ namespace Orcha::Tests {
         auto registry = std::make_shared<Core::CommandRegistry>();
         // echo returns { echoed: <message> }
         ORCHA_ASSERT(registry->register_command(std::make_shared<Mocks::MockCommand>("echo",
-            [](const web::json::value& p){
-                web::json::value o = web::json::value::object();
-                o[U("echoed")] = p.has_field(U("message"))
-                    ? p.at(U("message")) : web::json::value::string(U(""));
+            [](const Orcha::Json& p){
+                Orcha::Json o = Orcha::Json::object();
+                o["echoed"] = p.contains("message")
+                    ? p.at("message") : Orcha::Json("");
                 return o;
             })));
 
@@ -229,23 +229,23 @@ namespace Orcha::Tests {
 
         // step 2 references step 1 BY NAME ("greet"), not by position.
         auto def = Workflow::WorkflowDefinition::from_json(
-            web::json::value::parse(utility::conversions::to_string_t(
+            Orcha::Json::parse(
                 R"({"steps":[)"
                 R"({"name":"greet","command":"echo","params":{"message":"hi"}},)"
-                R"({"command":"echo","params":{"message":"got {{steps.greet.output.echoed}}"}}]})")));
+                R"({"command":"echo","params":{"message":"got {{steps.greet.output.echoed}}"}}]})"));
 
         auto res = engine.execute(def);
         ORCHA_ASSERT(res.success);
         ORCHA_ASSERT(res.step_results.size() == 2);
-        ORCHA_ASSERT(res.step_results[1].output.at(U("echoed")).as_string() == U("got hi"));
+        ORCHA_ASSERT(res.step_results[1].output.at("echoed").get<std::string>() == "got hi");
 
         // A reference to an unknown step name resolves to empty (not an error).
         auto def2 = Workflow::WorkflowDefinition::from_json(
-            web::json::value::parse(utility::conversions::to_string_t(
-                R"({"steps":[{"command":"echo","params":{"message":"x {{steps.nope.output.echoed}}"}}]})")));
+            Orcha::Json::parse(
+                R"({"steps":[{"command":"echo","params":{"message":"x {{steps.nope.output.echoed}}"}}]})"));
         auto res2 = engine.execute(def2);
         ORCHA_ASSERT(res2.success);
-        ORCHA_ASSERT(res2.step_results[0].output.at(U("echoed")).as_string() == U("x "));
+        ORCHA_ASSERT(res2.step_results[0].output.at("echoed").get<std::string>() == "x ");
 
         std::cout << "[PASS] test_named_step_reference\n";
     }

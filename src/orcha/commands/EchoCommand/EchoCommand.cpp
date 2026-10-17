@@ -5,7 +5,6 @@
 
 #include "../../core/ICommand.hpp"
 #include "core/Version.hpp"
-#include <cpprest/json.h>
 #include <string>
 
 /**
@@ -16,13 +15,13 @@
  */
 class EchoCommand final : public Orcha::Core::ICommand {
 public:
-    web::json::value execute(const web::json::value& params) override {
-        const auto msg = params.has_field(U("message"))
-            ? params.at(U("message")).as_string()
-            : U("");
+    Orcha::Json execute(const Orcha::Json& params) override {
+        const std::string msg = params.contains("message")
+            ? params.at("message").get<std::string>()
+            : "";
 
-        web::json::value result;
-        result[U("echoed")] = web::json::value::string(msg);
+        Orcha::Json result;
+        result["echoed"] = msg;
         return result;
     }
 

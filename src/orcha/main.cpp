@@ -197,7 +197,7 @@ int run_cli_mode(Orcha::Core::ServiceLocator& services, const std::string& yaml_
         std::cout << "Step " << (i + 1) << ": "
                   << "success=" << (step.success ? "true" : "false")
                   << " error=" << step.error_message
-                  << " output=" << step.output.serialize()
+                  << " output=" << step.output.dump()
                   << std::endl;
     }
 

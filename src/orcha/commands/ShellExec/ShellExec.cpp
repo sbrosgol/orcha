@@ -5,8 +5,6 @@
 #include "../../core/ICommand.hpp"
 #include "core/Version.hpp"
 
-#include <cpprest/json.h>
-
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -26,22 +24,19 @@ class ShellExec final : public Orcha::Core::ICommand {
 public:
     [[nodiscard]] std::string name() const override { return "shell_exec"; }
 
-    web::json::value execute(const web::json::value& params) override {
-        using namespace web;
-        using namespace utility;
-
-        json::value result;
+    Orcha::Json execute(const Orcha::Json& params) override {
+        Orcha::Json result;
         try {
-            if (!params.has_field(U("cmd"))) {
+            if (!params.contains("cmd")) {
                 throw std::runtime_error("'cmd' parameter is required");
             }
-            const std::string cmd = conversions::to_utf8string(params.at(U("cmd")).as_string());
+            const std::string cmd = params.at("cmd").get<std::string>();
 
-            const bool capture_output = params.has_field(U("capture_output"))
-                ? params.at(U("capture_output")).as_bool()
+            const bool capture_output = params.contains("capture_output")
+                ? params.at("capture_output").get<bool>()
                 : true;
-            const bool check_exit = params.has_field(U("check_exit"))
-                ? params.at(U("check_exit")).as_bool()
+            const bool check_exit = params.contains("check_exit")
+                ? params.at("check_exit").get<bool>()
                 : true;
 
             // Merge stderr into stdout so we capture both in a single stream.
@@ -75,19 +70,18 @@ public:
             }
 
             const bool ok = (exit_code == 0);
-            result[U("success")]   = json::value::boolean(ok || !check_exit);
-            result[U("exit_code")] = json::value::number(exit_code);
-            result[U("output")]    = json::value::string(conversions::to_string_t(captured));
+            result["success"]   = (ok || !check_exit);
+            result["exit_code"] = exit_code;
+            result["output"]    = captured;
 
             if (check_exit && !ok) {
-                result[U("error")] = json::value::string(
-                    conversions::to_string_t("Command exited with code " + std::to_string(exit_code)));
+                result["error"] = "Command exited with code " + std::to_string(exit_code);
             }
             return result;
         } catch (const std::exception& ex) {
-            json::value err;
-            err[U("success")] = json::value(false);
-            err[U("error")]   = json::value::string(conversions::to_string_t(ex.what()));
+            Orcha::Json err;
+            err["success"] = false;
+            err["error"]   = std::string(ex.what());
             return err;
         }
     }

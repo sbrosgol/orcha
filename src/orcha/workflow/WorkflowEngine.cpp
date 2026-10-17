@@ -4,6 +4,7 @@
 //
 
 #include "WorkflowEngine.hpp"
+#include "../core/Json.hpp"
 #include "../utils/YamlToJson.hpp"
 #include <yaml-cpp/yaml.h>
 #include <regex>
@@ -18,7 +19,7 @@ namespace Orcha::Workflow {
 
     WorkflowStepResult SyncStepExecutor::execute_step(
         const std::shared_ptr<Core::ICommand>& cmd,
-        const web::json::value& params) {
+        const Orcha::Json& params) {
 
         WorkflowStepResult result;
         result.command_name = cmd->name();
@@ -51,29 +52,28 @@ namespace Orcha::Workflow {
     // PlaceholderResolver Implementation
     // ============================================================================
 
-    web::json::value PlaceholderResolver::resolve(
-        const web::json::value& input,
+    Orcha::Json PlaceholderResolver::resolve(
+        const Orcha::Json& input,
         const std::vector<WorkflowStepResult>& previous_results) {
 
         if (input.is_string()) {
             std::string resolved = resolve_string(
-                input.as_string(), previous_results);
-            return web::json::value::string(resolved);
+                input.get<std::string>(), previous_results);
+            return resolved;
         }
 
         if (input.is_object()) {
-            web::json::value out = web::json::value::object();
-            for (const auto& field : input.as_object()) {
-                out[field.first] = resolve(field.second, previous_results);
+            Orcha::Json out = Orcha::Json::object();
+            for (const auto& [key, value] : input.items()) {
+                out[key] = resolve(value, previous_results);
             }
             return out;
         }
 
         if (input.is_array()) {
-            const auto& arr = input.as_array();
-            web::json::value out = web::json::value::array(arr.size());
-            for (size_t i = 0; i < arr.size(); ++i) {
-                out[i] = resolve(arr.at(i), previous_results);
+            Orcha::Json out = Orcha::Json::array();
+            for (const auto& elem : input) {
+                out.push_back(resolve(elem, previous_results));
             }
             return out;
         }
@@ -139,15 +139,15 @@ namespace Orcha::Workflow {
         return result;
     }
 
-    web::json::value PlaceholderResolver::navigate_output(
-        const web::json::value& output,
+    Orcha::Json PlaceholderResolver::navigate_output(
+        const Orcha::Json& output,
         const std::string& field_path) {
 
         if (field_path.empty()) {
             return output;
         }
 
-        web::json::value current = output;
+        Orcha::Json current = output;
         size_t start = 1;  // Skip leading dot
 
         while (start < field_path.size()) {
@@ -155,10 +155,10 @@ namespace Orcha::Workflow {
             std::string key = field_path.substr(
                 start, next == std::string::npos ? std::string::npos : next - start);
 
-            if (current.is_object() && current.has_field(key)) {
+            if (current.is_object() && current.contains(key)) {
                 current = current.at(key);
             } else {
-                return web::json::value::null();
+                return Orcha::Json(nullptr);
             }
 
             start = (next == std::string::npos) ? field_path.size() : next + 1;
@@ -168,22 +168,22 @@ namespace Orcha::Workflow {
     }
 
     std::string PlaceholderResolver::json_value_to_string(
-        const web::json::value& value) {
+        const Orcha::Json& value) {
 
         if (value.is_null()) {
             return "";
         }
         if (value.is_string()) {
-            return value.as_string();
+            return value.get<std::string>();
         }
-        if (value.is_integer()) {
-            return std::to_string(value.as_integer());
+        if (value.is_number_integer()) {
+            return std::to_string(value.get<long long>());
         }
-        if (value.is_double()) {
-            return std::to_string(value.as_double());
+        if (value.is_number_float()) {
+            return std::to_string(value.get<double>());
         }
         if (value.is_boolean()) {
-            return value.as_bool() ? "true" : "false";
+            return value.get<bool>() ? "true" : "false";
         }
 
         return "<non-scalar>";
@@ -267,34 +267,22 @@ namespace Orcha::Workflow {
         return result;
     }
 
-    pplx::task<WorkflowResult> WorkflowEngine::execute_async(
-        const WorkflowDefinition& definition) {
+    Orcha::Json WorkflowEngine::execute_json(const Orcha::Json& workflow_json) {
+        // Validate input
+        if (!workflow_json.contains("steps") ||
+            !workflow_json.at("steps").is_array()) {
+            WorkflowResult error_result;
+            error_result.success = false;
+            WorkflowStepResult error_step;
+            error_step.success = false;
+            error_step.error_message = "No 'steps' array in workflow JSON";
+            error_result.step_results.push_back(error_step);
+            return error_result.to_json();
+        }
 
-        return pplx::create_task([this, definition]() {
-            return execute(definition);
-        });
-    }
-
-    pplx::task<web::json::value> WorkflowEngine::execute_json(
-        const web::json::value& workflow_json) {
-
-        return pplx::create_task([this, workflow_json]() {
-            // Validate input
-            if (!workflow_json.has_field(U("steps")) ||
-                !workflow_json.at(U("steps")).is_array()) {
-                WorkflowResult error_result;
-                error_result.success = false;
-                WorkflowStepResult error_step;
-                error_step.success = false;
-                error_step.error_message = "No 'steps' array in workflow JSON";
-                error_result.step_results.push_back(error_step);
-                return error_result.to_json();
-            }
-
-            auto definition = WorkflowDefinition::from_json(workflow_json);
-            auto result = execute(definition);
-            return result.to_json();
-        });
+        auto definition = WorkflowDefinition::from_json(workflow_json);
+        auto result = execute(definition);
+        return result.to_json();
     }
 
     WorkflowResult WorkflowEngine::execute_yaml(const std::string& yaml_path) {

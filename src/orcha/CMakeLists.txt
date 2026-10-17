@@ -18,7 +18,8 @@ endif()
 
 find_package(Boost REQUIRED COMPONENTS thread system)
 find_package(OpenSSL REQUIRED)
-find_package(cpprestsdk REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(boost_url CONFIG REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
@@ -53,8 +54,8 @@ add_library(config STATIC
         config/IConfiguration.hpp
 )
 
-target_link_libraries(core PUBLIC cpprestsdk::cpprest)
-target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp cpprestsdk::cpprest)
+target_link_libraries(core PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
 
 # Header-only utils library (modern CMake!)
 add_library(utils INTERFACE)
@@ -79,11 +80,15 @@ add_library(jobs STATIC
         jobs/JobScheduler.hpp
 )
 target_link_libraries(jobs PUBLIC core workflow logger
-        cpprestsdk::cpprest unofficial::sqlite3::sqlite3)
+        unofficial::sqlite3::sqlite3)
 
 add_library(agent STATIC
         agent/CommandAgent.cpp
         agent/CommandAgent.hpp
+        agent/HttpServer.cpp
+        agent/HttpServer.hpp
+        agent/Http.hpp
+        agent/HttpJson.hpp
         agent/IRouteHandler.hpp
         agent/AuthMiddleware.hpp
         agent/dashboard_embedded.hpp
@@ -91,12 +96,14 @@ add_library(agent STATIC
         agent/routes/WorkflowRoute.hpp
         agent/routes/SwaggerRoute.hpp
         agent/routes/PluginAdminRoute.hpp
+        agent/routes/JobRoute.hpp
         agent/routes/DashboardRoute.hpp
 )
 
 
 
-target_link_libraries(agent PUBLIC core workflow jobs Boost::thread Boost::system cpprestsdk::cpprest logger)
+# Boost.Beast (header-only) powers the HTTP server; needs Boost::system + threads.
+target_link_libraries(agent PUBLIC core workflow jobs Boost::thread Boost::system logger)
 
 # Main executable
 add_executable(orcha
@@ -110,7 +117,7 @@ target_precompile_headers(workflow PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
 target_precompile_headers(config PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
 target_precompile_headers(jobs PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
 target_precompile_headers(orcha PRIVATE ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
-# `logger` deliberately doesn't link cpprestsdk; skip PCH there (it's only
+# `logger` is a small, dependency-light library; skip PCH there (it's only
 # two TUs, so the missed savings are negligible).
 
 # --- Automatically add all command plugins from /commands ---
@@ -128,7 +135,7 @@ foreach(subdir ${COMMAND_DIRS})
                 set_target_properties(${subdir} PROPERTIES
                     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/commands/${subdir}"
                     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/commands/${subdir}")
-                # Reuse the project PCH: every plugin pulls in cpprest/json via
+                # Reuse the project PCH: every plugin pulls in nlohmann/json via
                 # core/ICommand.hpp, which is the single biggest parse cost.
                 target_precompile_headers(${subdir} PRIVATE
                     ${CMAKE_SOURCE_DIR}/orcha_pch.hpp)
@@ -150,18 +157,18 @@ if(NOT WIN32)
 endif()
 
 # Test executable for dependency resolver
-# core exposes cpprest transitively (PUBLIC), so it is not listed again.
+# core exposes nlohmann_json transitively (PUBLIC), so it is not listed again.
 add_executable(test_dependency_resolver
         tests/test_dependency_resolver_main.cpp
 )
 target_link_libraries(test_dependency_resolver PRIVATE core)
 
 # Test executable for new architecture features.
-# workflow brings core (+cpprest, yaml-cpp, logger, utils) and config brings
-# cpprest/yaml-cpp transitively, so only the direct deps are listed here to
-# avoid duplicate-library link warnings.
+# workflow brings core (+nlohmann_json, yaml-cpp, logger, utils) and config
+# brings nlohmann_json/yaml-cpp transitively, so only the direct deps are listed
+# here to avoid duplicate-library link warnings.
 add_executable(test_new_features
         tests/test_new_features_main.cpp
 )
-# jobs brings workflow/core/cpprest/sqlite transitively; config brings yaml-cpp.
+# jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp.
 target_link_libraries(test_new_features PRIVATE jobs config)

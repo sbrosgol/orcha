@@ -6,6 +6,7 @@
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpJson.hpp"
 #include "../../workflow/IWorkflowEngine.hpp"
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
@@ -31,51 +32,38 @@ namespace Orcha::Agent::Routes {
             return method == "POST" && path == "/workflow";
         }
 
-        void handle(web::http::http_request request) override {
-            auto content_type = request.headers().content_type();
-
-            if (content_type != U("application/json")) {
-                handle_unsupported_media_type(request);
-                return;
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            const auto content_type = request.header("Content-Type").value_or("");
+            // Accept "application/json" with or without a charset suffix.
+            if (content_type.rfind("application/json", 0) != 0) {
+                return handle_unsupported_media_type();
             }
 
             if (logger_) {
                 logger_->info("Executing workflow from POST /workflow");
             }
 
-            auto engine = engine_;
-            auto logger = logger_;
-            auto jobs = jobs_;
+            try {
+                Orcha::Json json = Orcha::Json::parse(request.body);
+                Orcha::Json result = engine_->execute_json(json);
 
-            request.extract_json()
-                .then([engine, logger, request](web::json::value json) {
-                    return engine->execute_json(json);
-                })
-                .then([request, logger, jobs](web::json::value result) {
-                    // Record the ad-hoc run (no job id) when a job service exists.
-                    if (jobs) {
-                        try {
-                            jobs->record_run(std::nullopt, "api",
-                                             all_steps_succeeded(result), result, "");
-                        } catch (...) { /* recording must never break the response */ }
-                    }
-                    request.reply(web::http::status_codes::OK, result);
-                    if (logger) {
-                        logger->debug("Workflow execution completed");
-                    }
-                })
-                .then([request, logger](pplx::task<void> t) {
+                // Record the ad-hoc run (no job id) when a job service exists.
+                if (jobs_) {
                     try {
-                        t.get();
-                    } catch (const std::exception& ex) {
-                        if (logger) {
-                            logger->error(std::string("Workflow execution error: ") + ex.what());
-                        }
-                        web::json::value error;
-                        error[U("error")] = web::json::value::string(ex.what());
-                        request.reply(web::http::status_codes::InternalError, error);
-                    }
-                });
+                        jobs_->record_run(std::nullopt, "api",
+                                          all_steps_succeeded(result), result, "");
+                    } catch (...) { /* recording must never break the response */ }
+                }
+                if (logger_) {
+                    logger_->debug("Workflow execution completed");
+                }
+                return reply_json(status::OK, result);
+            } catch (const std::exception& ex) {
+                if (logger_) {
+                    logger_->error(std::string("Workflow execution error: ") + ex.what());
+                }
+                return reply_error(status::InternalError, ex.what());
+            }
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {
@@ -89,32 +77,21 @@ namespace Orcha::Agent::Routes {
     private:
         /// The /workflow result is a JSON array of step results; the run
         /// succeeded if every step reports success (an empty array counts as success).
-        static bool all_steps_succeeded(const web::json::value& result) {
+        static bool all_steps_succeeded(const Orcha::Json& result) {
             if (!result.is_array()) return false;
-            for (const auto& step : result.as_array()) {
-                if (!step.has_field(U("success")) || !step.at(U("success")).as_bool()) {
+            for (const auto& step : result) {
+                if (!step.contains("success") || !step.at("success").get<bool>()) {
                     return false;
                 }
             }
             return true;
         }
 
-        void handle_unsupported_media_type(web::http::http_request request) {
-            pplx::create_task([request]() {
-                web::http::http_response resp(web::http::status_codes::UnsupportedMediaType);
-                resp.headers().add(
-                    web::http::header_names::content_type,
-                    U("application/json"));
-
-                web::json::value msg;
-                msg[U("error")] = web::json::value::string(
-                    U("Only application/json is accepted for /workflow"));
-                msg[U("hint")] = web::json::value::string(
-                    U("See /swagger for API documentation and a sample payload"));
-                resp.set_body(msg);
-
-                request.reply(resp);
-            });
+        static HttpResponse handle_unsupported_media_type() {
+            Orcha::Json msg = Orcha::Json::object();
+            msg["error"] = "Only application/json is accepted for /workflow";
+            msg["hint"] = "See /swagger for API documentation and a sample payload";
+            return reply_json(status::UnsupportedMediaType, msg);
         }
 
         std::shared_ptr<Workflow::IWorkflowEngine> engine_;

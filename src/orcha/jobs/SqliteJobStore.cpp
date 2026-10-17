@@ -3,6 +3,7 @@
 //
 
 #include "SqliteJobStore.hpp"
+#include "../core/JsonCompat.hpp"
 #include <sqlite3.h>
 #include <stdexcept>
 
@@ -45,22 +46,13 @@ namespace Orcha::Jobs {
             sqlite3_stmt* stmt_ = nullptr;
         };
 
-        web::json::value parse_json(const std::string& s, web::json::value fallback) {
-            if (s.empty()) return fallback;
-            try {
-                return web::json::value::parse(utility::conversions::to_string_t(s));
-            } catch (...) {
-                return fallback;
-            }
-        }
-
         JobDefinition read_job(const Stmt& s) {
             // columns: id,name,description,definition,schedule_cron,enabled,created_at,updated_at
             JobDefinition d;
             d.id = s.col_text(0);
             d.name = s.col_text(1);
             d.description = s.col_text(2);
-            d.definition = parse_json(s.col_text(3), web::json::value::object());
+            d.definition = Orcha::parse_json_or(s.col_text(3), Orcha::Json::object());
             if (!s.col_is_null(4)) d.schedule_cron = s.col_text(4);
             d.enabled = s.col_text(5) == "1";
             d.created_at = s.col_text(6);
@@ -77,7 +69,7 @@ namespace Orcha::Jobs {
             r.status = s.col_text(3);
             r.started_at = s.col_text(4);
             if (!s.col_is_null(5)) r.finished_at = s.col_text(5);
-            r.result = parse_json(s.col_text(6), web::json::value::null());
+            r.result = Orcha::parse_json_or(s.col_text(6), Orcha::Json(nullptr));
             r.error = s.col_text(7);
             return r;
         }
@@ -167,7 +159,7 @@ namespace Orcha::Jobs {
             s.bind_text(1, job.id);
             s.bind_text(2, job.name);
             s.bind_text(3, job.description);
-            s.bind_text(4, utility::conversions::to_utf8string(job.definition.serialize()));
+            s.bind_text(4, job.definition.dump());
             if (job.schedule_cron) s.bind_text(5, *job.schedule_cron); else s.bind_null(5);
             s.bind_int(6, job.enabled ? 1 : 0);
             s.bind_text(7, job.created_at);
@@ -192,7 +184,7 @@ namespace Orcha::Jobs {
             s.bind_text(1, job.id);
             s.bind_text(2, job.name);
             s.bind_text(3, job.description);
-            s.bind_text(4, utility::conversions::to_utf8string(job.definition.serialize()));
+            s.bind_text(4, job.definition.dump());
             if (job.schedule_cron) s.bind_text(5, *job.schedule_cron); else s.bind_null(5);
             s.bind_int(6, job.enabled ? 1 : 0);
             s.bind_text(7, now_iso_utc());
@@ -228,7 +220,7 @@ namespace Orcha::Jobs {
             s.bind_text(4, run.status);
             s.bind_text(5, run.started_at);
             if (run.finished_at) s.bind_text(6, *run.finished_at); else s.bind_null(6);
-            s.bind_text(7, utility::conversions::to_utf8string(run.result.serialize()));
+            s.bind_text(7, run.result.dump());
             s.bind_text(8, run.error);
             if (sqlite3_step(s.get()) != SQLITE_DONE) {
                 if (logger_) logger_->warn(std::string("insert_run failed: ") + sqlite3_errmsg(db_));

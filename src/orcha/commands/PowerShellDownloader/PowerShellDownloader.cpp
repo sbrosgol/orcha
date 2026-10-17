@@ -1,9 +1,8 @@
 #include "../../core/ICommand.hpp"
-#include <cpprest/json.h>
+#include "../HttpClient.hpp"
 #include <string>
-#include <cpprest/filestream.h>
-#include <cpprest/http_client.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace fs = std::filesystem;
@@ -36,19 +35,26 @@ const std::string ps_folder = "pwsh";
 
 class PowerShellDownloader final : public Orcha::Core::ICommand {
 public:
-    web::json::value execute(const web::json::value &params) override {
-        using namespace web;
-        using namespace utility;
-        json::value result;
+    Orcha::Json execute(const Orcha::Json &params) override {
+        (void) params;
+        Orcha::Json result = Orcha::Json::object();
 
         try {
-            http::client::http_client client(utility::conversions::to_string_t(ps_url));
             std::cout << "Downloading PowerShell Core from: " << ps_url << std::endl;
-            const auto response = client.request(web::http::methods::GET).get();
+            const Orcha::Http::Response response = Orcha::Http::get(ps_url);
+            if (response.status / 100 != 2) {
+                throw std::runtime_error(
+                    "HTTP " + std::to_string(response.status) + " for " + ps_url);
+            }
 
-            const concurrency::streams::ostream out = concurrency::streams::fstream::open_ostream(ps_archive).get();
-            (void) response.body().read_to_end(out.streambuf()).wait();
-            (void) out.close().wait();
+            {
+                std::ofstream out(ps_archive, std::ios::binary | std::ios::trunc);
+                if (!out) {
+                    throw std::runtime_error("Cannot open output file: " + ps_archive);
+                }
+                out.write(response.body.data(),
+                          static_cast<std::streamsize>(response.body.size()));
+            }
 
             std::cout << "Download complete: " << ps_archive << std::endl;
 
@@ -88,12 +94,12 @@ public:
 #endif
             std::cout << "PowerShell Core is ready at: " << ps_path << std::endl;
 
-            result[U("path")] = json::value::string(conversions::to_string_t(ps_path));
-            result[U("success")] = json::value(true);
+            result["path"] = ps_path;
+            result["success"] = true;
         } catch (const std::exception &ex) {
             std::cout << "Error: " << ex.what() << std::endl;
-            result[U("success")] = json::value(false);
-            result[U("error")] = json::value::string(ex.what());
+            result["success"] = false;
+            result["error"] = ex.what();
         }
 
         return result;

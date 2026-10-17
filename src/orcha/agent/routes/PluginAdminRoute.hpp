@@ -11,6 +11,7 @@
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpJson.hpp"
 #include "../../core/PluginManager.hpp"
 #include "../../core/IPluginDiscovery.hpp"
 #include "../../core/ICommandRegistry.hpp"
@@ -52,17 +53,16 @@ namespace Orcha::Agent::Routes {
             return path == kPrefix || path_starts_with(path, kPrefix + "/");
         }
 
-        void handle(web::http::http_request request) override {
-            const auto method = utility::conversions::to_utf8string(request.method());
-            const auto path = utility::conversions::to_utf8string(request.request_uri().path());
-            const auto segments = split_path(path); // e.g. {"api","plugins","foo","reload"}
+        [[nodiscard]] HttpResponse handle(const HttpRequest& request) override {
+            const std::string& method = request.method;
+            const auto segments = split_path(request.path); // e.g. {"api","plugins","foo","reload"}
 
             // /api/plugins
             if (segments.size() == 2) {
                 if (method == "GET") {
-                    return serve_list(request);
+                    return serve_list();
                 }
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
+                return reply_error(status::MethodNotAllowed,
                                    "Use GET /api/plugins");
             }
 
@@ -71,30 +71,30 @@ namespace Orcha::Agent::Routes {
             // /api/plugins/_watch
             if (resource == "_watch") {
                 if (method == "GET") {
-                    return serve_watch_status(request);
+                    return serve_watch_status();
                 }
                 if (method == "PUT") {
                     return set_watch(request);
                 }
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
+                return reply_error(status::MethodNotAllowed,
                                    "Use GET or PUT /api/plugins/_watch");
             }
 
             // /api/plugins/{name}
             if (segments.size() == 3) {
                 if (method == "GET") {
-                    return serve_plugin(request, resource);
+                    return serve_plugin(resource);
                 }
-                return reply_error(request, web::http::status_codes::MethodNotAllowed,
+                return reply_error(status::MethodNotAllowed,
                                    "Use GET /api/plugins/{name}");
             }
 
             // /api/plugins/{name}/{action}
             if (segments.size() == 4 && method == "POST") {
-                return perform_action(request, resource, segments[3]);
+                return perform_action(resource, segments[3]);
             }
 
-            reply_error(request, web::http::status_codes::NotFound, "Unknown plugins endpoint");
+            return reply_error(status::NotFound, "Unknown plugins endpoint");
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {
@@ -114,213 +114,152 @@ namespace Orcha::Agent::Routes {
 
         // ---- Endpoint implementations ----
 
-        void serve_list(web::http::http_request request) {
-            auto manager = manager_;
-            auto discovery = discovery_;
-            auto registry = registry_;
-            auto directory = directory_;
-            auto denylist = denylist_;
+        HttpResponse serve_list() {
+            using value = Orcha::Json;
 
-            pplx::create_task([=]() {
-                using web::json::value;
+            auto loaded = manager_->get_all_plugins();
+            std::unordered_set<std::string> loaded_names;
+            for (const auto& m : loaded) loaded_names.insert(m.name);
 
-                auto loaded = manager->get_all_plugins();
-                std::unordered_set<std::string> loaded_names;
-                for (const auto& m : loaded) loaded_names.insert(m.name);
+            value plugins = value::array();
+            size_t idx = 0;
 
-                value plugins = value::array();
-                size_t idx = 0;
+            for (const auto& meta : loaded) {
+                plugins[idx++] = plugin_to_json(meta, "loaded");
+            }
 
-                for (const auto& meta : loaded) {
-                    plugins[idx++] = plugin_to_json(meta, "loaded");
+            // Available-but-not-loaded from disk. Denylisted ones are tagged
+            // "disabled" (won't auto-load on restart) vs plain "available".
+            for (const auto& meta : discovery_->scan_plugins(directory_)) {
+                if (!loaded_names.contains(meta.name)) {
+                    const bool denied = denylist_ && denylist_->contains(meta.name);
+                    plugins[idx++] = plugin_to_json(meta, denied ? "disabled" : "available");
                 }
+            }
 
-                // Available-but-not-loaded from disk. Denylisted ones are tagged
-                // "disabled" (won't auto-load on restart) vs plain "available".
-                for (const auto& meta : discovery->scan_plugins(directory)) {
-                    if (!loaded_names.contains(meta.name)) {
-                        const bool denied = denylist && denylist->contains(meta.name);
-                        plugins[idx++] = plugin_to_json(meta, denied ? "disabled" : "available");
-                    }
+            // All registered command names. Plugin->command attribution is
+            // not tracked today (a plugin's command name often differs from
+            // its library/plugin name), so this is surfaced at the top level.
+            value commands = value::array();
+            if (registry_) {
+                auto names = registry_->list_commands();
+                for (size_t i = 0; i < names.size(); ++i) {
+                    commands[i] = names[i];
                 }
+            }
 
-                // All registered command names. Plugin->command attribution is
-                // not tracked today (a plugin's command name often differs from
-                // its library/plugin name), so this is surfaced at the top level.
-                value commands = value::array();
-                if (registry) {
-                    auto names = registry->list_commands();
-                    for (size_t i = 0; i < names.size(); ++i) {
-                        commands[i] = value::string(
-                            utility::conversions::to_string_t(names[i]));
-                    }
-                }
+            value result = value::object();
+            result["directory"] = directory_;
+            result["watching"] = manager_->is_watching();
+            result["plugins"] = plugins;
+            result["count"] = static_cast<int>(idx);
+            result["commands"] = commands;
 
-                value result = value::object();
-                result[U("directory")] = value::string(utility::conversions::to_string_t(directory));
-                result[U("watching")] = value::boolean(manager->is_watching());
-                result[U("plugins")] = plugins;
-                result[U("count")] = value::number(static_cast<int>(idx));
-                result[U("commands")] = commands;
-
-                reply_json(request, web::http::status_codes::OK, result);
-            });
+            return reply_json(status::OK, result);
         }
 
-        void serve_plugin(web::http::http_request request, std::string name) {
-            auto manager = manager_;
+        HttpResponse serve_plugin(const std::string& name) {
+            if (auto meta = manager_->get_plugin_metadata(name)) {
+                return reply_json(status::OK, plugin_to_json(*meta, "loaded"));
+            }
+            return reply_error(status::NotFound, "Plugin not loaded: " + name);
+        }
 
-            pplx::create_task([=]() {
-                if (auto meta = manager->get_plugin_metadata(name)) {
-                    reply_json(request, web::http::status_codes::OK,
-                               plugin_to_json(*meta, "loaded"));
+        HttpResponse serve_watch_status() {
+            Orcha::Json result = Orcha::Json::object();
+            result["watching"] = manager_->is_watching();
+            return reply_json(status::OK, result);
+        }
+
+        HttpResponse set_watch(const HttpRequest& request) {
+            bool enabled = false;
+            try {
+                Orcha::Json body = Orcha::Json::parse(request.body);
+                if (body.contains("enabled") && body.at("enabled").is_boolean()) {
+                    enabled = body.at("enabled").get<bool>();
                 } else {
-                    reply_error(request, web::http::status_codes::NotFound,
-                                "Plugin not loaded: " + name);
+                    return reply_error(status::BadRequest,
+                                       "Body must be { \"enabled\": true|false }");
                 }
-            });
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest,
+                                   std::string("Invalid JSON body: ") + ex.what());
+            }
+
+            if (enabled) {
+                manager_->start_watching(directory_, watch_interval_);
+            } else {
+                manager_->stop_watching();
+            }
+
+            Orcha::Json result = Orcha::Json::object();
+            result["watching"] = manager_->is_watching();
+            return reply_json(status::OK, result);
         }
 
-        void serve_watch_status(web::http::http_request request) {
-            auto manager = manager_;
-            pplx::create_task([=]() {
-                web::json::value result = web::json::value::object();
-                result[U("watching")] = web::json::value::boolean(manager->is_watching());
-                reply_json(request, web::http::status_codes::OK, result);
-            });
-        }
+        HttpResponse perform_action(const std::string& name, const std::string& action) {
+            bool ok = false;
+            std::string message;
 
-        void set_watch(web::http::http_request request) {
-            auto manager = manager_;
-            auto directory = directory_;
-            auto interval = watch_interval_;
-            auto logger = logger_;
-
-            request.extract_json().then([=](pplx::task<web::json::value> body_task) {
-                bool enabled = false;
-                try {
-                    auto body = body_task.get();
-                    if (body.has_field(U("enabled")) && body.at(U("enabled")).is_boolean()) {
-                        enabled = body.at(U("enabled")).as_bool();
-                    } else {
-                        return reply_error(request, web::http::status_codes::BadRequest,
-                                           "Body must be { \"enabled\": true|false }");
+            if (action == "reload") {
+                // Reload does NOT touch the denylist.
+                ok = manager_->reload_plugin(name);
+                message = ok ? "Reloaded " + name
+                             : "Reload failed; plugin not loaded: " + name;
+            } else if (action == "disable") {
+                ok = manager_->unload_plugin(name);
+                if (ok && denylist_) denylist_->add(name); // persist: stays off across restarts
+                message = ok ? "Disabled " + name
+                             : "Disable failed; plugin not loaded: " + name;
+            } else if (action == "enable") {
+                // Resolve the library path from disk (manager has no record
+                // of unloaded plugins).
+                std::filesystem::path lib_path;
+                for (const auto& meta : discovery_->scan_plugins(directory_)) {
+                    if (meta.name == name) {
+                        lib_path = meta.library_path;
+                        break;
                     }
-                } catch (const std::exception& ex) {
-                    return reply_error(request, web::http::status_codes::BadRequest,
-                                       std::string("Invalid JSON body: ") + ex.what());
                 }
-
-                if (enabled) {
-                    manager->start_watching(directory, interval);
-                } else {
-                    manager->stop_watching();
+                if (lib_path.empty()) {
+                    return reply_error(status::NotFound,
+                                       "No available plugin named: " + name);
                 }
+                if (denylist_) denylist_->remove(name); // clear persisted disable
+                ok = manager_->load_plugin(lib_path);
+                message = ok ? "Enabled " + name
+                             : "Enable failed (already loaded or load error): " + name;
+            } else {
+                return reply_error(status::NotFound, "Unknown action: " + action);
+            }
 
-                web::json::value result = web::json::value::object();
-                result[U("watching")] = web::json::value::boolean(manager->is_watching());
-                reply_json(request, web::http::status_codes::OK, result);
-            });
-        }
+            if (!ok && logger_) {
+                logger_->warn("Plugin admin action '" + action + "' failed for " + name);
+            }
 
-        void perform_action(web::http::http_request request,
-                             std::string name, std::string action) {
-            auto manager = manager_;
-            auto discovery = discovery_;
-            auto directory = directory_;
-            auto logger = logger_;
-            auto denylist = denylist_;
-
-            pplx::create_task([=]() {
-                bool ok = false;
-                std::string message;
-
-                if (action == "reload") {
-                    // Reload does NOT touch the denylist.
-                    ok = manager->reload_plugin(name);
-                    message = ok ? "Reloaded " + name
-                                 : "Reload failed; plugin not loaded: " + name;
-                } else if (action == "disable") {
-                    ok = manager->unload_plugin(name);
-                    if (ok && denylist) denylist->add(name); // persist: stays off across restarts
-                    message = ok ? "Disabled " + name
-                                 : "Disable failed; plugin not loaded: " + name;
-                } else if (action == "enable") {
-                    // Resolve the library path from disk (manager has no record
-                    // of unloaded plugins).
-                    std::filesystem::path lib_path;
-                    for (const auto& meta : discovery->scan_plugins(directory)) {
-                        if (meta.name == name) {
-                            lib_path = meta.library_path;
-                            break;
-                        }
-                    }
-                    if (lib_path.empty()) {
-                        return reply_error(request, web::http::status_codes::NotFound,
-                                           "No available plugin named: " + name);
-                    }
-                    if (denylist) denylist->remove(name); // clear persisted disable
-                    ok = manager->load_plugin(lib_path);
-                    message = ok ? "Enabled " + name
-                                 : "Enable failed (already loaded or load error): " + name;
-                } else {
-                    return reply_error(request, web::http::status_codes::NotFound,
-                                       "Unknown action: " + action);
-                }
-
-                if (!ok && logger) {
-                    logger->warn("Plugin admin action '" + action + "' failed for " + name);
-                }
-
-                web::json::value result = web::json::value::object();
-                result[U("success")] = web::json::value::boolean(ok);
-                result[U("message")] = web::json::value::string(
-                    utility::conversions::to_string_t(message));
-                reply_json(request,
-                           ok ? web::http::status_codes::OK
-                              : web::http::status_codes::Conflict,
-                           result);
-            });
+            Orcha::Json result = Orcha::Json::object();
+            result["success"] = ok;
+            result["message"] = message;
+            return reply_json(ok ? status::OK : status::Conflict, result);
         }
 
         // ---- Helpers ----
 
-        static web::json::value plugin_to_json(
+        static Orcha::Json plugin_to_json(
             const Core::PluginMetadata& meta,
             const std::string& status) {
 
-            web::json::value obj = meta.to_json(); // name/version/description/author/tags/parameters
-            obj[U("status")] = web::json::value::string(
-                utility::conversions::to_string_t(status));
-            obj[U("library_path")] = web::json::value::string(
-                utility::conversions::to_string_t(meta.library_path.string()));
+            Orcha::Json obj = meta.to_json(); // name/version/description/author/tags/parameters
+            obj["status"] = status;
+            obj["library_path"] = meta.library_path.string();
 
-            web::json::value deps = web::json::value::array(meta.dependencies.size());
+            Orcha::Json deps = Orcha::Json::array();
             for (size_t i = 0; i < meta.dependencies.size(); ++i) {
-                deps[i] = web::json::value::string(
-                    utility::conversions::to_string_t(meta.dependencies[i]));
+                deps[i] = meta.dependencies[i];
             }
-            obj[U("dependencies")] = deps;
+            obj["dependencies"] = deps;
 
             return obj;
-        }
-
-        static void reply_json(web::http::http_request request,
-                               web::http::status_code code,
-                               const web::json::value& body) {
-            web::http::http_response resp(code);
-            resp.headers().add(web::http::header_names::content_type, U("application/json"));
-            resp.set_body(body);
-            request.reply(resp);
-        }
-
-        static void reply_error(web::http::http_request request,
-                                web::http::status_code code,
-                                const std::string& message) {
-            web::json::value body = web::json::value::object();
-            body[U("error")] = web::json::value::string(
-                utility::conversions::to_string_t(message));
-            reply_json(request, code, body);
         }
 
         std::shared_ptr<Core::PluginManager> manager_;

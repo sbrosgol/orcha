@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <cpprest/json.h>
+#include "Json.hpp"
 #include <string>
 #include <vector>
 #include <optional>
@@ -27,19 +27,19 @@ namespace Orcha::Core {
         std::optional<std::string> default_value;
         std::optional<std::string> example;
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value obj;
-            obj[U("name")] = web::json::value::string(name);
-            obj[U("type")] = web::json::value::string(type);
-            obj[U("required")] = web::json::value::boolean(required);
+        [[nodiscard]] Json to_json() const {
+            Json obj = Json::object();
+            obj["name"] = name;
+            obj["type"] = type;
+            obj["required"] = required;
             if (description) {
-                obj[U("description")] = web::json::value::string(*description);
+                obj["description"] = *description;
             }
             if (default_value) {
-                obj[U("default")] = web::json::value::string(*default_value);
+                obj["default"] = *default_value;
             }
             if (example) {
-                obj[U("example")] = web::json::value::string(*example);
+                obj["example"] = *example;
             }
             return obj;
         }
@@ -58,33 +58,33 @@ namespace Orcha::Core {
         std::vector<CommandParameter> parameters;
         bool supports_rollback = false;
 
-        [[nodiscard]] web::json::value to_json() const {
-            web::json::value obj;
-            obj[U("name")] = web::json::value::string(name);
-            obj[U("version")] = web::json::value::string(version);
-            obj[U("description")] = web::json::value::string(description);
+        [[nodiscard]] Json to_json() const {
+            Json obj = Json::object();
+            obj["name"] = name;
+            obj["version"] = version;
+            obj["description"] = description;
 
             if (!author.empty()) {
-                obj[U("author")] = web::json::value::string(author);
+                obj["author"] = author;
             }
 
             if (!tags.empty()) {
-                web::json::value arr = web::json::value::array(tags.size());
-                for (size_t i = 0; i < tags.size(); ++i) {
-                    arr[i] = web::json::value::string(tags[i]);
+                Json arr = Json::array();
+                for (const auto& tag : tags) {
+                    arr.push_back(tag);
                 }
-                obj[U("tags")] = arr;
+                obj["tags"] = arr;
             }
 
             if (!parameters.empty()) {
-                web::json::value params = web::json::value::array(parameters.size());
-                for (size_t i = 0; i < parameters.size(); ++i) {
-                    params[i] = parameters[i].to_json();
+                Json params = Json::array();
+                for (const auto& param : parameters) {
+                    params.push_back(param.to_json());
                 }
-                obj[U("parameters")] = params;
+                obj["parameters"] = params;
             }
 
-            obj[U("supports_rollback")] = web::json::value::boolean(supports_rollback);
+            obj["supports_rollback"] = supports_rollback;
 
             return obj;
         }
@@ -129,7 +129,7 @@ namespace Orcha::Core {
          * @param params JSON object containing command parameters.
          * @return JSON result of execution.
          */
-        virtual web::json::value execute(const web::json::value& params) = 0;
+        virtual Json execute(const Json& params) = 0;
 
         /**
          * @brief Rollback the command (undo execution).
@@ -137,7 +137,7 @@ namespace Orcha::Core {
          *
          * Default implementation does nothing.
          */
-        virtual void rollback(const web::json::value&) {}
+        virtual void rollback(const Json&) {}
 
         /**
          * @brief Get rich metadata about this command.
@@ -161,27 +161,27 @@ namespace Orcha::Core {
          * Default implementation validates based on metadata().
          */
         [[nodiscard]] virtual Result<void, ValidationError> validate(
-            const web::json::value& params) const {
+            const Json& params) const {
 
             const auto& meta = metadata();
 
             for (const auto& param : meta.parameters) {
                 if (param.required) {
-                    if (!params.has_field(param.name)) {
+                    if (!params.contains(param.name)) {
                         return Result<void, ValidationError>::Err(
                             ValidationError(param.name, "Required parameter missing"));
                     }
                 }
 
                 // Type validation for present parameters
-                if (params.has_field(param.name)) {
+                if (params.contains(param.name)) {
                     const auto& value = params.at(param.name);
 
                     if (param.type == "string" && !value.is_string()) {
                         return Result<void, ValidationError>::Err(
                             ValidationError(param.name, "Expected string type"));
                     }
-                    if (param.type == "int" && !value.is_integer()) {
+                    if (param.type == "int" && !value.is_number_integer()) {
                         return Result<void, ValidationError>::Err(
                             ValidationError(param.name, "Expected integer type"));
                     }
@@ -189,7 +189,7 @@ namespace Orcha::Core {
                         return Result<void, ValidationError>::Err(
                             ValidationError(param.name, "Expected boolean type"));
                     }
-                    if (param.type == "double" && !value.is_double() && !value.is_integer()) {
+                    if (param.type == "double" && !value.is_number()) {
                         return Result<void, ValidationError>::Err(
                             ValidationError(param.name, "Expected number type"));
                     }
