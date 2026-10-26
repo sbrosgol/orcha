@@ -36,6 +36,20 @@ namespace Orcha::Workflow {
             }
 
             result.output = cmd->execute(params);
+
+            // Commands may report failure in-band instead of throwing:
+            // { "success": false, "error": "..." }. Honour it, otherwise a
+            // failed shell command / HTTP 500 would count as a successful step.
+            const auto& out = result.output;
+            if (out.is_object() && out.contains("success") &&
+                out.at("success").is_boolean() && !out.at("success").get<bool>()) {
+                result.success = false;
+                result.error_message =
+                    (out.contains("error") && out.at("error").is_string())
+                        ? out.at("error").get<std::string>()
+                        : "Command reported failure";
+                return result;
+            }
             result.success = true;
         } catch (const std::exception& ex) {
             result.success = false;

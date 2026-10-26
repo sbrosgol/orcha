@@ -17,6 +17,9 @@ namespace Orcha::Workflow {
     /**
      * @class SyncStepExecutor
      * @brief Synchronous step executor.
+     *
+     * A step fails if the command throws, fails validation, or returns an
+     * object whose "success" field is false (see ICommand::execute).
      */
     class SyncStepExecutor : public IStepExecutor {
     public:
