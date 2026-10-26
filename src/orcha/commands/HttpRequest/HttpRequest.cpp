@@ -15,6 +15,11 @@ public:
     [[nodiscard]] std::string name() const override { return "http_request"; }
 
     Orcha::Json execute(const Orcha::Json& params) override {
+        return execute_with_control(params, {});
+    }
+
+    Orcha::Json execute_with_control(const Orcha::Json& params,
+                                     const Orcha::Core::ExecutionControl& control) override {
         try {
             if (!params.contains("url")) {
                 throw std::runtime_error("'url' parameter is required");
@@ -42,6 +47,11 @@ public:
                 req.timeout = std::chrono::milliseconds(
                     params.at("timeout_ms").get<long long>());
             }
+
+            // The step's deadline and cancellation bound the whole request;
+            // timeout_ms bounds each network operation.
+            req.stop = control.stop_token();
+            req.deadline = control.deadline();
 
             const Orcha::Http::Response response = Orcha::Http::perform(req);
 
@@ -107,7 +117,7 @@ public:
         timeout_p.name = "timeout_ms";
         timeout_p.type = "int";
         timeout_p.required = false;
-        timeout_p.description = "Request timeout in milliseconds";
+        timeout_p.description = "Max time (ms) any single network operation may stall; default 60000. The step timeout_ms bounds the whole request";
         meta.parameters.push_back(timeout_p);
 
         return meta;
@@ -147,6 +157,8 @@ private:
         throw std::runtime_error("Unsupported HTTP method: " + m);
     }
 };
+
+ORCHA_PLUGIN_ABI_EXPORT()
 
 extern "C" Orcha::Core::ICommand* create_command() {
     return new HttpRequest();

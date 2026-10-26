@@ -21,7 +21,8 @@ namespace Orcha::Workflow {
 
     WorkflowStepResult SyncStepExecutor::execute_step(
         const std::shared_ptr<Core::ICommand>& cmd,
-        const Orcha::Json& params) {
+        const Orcha::Json& params,
+        const Core::ExecutionControl& control) {
 
         WorkflowStepResult result;
         result.command_name = cmd->name();
@@ -37,7 +38,7 @@ namespace Orcha::Workflow {
                 return result;
             }
 
-            result.output = cmd->execute(params);
+            result.output = cmd->execute_with_control(params, control);
 
             // Commands may report failure in-band instead of throwing:
             // { "success": false, "error": "..." }. Honour it, otherwise a
@@ -254,10 +255,12 @@ namespace Orcha::Workflow {
     WorkflowEngine::WorkflowEngine(
         std::shared_ptr<Core::ICommandRegistry> registry,
         std::shared_ptr<IStepExecutor> executor,
-        std::shared_ptr<Utils::ILogger> logger)
+        std::shared_ptr<Utils::ILogger> logger,
+        EngineOptions options)
         : registry_(std::move(registry))
         , executor_(std::move(executor))
-        , logger_(std::move(logger)) {
+        , logger_(std::move(logger))
+        , options_(std::move(options)) {
 
         if (!executor_) {
             executor_ = std::make_shared<SyncStepExecutor>();
@@ -295,8 +298,28 @@ namespace Orcha::Workflow {
     } // namespace
 
     WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
+        using Clock = Core::ExecutionControl::Clock;
+        using std::chrono::milliseconds;
+
         const size_t step_count = definition.steps.size();
         const auto deps = step_dependencies(definition);
+
+        // Whole-run deadline, if the workflow sets timeout_ms.
+        const auto started = Clock::now();
+        const std::optional<milliseconds> run_limit =
+            definition.timeout_ms && *definition.timeout_ms > 0
+                ? std::optional(milliseconds(*definition.timeout_ms)) : std::nullopt;
+        const std::optional<Clock::time_point> run_deadline =
+            run_limit ? std::optional(started + *run_limit) : std::nullopt;
+
+        // The run is cancelled by the engine's token (shutdown) or by the
+        // enclosing run's token when this is a nested run_job. Installing the
+        // run token in the ExecutionContext lets nested runs inherit it.
+        std::stop_source run_stop;
+        std::stop_callback on_engine_cancel(options_.cancel, [&run_stop] { run_stop.request_stop(); });
+        std::stop_callback on_parent_cancel(ExecutionContext::stop_token(),
+                                            [&run_stop] { run_stop.request_stop(); });
+        ExecutionContext::StopScope stop_scope(run_stop.get_token());
 
         WorkflowResult result;
         result.step_results.resize(step_count);
@@ -318,16 +341,55 @@ namespace Orcha::Workflow {
 
             const auto& step = definition.steps[i];
             WorkflowStepResult step_result;
-            try {
-                Orcha::Json params;
-                {
-                    std::lock_guard lock(results_mutex);
-                    params = PlaceholderResolver::resolve(step.params, result.step_results);
-                }
-                step_result = execute_single_step(step, params, static_cast<int>(i));
-            } catch (const std::exception& ex) {
+
+            // The step's deadline is the earlier of its own limit and the run's.
+            const milliseconds step_limit = step.timeout_ms && *step.timeout_ms > 0
+                ? milliseconds(*step.timeout_ms) : options_.default_step_timeout;
+            const auto step_start = Clock::now();
+            std::optional<Clock::time_point> deadline = run_deadline;
+            bool run_deadline_binds = run_deadline.has_value();
+            if (step_limit > milliseconds::zero() &&
+                (!deadline || step_start + step_limit < *deadline)) {
+                deadline = step_start + step_limit;
+                run_deadline_binds = false;
+            }
+            const auto timeout_message = [&] {
+                return run_deadline_binds
+                    ? "Workflow timed out after " + std::to_string(run_limit->count()) + " ms"
+                    : "Step timed out after " + std::to_string(step_limit.count()) + " ms";
+            };
+
+            if (run_stop.stop_requested()) {
                 step_result.success = false;
-                step_result.error_message = ex.what();
+                step_result.error_message = "Cancelled";
+            } else if (deadline && step_start >= *deadline) {
+                step_result.success = false;
+                step_result.error_message = timeout_message();
+            } else {
+                const Core::ExecutionControl control(run_stop.get_token(), deadline);
+                try {
+                    Orcha::Json params;
+                    {
+                        std::lock_guard lock(results_mutex);
+                        params = PlaceholderResolver::resolve(step.params, result.step_results);
+                    }
+                    step_result = execute_single_step(step, params, static_cast<int>(i), control);
+                } catch (const std::exception& ex) {
+                    step_result.success = false;
+                    step_result.error_message = ex.what();
+                }
+
+                if (deadline && Clock::now() > *deadline) {
+                    // Returned after its deadline (it ignored or overran the
+                    // control): its result is not trusted.
+                    step_result.success = false;
+                    step_result.error_message = timeout_message();
+                } else if (!step_result.success && run_stop.stop_requested() &&
+                           step_result.error_message.rfind("Cancelled", 0) != 0) {
+                    step_result.error_message = step_result.error_message.empty()
+                        ? std::string("Cancelled")
+                        : "Cancelled: " + step_result.error_message;
+                }
             }
             step_result.step_index = static_cast<int>(i);
             step_result.command_name = step.command_name;
@@ -440,7 +502,8 @@ namespace Orcha::Workflow {
     WorkflowStepResult WorkflowEngine::execute_single_step(
         const WorkflowStep& step,
         const Orcha::Json& resolved_params,
-        int step_index) {
+        int step_index,
+        const Core::ExecutionControl& control) {
 
         WorkflowStepResult result;
         result.step_index = step_index;
@@ -455,7 +518,7 @@ namespace Orcha::Workflow {
             return result;
         }
 
-        result = executor_->execute_step(cmd, resolved_params);
+        result = executor_->execute_step(cmd, resolved_params, control);
         result.step_index = step_index;
         result.command_name = step.command_name;
         result.name = step.name.value_or("");  // enables {{steps.<name>.output}} refs

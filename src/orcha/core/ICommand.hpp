@@ -11,6 +11,7 @@
 #include <vector>
 #include <optional>
 #include "Result.hpp"
+#include "ExecutionControl.hpp"
 #include "core/Version.hpp"
 
 namespace Orcha::Core {
@@ -137,6 +138,24 @@ namespace Orcha::Core {
         virtual Json execute(const Json& params) = 0;
 
         /**
+         * @brief Execute with cancellation and a deadline.
+         * @param params  JSON object containing command parameters.
+         * @param control Stop token and deadline for this execution.
+         * @return JSON result of execution (same contract as execute()).
+         *
+         * The engine always calls this overload. The default ignores
+         * @p control and calls execute(params); commands that block (child
+         * processes, network I/O) should override it, poll
+         * control.should_stop() and return promptly, e.g. with
+         * { "success": false, "error": "Timed out" }. Such commands can
+         * implement execute(params) as execute_with_control(params, {}).
+         */
+        virtual Json execute_with_control(const Json& params, const ExecutionControl& control) {
+            (void)control;
+            return execute(params);
+        }
+
+        /**
          * @brief Rollback the command (undo execution).
          * @param params Original parameters used for execution.
          *
@@ -214,6 +233,18 @@ namespace Orcha::Core {
     };
 
     /**
+     * @brief Plugin ABI version.
+     *
+     * Bumped whenever ICommand's layout changes (e.g. a new virtual). Plugins
+     * export it via ORCHA_PLUGIN_ABI_EXPORT(); the registry refuses plugins
+     * built against a different version instead of calling into a mismatched
+     * vtable.
+     *
+     * 2: added ICommand::execute_with_control.
+     */
+    inline constexpr int kPluginAbiVersion = 2;
+
+    /**
      * @brief Factory function type for creating commands.
      *
      * Plugins must export a function with this signature named "create_command".
@@ -229,6 +260,18 @@ namespace Orcha::Core {
          * host falls back to `delete` (virtual destructor).
          */
         typedef void (*DestroyCommandFunc)(ICommand*);
+
+        /// Required export ("orcha_plugin_abi_version"); see kPluginAbiVersion.
+        typedef int (*PluginAbiVersionFunc)();
     }
 
 } // namespace Orcha::Core
+
+/**
+ * @brief Export the plugin ABI version. Every plugin must expand this once at
+ *        namespace scope, next to create_command().
+ */
+#define ORCHA_PLUGIN_ABI_EXPORT()                                   \
+    extern "C" int orcha_plugin_abi_version() {                     \
+        return ::Orcha::Core::kPluginAbiVersion;                    \
+    }

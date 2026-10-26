@@ -36,6 +36,21 @@ namespace Orcha::Core {
         }
         auto library = std::make_shared<SharedLibrary>(handle);
 
+        // Refuse plugins built against a different ICommand layout: calling
+        // into a mismatched vtable is undefined behaviour.
+        dlerror();
+        const auto abi_func = reinterpret_cast<PluginAbiVersionFunc>(
+            dlsym(handle, "orcha_plugin_abi_version"));
+        if (!abi_func || abi_func() != kPluginAbiVersion) {
+            if (logger_) {
+                logger_->error("Plugin " + path + " was built for plugin ABI " +
+                               (abi_func ? std::to_string(abi_func()) : std::string("1 (unversioned)")) +
+                               ", host requires " + std::to_string(kPluginAbiVersion) +
+                               "; rebuild it against the current core/ICommand.hpp");
+            }
+            return false;
+        }
+
         dlerror(); // Clear any existing error
         const auto create_func = reinterpret_cast<CreateCommandFunc>(dlsym(handle, "create_command"));
         if (const char* dlsym_error = dlerror()) {

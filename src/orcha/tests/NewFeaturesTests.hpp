@@ -16,6 +16,7 @@
 #include "JobStoreTests.hpp"
 #include "CronTests.hpp"
 #include "P0RegressionTests.hpp"
+#include "TimeoutTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -436,6 +437,9 @@ server:
 
         // P0 hardening regressions
         run_p0_regression_tests();
+
+        // Timeouts & cancellation
+        run_timeout_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }

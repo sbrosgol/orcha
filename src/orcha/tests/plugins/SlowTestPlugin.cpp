@@ -3,6 +3,7 @@
 //
 // Used by the registry lifetime regression test: the command is still running
 // when it is unregistered, so its code must stay mapped until it returns.
+// Also exercises the plugin ABI handshake (see ORCHA_TEST_LEGACY_ABI).
 //
 
 #include "../../core/ICommand.hpp"
@@ -19,6 +20,12 @@ public:
         return Orcha::Json{{"done", true}};
     }
 };
+
+// The legacy variant (built with ORCHA_TEST_LEGACY_ABI) omits the ABI export,
+// like a plugin compiled before versioning; the registry must refuse it.
+#ifndef ORCHA_TEST_LEGACY_ABI
+ORCHA_PLUGIN_ABI_EXPORT()
+#endif
 
 extern "C" Orcha::Core::ICommand* create_command() {
     return new SlowTestPlugin();

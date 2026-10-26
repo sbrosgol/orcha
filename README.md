@@ -83,6 +83,39 @@ cp src/orcha/orcha.yaml.example orcha.yaml
 
 ---
 
+## Timeouts and Cancellation
+
+Each step can set `timeout_ms`, and a workflow can set a top-level `timeout_ms`
+for the whole run; steps without their own limit use
+`workflow.default_timeout_ms` (0 = no limit):
+
+```json
+{
+  "timeout_ms": 60000,
+  "steps": [
+    { "command": "shell_exec", "timeout_ms": 5000, "params": { "cmd": "make test" } },
+    { "command": "http_request", "params": { "url": "https://example.com", "timeout_ms": 2000 } }
+  ]
+}
+```
+
+A step that exceeds its limit fails with `Step timed out after N ms` (or
+`Workflow timed out after N ms`), and no further steps start. Shutting the
+server down (SIGTERM / Ctrl-C) cancels in-flight workflows instead of waiting
+for them.
+
+Commands stop cooperatively: `shell_exec` terminates the command's whole
+process group, and `http_request` and the downloaders abort the request. (The
+`timeout_ms` *param* of `http_request` limits how long any single network
+operation may stall.) A command that ignores cancellation still fails as timed
+out, but only when it eventually returns.
+
+**Plugin authors:** override `ICommand::execute_with_control(params, control)`
+and poll `control.should_stop()` (or use `control.remaining()`) in anything
+that blocks. Every plugin must also expand `ORCHA_PLUGIN_ABI_EXPORT()` once;
+plugins built against an older `core/ICommand.hpp` are refused at load time
+and must be rebuilt.
+
 ## API Documentation (Swagger / OpenAPI)
 
 Once Orcha is running, the agent serves an interactive API explorer and a

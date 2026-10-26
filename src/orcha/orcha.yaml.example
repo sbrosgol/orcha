@@ -34,6 +34,13 @@ admin:
   password: "change-me"
   realm: "Orcha Admin"
 
+# Workflow execution limits.
+workflow:
+  # Time limit (ms) for steps that do not set their own `timeout_ms`.
+  # 0 = no limit. Steps can also set `timeout_ms`, and a workflow can set a
+  # top-level `timeout_ms` for the whole run.
+  default_timeout_ms: 0
+
 # Jobs: saved workflows + run history (SQLite-backed) + cron scheduler.
 jobs:
   db_path: "./orcha-jobs.db"
