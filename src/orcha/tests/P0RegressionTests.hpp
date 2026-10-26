@@ -10,10 +10,13 @@
 // - run_job's cycle guard was bypassed by `parallel: true` steps
 // - unregistering a plugin command while it executed unmapped its code
 // - deeply nested request JSON overflowed a worker thread's stack
+// - POST /workflow was served unauthenticated on every interface
 //
 
 #pragma once
 
+#include "../agent/AuthMiddleware.hpp"
+#include "../config/ServerConfig.hpp"
 #include "../core/CommandRegistry.hpp"
 #include "../core/JsonCompat.hpp"
 #include "../jobs/JobService.hpp"
@@ -81,6 +84,16 @@ namespace Orcha::Tests {
                 std::_Exit(1);
             }
             return fut.get();
+        }
+
+        inline Agent::HttpRequest post_workflow(std::optional<std::string> authorization) {
+            Agent::HttpRequest req;
+            req.method = "POST";
+            req.path = "/workflow";
+            if (authorization) {
+                req.headers.emplace_back("Authorization", *authorization);
+            }
+            return req;
         }
 
     } // namespace p0
@@ -265,6 +278,76 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_bounded_json_depth\n";
     }
 
+    // ========== /workflow authentication ==========
+
+    inline void test_server_config_defaults_and_loopback() {
+        Config::ServerConfig cfg;
+        ORCHA_ASSERT_EQ(cfg.host, std::string("127.0.0.1"));
+        ORCHA_ASSERT(cfg.api_token.empty());
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("127.0.0.1"));
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("localhost"));
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("::1"));
+        ORCHA_ASSERT_FALSE(Config::ServerConfig::is_loopback_host("0.0.0.0"));
+        ORCHA_ASSERT_FALSE(Config::ServerConfig::is_loopback_host("10.0.0.5"));
+        std::cout << "[PASS] test_server_config_defaults_and_loopback\n";
+    }
+
+    inline void test_workflow_api_auth() {
+        using p0::post_workflow;
+
+        Config::AdminConfig admin;
+        admin.password = "secret";              // serviceable, auth required
+        const std::string admin_basic = "Basic YWRtaW46c2VjcmV0"; // admin:secret
+
+        // No token + non-loopback bind: disabled (fail closed).
+        {
+            Config::ServerConfig server;
+            server.host = "0.0.0.0";
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+            auto resp = mw(post_workflow(std::nullopt));
+            ORCHA_ASSERT(resp.has_value() && resp->status == Agent::status::ServiceUnavailable);
+        }
+        // No token + loopback bind: allowed.
+        {
+            Config::ServerConfig server; // 127.0.0.1
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+            ORCHA_ASSERT_FALSE(mw(post_workflow(std::nullopt)).has_value());
+        }
+        // Token configured: required everywhere, including loopback.
+        {
+            Config::ServerConfig server;
+            server.host = "0.0.0.0";
+            server.api_token = "t0ken";
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+
+            auto none = mw(post_workflow(std::nullopt));
+            ORCHA_ASSERT(none.has_value() && none->status == Agent::status::Unauthorized);
+            auto wrong = mw(post_workflow("Bearer nope"));
+            ORCHA_ASSERT(wrong.has_value() && wrong->status == Agent::status::Unauthorized);
+            auto scheme_only = mw(post_workflow("Bearer "));
+            ORCHA_ASSERT(scheme_only.has_value() && scheme_only->status == Agent::status::Unauthorized);
+
+            ORCHA_ASSERT_FALSE(mw(post_workflow("Bearer t0ken")).has_value());
+            ORCHA_ASSERT_FALSE(mw(post_workflow(admin_basic)).has_value());
+
+            Agent::HttpRequest health;
+            health.method = "GET";
+            health.path = "/";
+            ORCHA_ASSERT_FALSE(mw(health).has_value()); // unguarded path
+        }
+        // Admin Basic is not accepted when admin auth is disabled.
+        {
+            Config::ServerConfig server;
+            server.api_token = "t0ken";
+            Config::AdminConfig open_admin;
+            open_admin.auth_required = false;
+            auto mw = Agent::make_api_auth(server, open_admin, {"/workflow"});
+            auto resp = mw(post_workflow(admin_basic));
+            ORCHA_ASSERT(resp.has_value() && resp->status == Agent::status::Unauthorized);
+        }
+        std::cout << "[PASS] test_workflow_api_auth\n";
+    }
+
     inline void run_p0_regression_tests() {
         std::cout << "\n-- P0 Regressions --\n";
         test_inband_failure_fails_step();
@@ -276,6 +359,8 @@ namespace Orcha::Tests {
         test_run_job_cycle_detected_across_parallel_steps();
         test_unregister_while_plugin_command_executing();
         test_bounded_json_depth();
+        test_server_config_defaults_and_loopback();
+        test_workflow_api_auth();
     }
 
 } // namespace Orcha::Tests

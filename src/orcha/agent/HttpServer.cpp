@@ -169,14 +169,24 @@ namespace Orcha::Agent {
         stop();
     }
 
-    void HttpServer::start(unsigned short port) {
+    void HttpServer::start(const std::string& host, unsigned short port) {
         if (running_.exchange(true)) {
             return; // already started
         }
         impl_ = std::make_unique<Impl>(threads_);
 
         beast::error_code ec;
-        const tcp::endpoint endpoint(net::ip::make_address("0.0.0.0"), port);
+        std::string bind_host = host == "localhost" ? "127.0.0.1" : host;
+        if (bind_host.size() > 2 && bind_host.front() == '[' && bind_host.back() == ']') {
+            bind_host = bind_host.substr(1, bind_host.size() - 2); // "[::1]" -> "::1"
+        }
+        const auto address = net::ip::make_address(bind_host, ec);
+        if (ec) {
+            running_ = false;
+            impl_.reset();
+            throw std::runtime_error("Invalid server.host '" + host + "': " + ec.message());
+        }
+        const tcp::endpoint endpoint(address, port);
         impl_->acceptor.open(endpoint.protocol(), ec);
         if (!ec) impl_->acceptor.set_option(net::socket_base::reuse_address(true), ec);
         if (!ec) impl_->acceptor.bind(endpoint, ec);
@@ -184,7 +194,7 @@ namespace Orcha::Agent {
         if (ec) {
             running_ = false;
             impl_.reset();
-            throw std::runtime_error("Failed to bind HTTP server on port " +
+            throw std::runtime_error("Failed to bind HTTP server on " + host + ":" +
                                      std::to_string(port) + ": " + ec.message());
         }
 

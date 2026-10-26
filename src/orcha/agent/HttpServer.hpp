@@ -37,8 +37,9 @@ namespace Orcha::Agent {
         HttpServer(const HttpServer&) = delete;
         HttpServer& operator=(const HttpServer&) = delete;
 
-        /// Bind to 0.0.0.0:@p port and start serving. Throws on bind failure.
-        void start(unsigned short port);
+        /// Bind to @p host:@p port and start serving. Throws on bind failure
+        /// or if @p host is not a valid IP address / "localhost".
+        void start(const std::string& host, unsigned short port);
 
         /// Stop accepting, drain workers, and release the socket.
         void stop();

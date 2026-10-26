@@ -7,6 +7,7 @@
 
 #include "IConfiguration.hpp"
 #include "AdminConfig.hpp"
+#include "ServerConfig.hpp"
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <unordered_map>
@@ -94,23 +95,7 @@ namespace Orcha::Config {
         std::unordered_map<std::string, std::string> env_overrides_;
     };
 
-    /**
-     * @struct ServerConfig
-     * @brief Strongly-typed server configuration.
-     */
-    struct ServerConfig {
-        std::string host = "0.0.0.0";
-        uint16_t port = 8070;
-        size_t worker_threads = 4;
-
-        static ServerConfig from_config(const IConfiguration& config) {
-            ServerConfig cfg;
-            cfg.host = config.get_string("server.host", "0.0.0.0");
-            cfg.port = static_cast<uint16_t>(config.get_int("server.port", 8070));
-            cfg.worker_threads = static_cast<size_t>(config.get_int("server.worker_threads", 4));
-            return cfg;
-        }
-    };
+    // ServerConfig lives in ServerConfig.hpp (included above).
 
     /**
      * @struct LoggingConfig

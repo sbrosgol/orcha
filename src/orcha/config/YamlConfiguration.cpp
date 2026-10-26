@@ -252,9 +252,10 @@ namespace Orcha::Config {
         auto config = std::make_unique<YamlConfiguration>();
         config->load_from_string(R"(
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8070
   worker_threads: 4
+  api_token: ""
 
 logging:
   file: "./logs/orcha.log"

@@ -57,7 +57,21 @@ credentials or the exposed port, set them in the environment or in a
 
 ```bash
 ORCHA_ADMIN_PASSWORD=super-secret
+ORCHA_SERVER_API_TOKEN=$(openssl rand -hex 32)
 ORCHA_PORT=8080
+```
+
+`POST /workflow` executes commands (including `shell_exec`), so it is
+fail-closed: it requires `Authorization: Bearer $ORCHA_SERVER_API_TOKEN`
+(admin Basic credentials are also accepted). Without a token it is only served
+when the server is bound to a loopback address (the non-Docker default is
+`server.host: 127.0.0.1`); otherwise it answers `503`.
+
+```bash
+curl -H "Authorization: Bearer $ORCHA_SERVER_API_TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"steps":[{"command":"echo","params":{"message":"hi"}}]}' \
+     http://localhost:8070/workflow
 ```
 
 To use a custom `orcha.yaml`, copy the example next to the compose file and
