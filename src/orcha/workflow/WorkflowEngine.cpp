@@ -170,6 +170,32 @@ namespace Orcha::Workflow {
         return result;
     }
 
+    PlaceholderResolver::References PlaceholderResolver::references(const Orcha::Json& input) {
+        References refs;
+        collect_references(input, refs);
+        return refs;
+    }
+
+    void PlaceholderResolver::collect_references(const Orcha::Json& input, References& out) {
+        if (input.is_string()) {
+            const auto& str = input.get_ref<const std::string&>();
+            const auto& re = placeholder_pattern();
+            for (std::sregex_iterator it(str.begin(), str.end(), re), end; it != end; ++it) {
+                if ((*it)[1].matched) {
+                    if (auto pos = parse_position((*it)[1])) {
+                        out.positions.push_back(*pos);
+                    }
+                } else {
+                    out.names.push_back((*it)[2].str());
+                }
+            }
+        } else if (input.is_structured()) {
+            for (const auto& elem : input) {
+                collect_references(elem, out);
+            }
+        }
+    }
+
     Orcha::Json PlaceholderResolver::navigate_output(
         const Orcha::Json& output,
         const std::string& field_path) {
@@ -240,60 +266,124 @@ namespace Orcha::Workflow {
     WorkflowEngine::WorkflowEngine(std::shared_ptr<Core::ICommandRegistry> registry)
         : WorkflowEngine(std::move(registry), std::make_shared<SyncStepExecutor>(), nullptr) {}
 
-    WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
-        WorkflowResult result;
-        result.step_results.resize(definition.steps.size());
-        std::mutex results_mutex;
-        std::vector<std::future<void>> futures;
+    namespace {
 
-        for (size_t i = 0; i < definition.steps.size(); ++i) {
-            const auto& step = definition.steps[i];
-
-            log_step_start(step, static_cast<int>(i));
-
-            if (step.parallel) {
-                // Execute in parallel
-                futures.push_back(std::async(std::launch::async,
-                    [this, &step, &result, &results_mutex, i]() {
-                        std::vector<WorkflowStepResult> snapshot;
-                        {
-                            std::lock_guard<std::mutex> lock(results_mutex);
-                            snapshot = result.step_results;
+        /// For each step, the earlier steps whose output it references.
+        std::vector<std::vector<size_t>> step_dependencies(const WorkflowDefinition& def) {
+            std::vector<std::vector<size_t>> deps(def.steps.size());
+            for (size_t i = 0; i < def.steps.size(); ++i) {
+                const auto refs = PlaceholderResolver::references(def.steps[i].params);
+                for (size_t pos : refs.positions) {
+                    if (pos >= 1 && pos - 1 < i) {
+                        deps[i].push_back(pos - 1);
+                    }
+                }
+                for (const auto& name : refs.names) {
+                    // Bind to the latest earlier step with this name.
+                    for (size_t j = i; j-- > 0;) {
+                        if (def.steps[j].name == name) {
+                            deps[i].push_back(j);
+                            break;
                         }
-                        auto step_result = execute_single_step(
-                            step, snapshot, static_cast<int>(i));
+                    }
+                }
+            }
+            return deps;
+        }
 
-                        std::lock_guard<std::mutex> lock(results_mutex);
-                        result.step_results[i] = std::move(step_result);
-                    }));
-            } else {
-                // Execute synchronously
-                auto step_result = execute_single_step(
-                    step, result.step_results, static_cast<int>(i));
+    } // namespace
 
-                log_step_complete(step_result, static_cast<int>(i));
+    WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
+        const size_t step_count = definition.steps.size();
+        const auto deps = step_dependencies(definition);
 
+        WorkflowResult result;
+        result.step_results.resize(step_count);
+        // Guards result.step_results: `parallel: true` steps run concurrently
+        // with the steps that follow them.
+        std::mutex results_mutex;
+        // Completion signal of each launched `parallel: true` step.
+        std::vector<std::shared_future<void>> in_flight(step_count);
+
+        // Runs step i after every step it references has finished, so a
+        // reference to a still-running parallel step never sees a blank result.
+        auto run_step = [&](size_t i) -> WorkflowStepResult {
+            for (size_t dep : deps[i]) {
+                if (in_flight[dep].valid()) {
+                    in_flight[dep].wait();
+                }
+            }
+
+            const auto& step = definition.steps[i];
+            WorkflowStepResult step_result;
+            try {
+                Orcha::Json params;
+                {
+                    std::lock_guard lock(results_mutex);
+                    params = PlaceholderResolver::resolve(step.params, result.step_results);
+                }
+                step_result = execute_single_step(step, params, static_cast<int>(i));
+            } catch (const std::exception& ex) {
+                step_result.success = false;
+                step_result.error_message = ex.what();
+            }
+            step_result.step_index = static_cast<int>(i);
+            step_result.command_name = step.command_name;
+            step_result.name = step.name.value_or("");
+
+            log_step_complete(step_result, static_cast<int>(i));
+            {
+                std::lock_guard lock(results_mutex);
                 result.step_results[i] = step_result;
+            }
+            return step_result;
+        };
 
+        auto wait_all = [&in_flight] {
+            for (auto& f : in_flight) {
+                if (f.valid()) {
+                    f.wait();
+                }
+            }
+        };
+
+        try {
+            for (size_t i = 0; i < step_count; ++i) {
+                const auto& step = definition.steps[i];
+                log_step_start(step, static_cast<int>(i));
+
+                if (step.parallel) {
+                    // in_flight is pre-sized and only element i is written
+                    // here; tasks read elements < i, so there is no race.
+                    in_flight[i] = std::async(std::launch::async, [run_step, i] {
+                        (void)run_step(i);
+                    }).share();
+                    continue;
+                }
+
+                auto step_result = run_step(i);
                 // Stop on failure for non-parallel steps
                 if (!step_result.success) {
-                    result.success = false;
-                    result.error_message = step_result.error_message;
+                    break;
+                }
+            }
+        } catch (...) {
+            wait_all();   // tasks reference locals of this frame
+            throw;
+        }
+        wait_all();
+
+        std::lock_guard lock(results_mutex);
+        result.success = std::ranges::all_of(result.step_results,
+            [](const auto& r) { return r.success; });
+        if (!result.success) {
+            for (const auto& r : result.step_results) {
+                if (!r.success && !r.error_message.empty()) {
+                    result.error_message = r.error_message;
                     break;
                 }
             }
         }
-
-        // Wait for all parallel tasks
-        for (auto& future : futures) {
-            if (future.valid()) {
-                future.get();
-            }
-        }
-
-        // Check overall success
-        result.success = std::ranges::all_of(result.step_results,
-            [](const auto& r) { return r.success; });
 
         return result;
     }
@@ -346,14 +436,15 @@ namespace Orcha::Workflow {
 
     WorkflowStepResult WorkflowEngine::execute_single_step(
         const WorkflowStep& step,
-        const std::vector<WorkflowStepResult>& previous_results,
+        const Orcha::Json& resolved_params,
         int step_index) {
 
         WorkflowStepResult result;
         result.step_index = step_index;
         result.command_name = step.command_name;
 
-        // Get command
+        // Get command. The shared_ptr keeps a plugin's library loaded for the
+        // whole execution, even if the plugin is disabled meanwhile.
         auto cmd = registry_->get_command(step.command_name);
         if (!cmd) {
             result.success = false;
@@ -361,10 +452,6 @@ namespace Orcha::Workflow {
             return result;
         }
 
-        // Resolve placeholders
-        auto resolved_params = PlaceholderResolver::resolve(step.params, previous_results);
-
-        // Execute
         result = executor_->execute_step(cmd, resolved_params);
         result.step_index = step_index;
         result.command_name = step.command_name;

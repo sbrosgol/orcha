@@ -5,6 +5,8 @@
 // - in-band command failures ({"success": false}) were recorded as success
 // - placeholder substitution re-scanned its own output (endless loop)
 // - an out-of-range {{stepN}} index threw out of the engine
+// - a step referencing a still-running parallel step saw a blank result, and
+//   result storage raced (run this binary under TSan to cover the race)
 // - unregistering a plugin command while it executed unmapped its code
 //
 
@@ -134,6 +136,46 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_placeholder_mixed_and_nested_paths\n";
     }
 
+    // ========== Parallel steps ==========
+
+    inline void test_step_waits_for_referenced_parallel_step() {
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        Workflow::WorkflowStep slow{"slow_value", Json{{"ms", 150}}, /*parallel=*/true};
+        slow.name = "slow";
+        def.steps.push_back(slow);
+        def.steps.push_back({"literal", Json{{"value", "{{steps.slow.output.v}}"}}});
+        def.steps.push_back({"literal", Json{{"value", "{{step1.output.v}}"}}});
+
+        auto result = engine.execute(def);
+        ORCHA_ASSERT(result.success);
+        ORCHA_ASSERT_EQ(result.step_results[1].output["out"].get<std::string>(), std::string("42"));
+        ORCHA_ASSERT_EQ(result.step_results[2].output["out"].get<std::string>(), std::string("42"));
+        std::cout << "[PASS] test_step_waits_for_referenced_parallel_step\n";
+    }
+
+    inline void test_parallel_and_sequential_steps_stress() {
+        // Many parallel steps interleaved with sequential steps that read
+        // their results. Under TSan this covers the result-storage race.
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        for (int i = 0; i < 8; ++i) {
+            Workflow::WorkflowStep s{"slow_value", Json{{"ms", 5 + i}}, /*parallel=*/true};
+            s.name = "p" + std::to_string(i);
+            def.steps.push_back(s);
+        }
+        for (int i = 0; i < 64; ++i) {
+            def.steps.push_back({"literal", Json{{"value",
+                "{{steps.p" + std::to_string(i % 8) + ".output.v}}"}}});
+        }
+        auto result = engine.execute(def);
+        ORCHA_ASSERT(result.success);
+        for (size_t i = 8; i < def.steps.size(); ++i) {
+            ORCHA_ASSERT_EQ(result.step_results[i].output["out"].get<std::string>(), std::string("42"));
+        }
+        std::cout << "[PASS] test_parallel_and_sequential_steps_stress\n";
+    }
+
     // ========== Plugin lifetime ==========
 
     inline void test_unregister_while_plugin_command_executing() {
@@ -172,6 +214,8 @@ namespace Orcha::Tests {
         test_placeholder_output_is_not_reexpanded();
         test_placeholder_out_of_range_index();
         test_placeholder_mixed_and_nested_paths();
+        test_step_waits_for_referenced_parallel_step();
+        test_parallel_and_sequential_steps_stress();
         test_unregister_while_plugin_command_executing();
     }
 
