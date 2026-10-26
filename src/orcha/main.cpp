@@ -236,7 +236,13 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
         job_service, denylist, server_config);
 
-    agent.start();
+    try {
+        agent.start();
+    } catch (const std::exception&) {
+        // CommandAgent::start already reported the cause (e.g. address in use
+        // or an invalid server.host); exit cleanly instead of std::terminate.
+        return 1;
+    }
 
     // Cron scheduler (Phase 3): fire enabled jobs whose schedule_cron is due.
     std::unique_ptr<Jobs::JobScheduler> scheduler;
