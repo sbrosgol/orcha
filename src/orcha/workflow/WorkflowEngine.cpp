@@ -35,6 +35,7 @@ namespace Orcha::Workflow {
                 result.error_message = "Validation failed for parameter '" +
                     validation.error().parameter_name + "': " +
                     validation.error().message;
+                result.failure = StepFailure::Validation;
                 return result;
             }
 
@@ -51,15 +52,18 @@ namespace Orcha::Workflow {
                     (out.contains("error") && out.at("error").is_string())
                         ? out.at("error").get<std::string>()
                         : "Command reported failure";
+                result.failure = StepFailure::Command;
                 return result;
             }
             result.success = true;
         } catch (const std::exception& ex) {
             result.success = false;
             result.error_message = ex.what();
+            result.failure = StepFailure::Command;
         } catch (...) {
             result.success = false;
             result.error_message = "Unknown error during command execution";
+            result.failure = StepFailure::Command;
         }
 
         return result;
@@ -260,7 +264,10 @@ namespace Orcha::Workflow {
         : registry_(std::move(registry))
         , executor_(std::move(executor))
         , logger_(std::move(logger))
-        , options_(std::move(options)) {
+        , options_(std::move(options))
+        , breakers_(options_.circuit_breakers
+                        ? options_.circuit_breakers
+                        : std::make_shared<Core::CircuitBreakerRegistry>()) {
 
         if (!executor_) {
             executor_ = std::make_shared<SyncStepExecutor>();
@@ -328,6 +335,10 @@ namespace Orcha::Workflow {
         std::mutex results_mutex;
         // Completion signal of each launched `parallel: true` step.
         std::vector<std::shared_future<void>> in_flight(step_count);
+        // For rollback: the order steps succeeded in, and the resolved
+        // parameters each ran with. Guarded by results_mutex.
+        std::vector<size_t> completion_order;
+        std::vector<Orcha::Json> executed_params(step_count);
         const auto context = ExecutionContext::capture();
 
         // Runs step i after every step it references has finished, so a
@@ -359,12 +370,27 @@ namespace Orcha::Workflow {
                     : "Step timed out after " + std::to_string(step_limit.count()) + " ms";
             };
 
+            Core::CircuitBreaker* breaker = definition.circuit_breaker
+                ? &breakers_->get_or_create(step.command_name, options_.circuit_breaker_config)
+                : nullptr;
+
             if (run_stop.stop_requested()) {
                 step_result.success = false;
                 step_result.error_message = "Cancelled";
+                step_result.failure = StepFailure::Cancelled;
             } else if (deadline && step_start >= *deadline) {
                 step_result.success = false;
                 step_result.error_message = timeout_message();
+                step_result.failure = StepFailure::Timeout;
+            } else if (breaker && !breaker->allow_request()) {
+                const auto wait = breaker->time_until_probe();
+                step_result.success = false;
+                step_result.failure = StepFailure::CircuitOpen;
+                step_result.error_message = "Circuit breaker open for '" + step.command_name + "'" +
+                    (wait > milliseconds::zero()
+                        ? "; next attempt allowed in " + std::to_string(wait.count()) + " ms"
+                        : "; a recovery probe is in progress");
+                breaker = nullptr;   // nothing was admitted, nothing to record
             } else {
                 const Core::ExecutionControl control(run_stop.get_token(), deadline);
                 try {
@@ -372,11 +398,13 @@ namespace Orcha::Workflow {
                     {
                         std::lock_guard lock(results_mutex);
                         params = PlaceholderResolver::resolve(step.params, result.step_results);
+                        executed_params[i] = params;
                     }
                     step_result = execute_single_step(step, params, static_cast<int>(i), control);
                 } catch (const std::exception& ex) {
                     step_result.success = false;
                     step_result.error_message = ex.what();
+                    step_result.failure = StepFailure::Command;
                 }
 
                 if (deadline && Clock::now() > *deadline) {
@@ -384,11 +412,25 @@ namespace Orcha::Workflow {
                     // control): its result is not trusted.
                     step_result.success = false;
                     step_result.error_message = timeout_message();
-                } else if (!step_result.success && run_stop.stop_requested() &&
-                           step_result.error_message.rfind("Cancelled", 0) != 0) {
-                    step_result.error_message = step_result.error_message.empty()
-                        ? std::string("Cancelled")
-                        : "Cancelled: " + step_result.error_message;
+                    step_result.failure = StepFailure::Timeout;
+                } else if (!step_result.success && run_stop.stop_requested()) {
+                    step_result.failure = StepFailure::Cancelled;
+                    if (step_result.error_message.rfind("Cancelled", 0) != 0) {
+                        step_result.error_message = step_result.error_message.empty()
+                            ? std::string("Cancelled")
+                            : "Cancelled: " + step_result.error_message;
+                    }
+                }
+            }
+
+            // Only outcomes that say something about the command's health
+            // move its breaker; everything else releases the admission.
+            if (breaker) {
+                switch (step_result.failure) {
+                    case StepFailure::None:    breaker->record_success(); break;
+                    case StepFailure::Command:
+                    case StepFailure::Timeout: breaker->record_failure(); break;
+                    default:                   breaker->abandon(); break;
                 }
             }
             step_result.step_index = static_cast<int>(i);
@@ -399,6 +441,9 @@ namespace Orcha::Workflow {
             {
                 std::lock_guard lock(results_mutex);
                 result.step_results[i] = step_result;
+                if (step_result.success) {
+                    completion_order.push_back(i);
+                }
             }
             return step_result;
         };
@@ -438,7 +483,7 @@ namespace Orcha::Workflow {
         }
         wait_all();
 
-        std::lock_guard lock(results_mutex);
+        // All tasks have finished: no more concurrent access to the results.
         result.success = std::ranges::all_of(result.step_results,
             [](const auto& r) { return r.success; });
         if (!result.success) {
@@ -448,9 +493,65 @@ namespace Orcha::Workflow {
                     break;
                 }
             }
+            if (definition.rollback != RollbackStrategy::None && !completion_order.empty()) {
+                roll_back(definition, result, completion_order, executed_params,
+                          run_stop.stop_requested());
+            }
         }
 
         return result;
+    }
+
+    void WorkflowEngine::roll_back(const WorkflowDefinition& definition,
+                                   WorkflowResult& result,
+                                   const std::vector<size_t>& completion_order,
+                                   const std::vector<Orcha::Json>& executed_params,
+                                   bool cancelled) {
+        if (logger_) {
+            logger_->info(cancelled
+                ? "Workflow cancelled; skipping rollback of " +
+                      std::to_string(completion_order.size()) + " completed step(s)"
+                : "Workflow failed; rolling back " +
+                      std::to_string(completion_order.size()) + " completed step(s)");
+        }
+
+        bool halted = false;
+        for (auto it = completion_order.rbegin(); it != completion_order.rend(); ++it) {
+            auto& step_result = result.step_results[*it];
+            StepRollback rollback;
+
+            if (cancelled) {
+                // Rollback cannot be cancelled; do not hold up shutdown with it.
+                rollback.message = "run cancelled";
+            } else if (halted) {
+                rollback.message = "an earlier rollback failed";
+            } else if (auto cmd = registry_->get_command(step_result.command_name); !cmd) {
+                rollback.status = StepRollback::Status::Failed;
+                rollback.message = "command is no longer registered";
+            } else if (!cmd->metadata().supports_rollback) {
+                rollback.status = StepRollback::Status::NotSupported;
+            } else {
+                try {
+                    cmd->rollback(executed_params[*it]);
+                    rollback.status = StepRollback::Status::RolledBack;
+                } catch (const std::exception& ex) {
+                    rollback.status = StepRollback::Status::Failed;
+                    rollback.message = ex.what();
+                } catch (...) {
+                    rollback.status = StepRollback::Status::Failed;
+                    rollback.message = "unknown error during rollback";
+                }
+            }
+
+            if (rollback.status == StepRollback::Status::Failed) {
+                if (logger_) {
+                    logger_->warn("Rollback of step " + std::to_string(*it + 1) + " (" +
+                                  step_result.command_name + ") failed: " + rollback.message);
+                }
+                halted = definition.rollback == RollbackStrategy::Reverse;
+            }
+            step_result.rollback = std::move(rollback);
+        }
     }
 
     Orcha::Json WorkflowEngine::execute_json(const Orcha::Json& workflow_json) {
@@ -515,6 +616,7 @@ namespace Orcha::Workflow {
         if (!cmd) {
             result.success = false;
             result.error_message = "Command not found: " + step.command_name;
+            result.failure = StepFailure::NotFound;
             return result;
         }
 

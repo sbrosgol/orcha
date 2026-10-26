@@ -53,6 +53,14 @@ namespace Orcha::Agent::Routes {
             }
 
             try {
+                // Rejects invalid settings (e.g. "rollback") before running anything.
+                (void)Workflow::WorkflowDefinition::from_json(json);
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest,
+                                   std::string("Invalid workflow: ") + ex.what());
+            }
+
+            try {
                 Orcha::Json result = engine_->execute_json(json);
 
                 // Record the ad-hoc run (no job id) when a job service exists.

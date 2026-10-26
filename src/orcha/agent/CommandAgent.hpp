@@ -11,6 +11,7 @@
 #include "../core/PluginManager.hpp"
 #include "../core/IPluginDiscovery.hpp"
 #include "../core/PluginDenylist.hpp"
+#include "../core/CircuitBreaker.hpp"
 #include "../workflow/IWorkflowEngine.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 #include "../jobs/JobService.hpp"
@@ -50,6 +51,8 @@ namespace Orcha::Agent {
          * @param denylist        Persistent plugin denylist.
          * @param server          Bind address, worker pool size and the API token
          *                        guarding POST /workflow (fail closed).
+         * @param circuit_breakers Shared per-command breakers (enables
+         *                        /api/circuit-breakers).
          */
         CommandAgent(std::shared_ptr<Core::ICommandRegistry> registry,
                     std::shared_ptr<Workflow::IWorkflowEngine> engine,
@@ -61,7 +64,8 @@ namespace Orcha::Agent {
                     std::chrono::milliseconds watch_interval = std::chrono::milliseconds(5000),
                     std::shared_ptr<Jobs::JobService> jobs = nullptr,
                     std::shared_ptr<Core::IPluginDenylist> denylist = nullptr,
-                    Config::ServerConfig server = {});
+                    Config::ServerConfig server = {},
+                    std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers = nullptr);
 
         ~CommandAgent();
 
@@ -106,6 +110,7 @@ namespace Orcha::Agent {
         std::shared_ptr<Jobs::JobService> jobs_;
         std::shared_ptr<Core::IPluginDenylist> denylist_;
         Config::ServerConfig server_config_;
+        std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers_;
 
         Router router_;
         std::unique_ptr<HttpServer> server_;
