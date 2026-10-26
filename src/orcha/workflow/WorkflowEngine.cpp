@@ -5,10 +5,12 @@
 
 #include "WorkflowEngine.hpp"
 #include "../core/Json.hpp"
+#include "ExecutionContext.hpp"
 #include "../utils/YamlToJson.hpp"
 #include <yaml-cpp/yaml.h>
 #include <regex>
 #include <algorithm>
+#include <charconv>
 #include <ranges>
 
 namespace Orcha::Workflow {
@@ -36,6 +38,20 @@ namespace Orcha::Workflow {
             }
 
             result.output = cmd->execute(params);
+
+            // Commands may report failure in-band instead of throwing:
+            // { "success": false, "error": "..." }. Honour it, otherwise a
+            // failed shell command / HTTP 500 would count as a successful step.
+            const auto& out = result.output;
+            if (out.is_object() && out.contains("success") &&
+                out.at("success").is_boolean() && !out.at("success").get<bool>()) {
+                result.success = false;
+                result.error_message =
+                    (out.contains("error") && out.at("error").is_string())
+                        ? out.at("error").get<std::string>()
+                        : "Command reported failure";
+                return result;
+            }
             result.success = true;
         } catch (const std::exception& ex) {
             result.success = false;
@@ -81,62 +97,104 @@ namespace Orcha::Workflow {
         return input;
     }
 
+    namespace {
+
+        // {{stepN.output.a.b}}  -> group 1 = N
+        // {{steps.<name>.output.a.b}} -> group 2 = name ("steps." prefix avoids
+        // any clash with the positional "stepN" form). Group 3 = the WHOLE
+        // dotted field path (a repeated capturing group would only keep its
+        // last iteration).
+        const std::regex& placeholder_pattern() {
+            static const std::regex re(
+                R"(\{\{(?:step(\d+)|steps\.([A-Za-z_]\w*))\.output((?:\.\w+)*)\}\})");
+            return re;
+        }
+
+        /// Parse a 1-based step position; nullopt on overflow or 0.
+        std::optional<size_t> parse_position(const std::ssub_match& m) {
+            size_t value = 0;
+            const char* first = &*m.first;
+            const char* last = first + m.length();
+            auto [ptr, ec] = std::from_chars(first, last, value);
+            if (ec != std::errc{} || ptr != last || value == 0) {
+                return std::nullopt;
+            }
+            return value;
+        }
+
+    } // namespace
+
     std::string PlaceholderResolver::resolve_string(
         const std::string& input,
         const std::vector<WorkflowStepResult>& previous_results) {
 
-        // Capture the WHOLE dotted path in group 2. A repeated *capturing* group
-        // (\.\w+)* would only capture its last iteration, so nested references
-        // like {{step1.output.a.b}} would lose all but the final segment.
-        static const std::regex placeholder_regex(
-            R"(\{\{step(\d+)\.output((?:\.[\w\d_]+)*)\}\})");
+        // Single left-to-right pass over the ORIGINAL input. Substituted text
+        // is never re-scanned, so a step output that itself contains
+        // "{{step1.output...}}" cannot cause re-expansion or an endless loop.
+        std::string result;
+        result.reserve(input.size());
+        size_t copied_up_to = 0;
 
-        // Named references: {{steps.<name>.output.<path>}}. A step's optional
-        // name lets later steps reference it by name instead of brittle position.
-        // ("steps." prefix avoids any clash with the positional "stepN" form.)
-        static const std::regex named_regex(
-            R"(\{\{steps\.([A-Za-z_][\w]*)\.output((?:\.[\w\d_]+)*)\}\})");
+        const auto& re = placeholder_pattern();
+        for (std::sregex_iterator it(input.begin(), input.end(), re), end; it != end; ++it) {
+            const std::smatch& match = *it;
+            result.append(input, copied_up_to,
+                          static_cast<size_t>(match.position(0)) - copied_up_to);
+            copied_up_to = static_cast<size_t>(match.position(0) + match.length(0));
 
-        std::string result = input;
-        std::smatch match;
+            const std::string field_path = match[3].str();
+            const WorkflowStepResult* source = nullptr;
 
-        while (std::regex_search(result, match, placeholder_regex)) {
-            int step_index = std::stoi(match[1].str()) - 1;
-            std::string field_path = match[2].str();
-            std::string replacement;
-
-            if (step_index >= 0 &&
-                step_index < static_cast<int>(previous_results.size())) {
-
-                auto value = navigate_output(
-                    previous_results[step_index].output, field_path);
-                replacement = json_value_to_string(value);
-            }
-
-            result.replace(match.position(0), match.length(0), replacement);
-        }
-
-        while (std::regex_search(result, match, named_regex)) {
-            const std::string step_name = match[1].str();
-            const std::string field_path = match[2].str();
-            std::string replacement;
-
-            // Walk in reverse so the MOST RECENT step with this name wins when
-            // names are duplicated. This keeps resolution consistent with the
-            // parallel dependency analyzer, whose name_to_index map overwrites
-            // earlier entries and thus also resolves to the last such step.
-            for (const auto& prev : std::views::reverse(previous_results)) {
-                if (!prev.name.empty() && prev.name == step_name) {
-                    replacement = json_value_to_string(
-                        navigate_output(prev.output, field_path));
-                    break;
+            if (match[1].matched) {
+                if (auto pos = parse_position(match[1]);
+                    pos && *pos <= previous_results.size()) {
+                    source = &previous_results[*pos - 1];
+                }
+            } else {
+                // Walk in reverse so the MOST RECENT step with this name wins
+                // when names are duplicated (consistent with the dependency
+                // analysis, which also binds a name to its latest step).
+                const std::string step_name = match[2].str();
+                for (const auto& prev : std::views::reverse(previous_results)) {
+                    if (!prev.name.empty() && prev.name == step_name) {
+                        source = &prev;
+                        break;
+                    }
                 }
             }
 
-            result.replace(match.position(0), match.length(0), replacement);
+            if (source) {
+                result += json_value_to_string(navigate_output(source->output, field_path));
+            }
         }
-
+        result.append(input, copied_up_to);
         return result;
+    }
+
+    PlaceholderResolver::References PlaceholderResolver::references(const Orcha::Json& input) {
+        References refs;
+        collect_references(input, refs);
+        return refs;
+    }
+
+    void PlaceholderResolver::collect_references(const Orcha::Json& input, References& out) {
+        if (input.is_string()) {
+            const auto& str = input.get_ref<const std::string&>();
+            const auto& re = placeholder_pattern();
+            for (std::sregex_iterator it(str.begin(), str.end(), re), end; it != end; ++it) {
+                if ((*it)[1].matched) {
+                    if (auto pos = parse_position((*it)[1])) {
+                        out.positions.push_back(*pos);
+                    }
+                } else {
+                    out.names.push_back((*it)[2].str());
+                }
+            }
+        } else if (input.is_structured()) {
+            for (const auto& elem : input) {
+                collect_references(elem, out);
+            }
+        }
     }
 
     Orcha::Json PlaceholderResolver::navigate_output(
@@ -209,60 +267,126 @@ namespace Orcha::Workflow {
     WorkflowEngine::WorkflowEngine(std::shared_ptr<Core::ICommandRegistry> registry)
         : WorkflowEngine(std::move(registry), std::make_shared<SyncStepExecutor>(), nullptr) {}
 
-    WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
-        WorkflowResult result;
-        result.step_results.resize(definition.steps.size());
-        std::mutex results_mutex;
-        std::vector<std::future<void>> futures;
+    namespace {
 
-        for (size_t i = 0; i < definition.steps.size(); ++i) {
-            const auto& step = definition.steps[i];
-
-            log_step_start(step, static_cast<int>(i));
-
-            if (step.parallel) {
-                // Execute in parallel
-                futures.push_back(std::async(std::launch::async,
-                    [this, &step, &result, &results_mutex, i]() {
-                        std::vector<WorkflowStepResult> snapshot;
-                        {
-                            std::lock_guard<std::mutex> lock(results_mutex);
-                            snapshot = result.step_results;
+        /// For each step, the earlier steps whose output it references.
+        std::vector<std::vector<size_t>> step_dependencies(const WorkflowDefinition& def) {
+            std::vector<std::vector<size_t>> deps(def.steps.size());
+            for (size_t i = 0; i < def.steps.size(); ++i) {
+                const auto refs = PlaceholderResolver::references(def.steps[i].params);
+                for (size_t pos : refs.positions) {
+                    if (pos >= 1 && pos - 1 < i) {
+                        deps[i].push_back(pos - 1);
+                    }
+                }
+                for (const auto& name : refs.names) {
+                    // Bind to the latest earlier step with this name.
+                    for (size_t j = i; j-- > 0;) {
+                        if (def.steps[j].name == name) {
+                            deps[i].push_back(j);
+                            break;
                         }
-                        auto step_result = execute_single_step(
-                            step, snapshot, static_cast<int>(i));
+                    }
+                }
+            }
+            return deps;
+        }
 
-                        std::lock_guard<std::mutex> lock(results_mutex);
-                        result.step_results[i] = std::move(step_result);
-                    }));
-            } else {
-                // Execute synchronously
-                auto step_result = execute_single_step(
-                    step, result.step_results, static_cast<int>(i));
+    } // namespace
 
-                log_step_complete(step_result, static_cast<int>(i));
+    WorkflowResult WorkflowEngine::execute(const WorkflowDefinition& definition) {
+        const size_t step_count = definition.steps.size();
+        const auto deps = step_dependencies(definition);
 
+        WorkflowResult result;
+        result.step_results.resize(step_count);
+        // Guards result.step_results: `parallel: true` steps run concurrently
+        // with the steps that follow them.
+        std::mutex results_mutex;
+        // Completion signal of each launched `parallel: true` step.
+        std::vector<std::shared_future<void>> in_flight(step_count);
+        const auto context = ExecutionContext::capture();
+
+        // Runs step i after every step it references has finished, so a
+        // reference to a still-running parallel step never sees a blank result.
+        auto run_step = [&](size_t i) -> WorkflowStepResult {
+            for (size_t dep : deps[i]) {
+                if (in_flight[dep].valid()) {
+                    in_flight[dep].wait();
+                }
+            }
+
+            const auto& step = definition.steps[i];
+            WorkflowStepResult step_result;
+            try {
+                Orcha::Json params;
+                {
+                    std::lock_guard lock(results_mutex);
+                    params = PlaceholderResolver::resolve(step.params, result.step_results);
+                }
+                step_result = execute_single_step(step, params, static_cast<int>(i));
+            } catch (const std::exception& ex) {
+                step_result.success = false;
+                step_result.error_message = ex.what();
+            }
+            step_result.step_index = static_cast<int>(i);
+            step_result.command_name = step.command_name;
+            step_result.name = step.name.value_or("");
+
+            log_step_complete(step_result, static_cast<int>(i));
+            {
+                std::lock_guard lock(results_mutex);
                 result.step_results[i] = step_result;
+            }
+            return step_result;
+        };
 
+        auto wait_all = [&in_flight] {
+            for (auto& f : in_flight) {
+                if (f.valid()) {
+                    f.wait();
+                }
+            }
+        };
+
+        try {
+            for (size_t i = 0; i < step_count; ++i) {
+                const auto& step = definition.steps[i];
+                log_step_start(step, static_cast<int>(i));
+
+                if (step.parallel) {
+                    // in_flight is pre-sized and only element i is written
+                    // here; tasks read elements < i, so there is no race.
+                    in_flight[i] = std::async(std::launch::async, [run_step, context, i] {
+                        ExecutionContext::Scope scope(context);
+                        (void)run_step(i);
+                    }).share();
+                    continue;
+                }
+
+                auto step_result = run_step(i);
                 // Stop on failure for non-parallel steps
                 if (!step_result.success) {
-                    result.success = false;
-                    result.error_message = step_result.error_message;
+                    break;
+                }
+            }
+        } catch (...) {
+            wait_all();   // tasks reference locals of this frame
+            throw;
+        }
+        wait_all();
+
+        std::lock_guard lock(results_mutex);
+        result.success = std::ranges::all_of(result.step_results,
+            [](const auto& r) { return r.success; });
+        if (!result.success) {
+            for (const auto& r : result.step_results) {
+                if (!r.success && !r.error_message.empty()) {
+                    result.error_message = r.error_message;
                     break;
                 }
             }
         }
-
-        // Wait for all parallel tasks
-        for (auto& future : futures) {
-            if (future.valid()) {
-                future.get();
-            }
-        }
-
-        // Check overall success
-        result.success = std::ranges::all_of(result.step_results,
-            [](const auto& r) { return r.success; });
 
         return result;
     }
@@ -315,14 +439,15 @@ namespace Orcha::Workflow {
 
     WorkflowStepResult WorkflowEngine::execute_single_step(
         const WorkflowStep& step,
-        const std::vector<WorkflowStepResult>& previous_results,
+        const Orcha::Json& resolved_params,
         int step_index) {
 
         WorkflowStepResult result;
         result.step_index = step_index;
         result.command_name = step.command_name;
 
-        // Get command
+        // Get command. The shared_ptr keeps a plugin's library loaded for the
+        // whole execution, even if the plugin is disabled meanwhile.
         auto cmd = registry_->get_command(step.command_name);
         if (!cmd) {
             result.success = false;
@@ -330,10 +455,6 @@ namespace Orcha::Workflow {
             return result;
         }
 
-        // Resolve placeholders
-        auto resolved_params = PlaceholderResolver::resolve(step.params, previous_results);
-
-        // Execute
         result = executor_->execute_step(cmd, resolved_params);
         result.step_index = step_index;
         result.command_name = step.command_name;

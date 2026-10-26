@@ -116,6 +116,10 @@ COPY --from=build --chown=orcha:orcha /out/ /app/
 
 USER orcha
 
+# Inside a container the server must listen on all interfaces; the published
+# port is the boundary. POST /workflow still requires ORCHA_SERVER_API_TOKEN.
+ENV ORCHA_SERVER_HOST=0.0.0.0
+
 # HTTP API (matches server.port in orcha.yaml).
 EXPOSE 8070
 

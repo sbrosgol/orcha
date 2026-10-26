@@ -7,6 +7,7 @@
 
 #include "../IRouteHandler.hpp"
 #include "../HttpJson.hpp"
+#include "../../core/JsonCompat.hpp"
 #include "../../workflow/IWorkflowEngine.hpp"
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
@@ -43,8 +44,15 @@ namespace Orcha::Agent::Routes {
                 logger_->info("Executing workflow from POST /workflow");
             }
 
+            Orcha::Json json;
             try {
-                Orcha::Json json = Orcha::Json::parse(request.body);
+                json = Orcha::parse_json_bounded(request.body);
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest,
+                                   std::string("Invalid JSON body: ") + ex.what());
+            }
+
+            try {
                 Orcha::Json result = engine_->execute_json(json);
 
                 // Record the ad-hoc run (no job id) when a job service exists.

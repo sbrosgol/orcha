@@ -18,12 +18,18 @@ namespace Orcha::Core {
      *
      * Thread-safe command registry that supports dynamic loading of
      * command plugins from shared libraries.
+     *
+     * Lifetime: a command loaded from a plugin library keeps that library
+     * mapped for as long as ANY shared_ptr to the command is alive (the
+     * library handle is owned by the command's deleter). Unregistering a
+     * command that a workflow is still executing therefore only drops the
+     * registry's reference; the library is closed after the last user lets go.
      */
     class CommandRegistry : public IMutableCommandRegistry {
     public:
         explicit CommandRegistry(std::shared_ptr<Utils::ILogger> logger = nullptr)
             : logger_(std::move(logger)) {}
-        ~CommandRegistry() override;
+        ~CommandRegistry() override = default;
 
         // Prevent copying
         CommandRegistry(const CommandRegistry&) = delete;
@@ -45,14 +51,7 @@ namespace Orcha::Core {
         [[nodiscard]] bool unregister_command(const std::string& name) override;
 
     private:
-        struct PluginHandle {
-            void* handle = nullptr;
-            std::shared_ptr<ICommand> command;
-            std::string library_path;
-        };
-
         mutable std::shared_mutex mutex_;
-        std::vector<PluginHandle> plugins_;
         std::unordered_map<std::string, std::shared_ptr<ICommand>> commands_;
         std::shared_ptr<Utils::ILogger> logger_;
     };

@@ -17,6 +17,9 @@ namespace Orcha::Workflow {
     /**
      * @class SyncStepExecutor
      * @brief Synchronous step executor.
+     *
+     * A step fails if the command throws, fails validation, or returns an
+     * object whose "success" field is false (see ICommand::execute).
      */
     class SyncStepExecutor : public IStepExecutor {
     public:
@@ -35,6 +38,20 @@ namespace Orcha::Workflow {
     class PlaceholderResolver {
     public:
         /**
+         * @struct References
+         * @brief Step references found in a parameter tree.
+         */
+        struct References {
+            std::vector<size_t> positions;   ///< 1-based, from {{stepN.output...}}
+            std::vector<std::string> names;  ///< from {{steps.<name>.output...}}
+        };
+
+        /**
+         * @brief Collect every step referenced by placeholders in @p input.
+         */
+        [[nodiscard]] static References references(const Orcha::Json& input);
+
+        /**
          * @brief Resolve placeholders in a JSON value.
          * @param input Input JSON with placeholders.
          * @param previous_results Results from previous steps.
@@ -48,6 +65,8 @@ namespace Orcha::Workflow {
         [[nodiscard]] static std::string resolve_string(
             const std::string& input,
             const std::vector<WorkflowStepResult>& previous_results);
+
+        static void collect_references(const Orcha::Json& input, References& out);
 
         [[nodiscard]] static Orcha::Json navigate_output(
             const Orcha::Json& output,
@@ -96,7 +115,7 @@ namespace Orcha::Workflow {
     private:
         [[nodiscard]] WorkflowStepResult execute_single_step(
             const WorkflowStep& step,
-            const std::vector<WorkflowStepResult>& previous_results,
+            const Orcha::Json& resolved_params,
             int step_index);
 
         void log_step_start(const WorkflowStep& step, int index);

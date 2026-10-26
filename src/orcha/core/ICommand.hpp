@@ -128,6 +128,11 @@ namespace Orcha::Core {
          * @brief Execute the command with given parameters.
          * @param params JSON object containing command parameters.
          * @return JSON result of execution.
+         *
+         * Failure contract: a command fails its workflow step either by
+         * throwing, or by returning an object with `"success": false` (and
+         * optionally an `"error"` string used as the step's error message).
+         * Any other return value is a successful step.
          */
         virtual Json execute(const Json& params) = 0;
 
@@ -215,6 +220,15 @@ namespace Orcha::Core {
      */
     extern "C" {
         typedef ICommand* (*CreateCommandFunc)();
+
+        /**
+         * @brief Optional destructor export ("destroy_command").
+         *
+         * When a plugin exports it, the host destroys commands through it so
+         * the object is freed by the allocator that created it. Without it the
+         * host falls back to `delete` (virtual destructor).
+         */
+        typedef void (*DestroyCommandFunc)(ICommand*);
     }
 
 } // namespace Orcha::Core

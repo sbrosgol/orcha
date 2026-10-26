@@ -3,9 +3,15 @@
 # overridden by an environment variable, e.g. ORCHA_ADMIN_PASSWORD.
 
 server:
-  host: "0.0.0.0"
+  # Interface to bind. Defaults to 127.0.0.1 (local only); use "0.0.0.0" to
+  # accept remote connections (the Docker image does this).
+  host: "127.0.0.1"
   port: 8070
   worker_threads: 4
+  # Bearer token required by POST /workflow (Authorization: Bearer <token>).
+  # When empty, /workflow is served only if `host` is a loopback address;
+  # on any other host it is disabled (503). Prefer ORCHA_SERVER_API_TOKEN.
+  api_token: ""
 
 logging:
   file: "./logs/orcha.log"

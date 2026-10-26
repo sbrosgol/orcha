@@ -16,6 +16,7 @@
 #include "../jobs/JobService.hpp"
 #include "../utils/ILogger.hpp"
 #include "../config/AdminConfig.hpp"
+#include "../config/ServerConfig.hpp"
 #include <chrono>
 #include <memory>
 #include <string>
@@ -45,6 +46,10 @@ namespace Orcha::Agent {
          * @param admin           Admin dashboard configuration.
          * @param plugin_dir      Plugin directory (for enable/watch).
          * @param watch_interval  Directory scan interval used when enabling the watcher.
+         * @param jobs            Job service (enables /api/jobs and run recording).
+         * @param denylist        Persistent plugin denylist.
+         * @param server          Bind address, worker pool size and the API token
+         *                        guarding POST /workflow (fail closed).
          */
         CommandAgent(std::shared_ptr<Core::ICommandRegistry> registry,
                     std::shared_ptr<Workflow::IWorkflowEngine> engine,
@@ -55,7 +60,8 @@ namespace Orcha::Agent {
                     std::string plugin_dir = "./commands",
                     std::chrono::milliseconds watch_interval = std::chrono::milliseconds(5000),
                     std::shared_ptr<Jobs::JobService> jobs = nullptr,
-                    std::shared_ptr<Core::IPluginDenylist> denylist = nullptr);
+                    std::shared_ptr<Core::IPluginDenylist> denylist = nullptr,
+                    Config::ServerConfig server = {});
 
         ~CommandAgent();
 
@@ -64,10 +70,10 @@ namespace Orcha::Agent {
         CommandAgent& operator=(const CommandAgent&) = delete;
 
         /**
-         * @brief Start the HTTP server.
-         * @param port Port to listen on.
+         * @brief Start the HTTP server on the configured host and port.
+         * @throws std::runtime_error if the address cannot be bound.
          */
-        void start(unsigned short port);
+        void start();
 
         /**
          * @brief Stop the HTTP server.
@@ -99,6 +105,7 @@ namespace Orcha::Agent {
         std::chrono::milliseconds watch_interval_;
         std::shared_ptr<Jobs::JobService> jobs_;
         std::shared_ptr<Core::IPluginDenylist> denylist_;
+        Config::ServerConfig server_config_;
 
         Router router_;
         std::unique_ptr<HttpServer> server_;

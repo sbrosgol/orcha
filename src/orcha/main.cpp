@@ -234,9 +234,15 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
-        job_service, denylist);
+        job_service, denylist, server_config);
 
-    agent.start(server_config.port);
+    try {
+        agent.start();
+    } catch (const std::exception&) {
+        // CommandAgent::start already reported the cause (e.g. address in use
+        // or an invalid server.host); exit cleanly instead of std::terminate.
+        return 1;
+    }
 
     // Cron scheduler (Phase 3): fire enabled jobs whose schedule_cron is due.
     std::unique_ptr<Jobs::JobScheduler> scheduler;
@@ -254,7 +260,10 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
               << ":" << server_config.port << "/\n";
     std::cout << "[Orcha] Available endpoints:\n";
     std::cout << "  GET  /          - Health check\n";
-    std::cout << "  POST /workflow  - Execute workflow\n";
+    std::cout << "  POST /workflow  - Execute workflow"
+              << (!server_config.api_token.empty() ? " (Bearer token)"
+                  : server_config.is_loopback() ? " (local clients only)"
+                  : " (DISABLED: set server.api_token)") << "\n";
     std::cout << "  GET  /commands  - List commands\n";
     std::cout << "  GET  /swagger   - API documentation\n";
     if (admin_on) {

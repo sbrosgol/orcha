@@ -8,6 +8,7 @@
 #include "IRouteHandler.hpp"
 #include "HttpJson.hpp"
 #include "../config/AdminConfig.hpp"
+#include "../config/ServerConfig.hpp"
 #include "../utils/ILogger.hpp"
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Orcha::Agent {
@@ -166,6 +168,83 @@ namespace Orcha::Agent {
                 logger->warn("Rejected unauthenticated admin request to " + path);
             }
             return detail::unauthorized_response(); // handled (rejected)
+        };
+    }
+
+    /**
+     * @brief Build the fail-closed guard for the execution API (POST /workflow).
+     *
+     * For requests under @p protected_prefixes:
+     * - If @p server.api_token is set, the request must carry
+     *   `Authorization: Bearer <token>` or valid admin Basic credentials
+     *   (when the admin surface is serviceable with auth); otherwise 401.
+     * - If no token is set, the request is allowed only when the server is
+     *   bound to a loopback address; otherwise 503 (the API is disabled
+     *   rather than exposed unauthenticated).
+     *
+     * @param server             Server configuration (host + api_token).
+     * @param admin              Admin configuration (Basic credentials accepted too).
+     * @param protected_prefixes Path prefixes requiring authentication.
+     * @param logger             Optional logger for rejections.
+     */
+    [[nodiscard]] inline Router::Middleware make_api_auth(
+        Config::ServerConfig server,
+        Config::AdminConfig admin,
+        std::vector<std::string> protected_prefixes,
+        std::shared_ptr<Utils::ILogger> logger = nullptr) {
+
+        const bool accept_admin_basic = admin.is_serviceable() && admin.auth_required;
+
+        return [server = std::move(server),
+                admin = std::move(admin),
+                prefixes = std::move(protected_prefixes),
+                accept_admin_basic,
+                logger = std::move(logger)](
+                   const HttpRequest& request) -> std::optional<HttpResponse> {
+
+            const std::string& path = request.path;
+            const bool guarded = std::any_of(
+                prefixes.begin(), prefixes.end(),
+                [&](const std::string& p) { return path_starts_with(path, p); });
+            if (!guarded) {
+                return std::nullopt;
+            }
+
+            if (server.api_token.empty()) {
+                if (server.is_loopback()) {
+                    return std::nullopt; // local-only bind: no token required
+                }
+                if (logger) {
+                    logger->warn("Rejected " + path + ": server.api_token is not set and "
+                                 "the server is bound to non-loopback host " + server.host);
+                }
+                return reply_error(status::ServiceUnavailable,
+                    "The workflow API is disabled: set server.api_token "
+                    "(ORCHA_SERVER_API_TOKEN) to enable it on a non-loopback host");
+            }
+
+            if (auto value = request.header("Authorization")) {
+                constexpr std::string_view kBearer = "Bearer ";
+                if (value->size() > kBearer.size() &&
+                    value->compare(0, kBearer.size(), kBearer) == 0 &&
+                    detail::constant_time_equals(value->substr(kBearer.size()),
+                                                 server.api_token)) {
+                    return std::nullopt;
+                }
+                if (accept_admin_basic) {
+                    if (auto creds = detail::parse_basic_auth(*value)) {
+                        if (detail::constant_time_equals(creds->user, admin.username) &&
+                            detail::constant_time_equals(creds->pass, admin.password)) {
+                            return std::nullopt;
+                        }
+                    }
+                }
+            }
+
+            if (logger) {
+                logger->warn("Rejected unauthenticated API request to " + path);
+            }
+            return detail::unauthorized_response();
         };
     }
 

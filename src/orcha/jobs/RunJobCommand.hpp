@@ -17,6 +17,7 @@
 
 #include "../core/ICommand.hpp"
 #include "JobService.hpp"
+#include "../workflow/ExecutionContext.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -64,25 +65,24 @@ namespace Orcha::Jobs {
                 throw std::runtime_error("run_job: no job named or with id '" + ref + "'");
             }
 
-            // Recursion / cycle guard (synchronous, thread-local call stack).
-            if (std::find(s_stack.begin(), s_stack.end(), job->id) != s_stack.end()) {
+            // Recursion / cycle guard. The stack lives in the workflow
+            // ExecutionContext, which engines propagate to the threads they
+            // spawn, so `parallel: true` steps cannot bypass it.
+            const auto& stack = Workflow::ExecutionContext::job_stack();
+            if (std::find(stack.begin(), stack.end(), job->id) != stack.end()) {
                 throw std::runtime_error(
                     "run_job: cycle detected involving job '" + job->name + "'");
             }
-            if (s_stack.size() >= kMaxDepth) {
+            if (stack.size() >= kMaxDepth) {
                 throw std::runtime_error(
                     "run_job: maximum nesting depth (" + std::to_string(kMaxDepth) + ") exceeded");
             }
 
-            s_stack.push_back(job->id);
             std::optional<RunRecord> run;
-            try {
+            {
+                Workflow::ExecutionContext::JobFrame frame(job->id);
                 run = svc->run_job(job->id, "nested");
-            } catch (...) {
-                s_stack.pop_back();
-                throw;
             }
-            s_stack.pop_back();
 
             if (!run) {
                 throw std::runtime_error("run_job: job '" + ref + "' could not be run");
@@ -110,9 +110,6 @@ namespace Orcha::Jobs {
 
     private:
         static constexpr size_t kMaxDepth = 16;
-        // Per-thread call stack of job ids currently executing, for cycle/depth detection.
-        inline static thread_local std::vector<std::string> s_stack;
-
         std::weak_ptr<JobService> service_;
     };
 

@@ -172,3 +172,11 @@ add_executable(test_new_features
 )
 # jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp.
 target_link_libraries(test_new_features PRIVATE jobs config)
+
+# Test-only plugin used by the registry lifetime regression test (a command that
+# is still executing when it is unregistered).
+add_library(orcha_test_slow_plugin MODULE tests/plugins/SlowTestPlugin.cpp)
+target_link_libraries(orcha_test_slow_plugin PRIVATE nlohmann_json::nlohmann_json)
+add_dependencies(test_new_features orcha_test_slow_plugin)
+target_compile_definitions(test_new_features PRIVATE
+        ORCHA_TEST_SLOW_PLUGIN_PATH="$<TARGET_FILE:orcha_test_slow_plugin>")
