@@ -17,6 +17,7 @@
 
 #include "../IRouteHandler.hpp"
 #include "../HttpJson.hpp"
+#include "../../core/JsonCompat.hpp"
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
 
@@ -109,7 +110,7 @@ namespace Orcha::Agent::Routes {
         HttpResponse create_job(const HttpRequest& request) {
             Jobs::JobDefinition job;
             try {
-                job = Jobs::JobDefinition::from_json(Orcha::Json::parse(request.body));
+                job = Jobs::JobDefinition::from_json(Orcha::parse_json_bounded(request.body));
             } catch (const std::exception& ex) {
                 return reply_error(status::BadRequest,
                                    std::string("Invalid JSON body: ") + ex.what());
@@ -135,7 +136,7 @@ namespace Orcha::Agent::Routes {
             }
             Jobs::JobDefinition job;
             try {
-                job = Jobs::JobDefinition::from_json(Orcha::Json::parse(request.body));
+                job = Jobs::JobDefinition::from_json(Orcha::parse_json_bounded(request.body));
             } catch (const std::exception& ex) {
                 return reply_error(status::BadRequest,
                                    std::string("Invalid JSON body: ") + ex.what());

@@ -9,11 +9,13 @@
 //   result storage raced (run this binary under TSan to cover the race)
 // - run_job's cycle guard was bypassed by `parallel: true` steps
 // - unregistering a plugin command while it executed unmapped its code
+// - deeply nested request JSON overflowed a worker thread's stack
 //
 
 #pragma once
 
 #include "../core/CommandRegistry.hpp"
+#include "../core/JsonCompat.hpp"
 #include "../jobs/JobService.hpp"
 #include "../jobs/RunJobCommand.hpp"
 #include "../jobs/SqliteJobStore.hpp"
@@ -236,6 +238,33 @@ namespace Orcha::Tests {
 #endif
     }
 
+    // ========== Request JSON depth ==========
+
+    inline void test_bounded_json_depth() {
+        auto nested = [](size_t depth) {
+            return std::string(depth, '[') + std::string(depth, ']');
+        };
+        ORCHA_ASSERT(parse_json_bounded(nested(kMaxRequestJsonDepth)).is_array());
+
+        bool rejected = false;
+        try {
+            (void)parse_json_bounded(nested(kMaxRequestJsonDepth + 1));
+        } catch (const JsonDepthError&) {
+            rejected = true;
+        }
+        ORCHA_ASSERT(rejected);
+
+        // Far beyond any stack: must be rejected while parsing, not crash.
+        rejected = false;
+        try {
+            (void)parse_json_bounded(nested(200000));
+        } catch (const JsonDepthError&) {
+            rejected = true;
+        }
+        ORCHA_ASSERT(rejected);
+        std::cout << "[PASS] test_bounded_json_depth\n";
+    }
+
     inline void run_p0_regression_tests() {
         std::cout << "\n-- P0 Regressions --\n";
         test_inband_failure_fails_step();
@@ -246,6 +275,7 @@ namespace Orcha::Tests {
         test_parallel_and_sequential_steps_stress();
         test_run_job_cycle_detected_across_parallel_steps();
         test_unregister_while_plugin_command_executing();
+        test_bounded_json_depth();
     }
 
 } // namespace Orcha::Tests
