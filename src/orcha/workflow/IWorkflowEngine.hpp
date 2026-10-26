@@ -55,7 +55,7 @@ namespace Orcha::Workflow {
         Json params;
         bool parallel = false;
         std::optional<std::string> name;  // Optional step name for reference
-        std::optional<int> timeout_ms;
+        std::optional<int> timeout_ms;    // Per-step limit; <= 0 means none
     };
 
     /**
@@ -66,6 +66,7 @@ namespace Orcha::Workflow {
         std::string name;
         std::string description;
         std::vector<WorkflowStep> steps;
+        std::optional<int> timeout_ms;    // Whole-run limit; <= 0 means none
 
         static WorkflowDefinition from_json(const Json& json) {
             WorkflowDefinition def;
@@ -75,6 +76,9 @@ namespace Orcha::Workflow {
             }
             if (json.contains("description")) {
                 def.description = json.at("description").get<std::string>();
+            }
+            if (json.contains("timeout_ms")) {
+                def.timeout_ms = json.at("timeout_ms").get<int>();
             }
 
             if (json.contains("steps") && json.at("steps").is_array()) {
@@ -137,11 +141,13 @@ namespace Orcha::Workflow {
          * @brief Execute a single step.
          * @param cmd The command to execute.
          * @param params Resolved parameters.
+         * @param control Cancellation token and deadline for this step.
          * @return Step execution result.
          */
         [[nodiscard]] virtual WorkflowStepResult execute_step(
             const std::shared_ptr<Core::ICommand>& cmd,
-            const Json& params) = 0;
+            const Json& params,
+            const Core::ExecutionControl& control) = 0;
     };
 
     /**

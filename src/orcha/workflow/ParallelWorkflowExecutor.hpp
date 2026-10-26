@@ -432,7 +432,7 @@ namespace Orcha::Workflow {
 
             // Execute (with optional circuit breaker)
             auto execute_fn = [&]() {
-                return step_executor_->execute_step(cmd, resolved_params);
+                return step_executor_->execute_step(cmd, resolved_params, Core::ExecutionControl{});
             };
 
             if (circuit_breakers_) {

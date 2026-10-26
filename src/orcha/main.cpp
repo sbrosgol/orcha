@@ -3,12 +3,14 @@
 // Updated to use new architecture with DI and configuration
 //
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 #ifdef _WIN32
 #include <io.h>
@@ -51,9 +53,11 @@ namespace fs = std::filesystem;
 
 /**
  * @brief Bootstrap application services into the service locator.
+ * @param run_cancel Cancels every workflow run when stopped (shutdown).
  */
 void bootstrap_services(Orcha::Core::ServiceLocator& services,
-                       const Orcha::Config::IConfiguration& config) {
+                       const Orcha::Config::IConfiguration& config,
+                       std::stop_token run_cancel) {
     using namespace Orcha;
 
     // Logger (singleton)
@@ -86,11 +90,16 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     plugin_manager->set_denylist(denylist);
 
     // Workflow Engine (factory - creates new instances)
-    auto engine_factory = [registry, logger_ptr]() {
+    Workflow::EngineOptions engine_options;
+    engine_options.default_step_timeout = std::chrono::milliseconds(
+        std::max<int64_t>(0, config.get_int("workflow.default_timeout_ms", 0)));
+    engine_options.cancel = std::move(run_cancel);
+    auto engine_factory = [registry, logger_ptr, engine_options]() {
         return std::make_shared<Workflow::WorkflowEngine>(
             registry,
             std::make_shared<Workflow::SyncStepExecutor>(),
-            logger_ptr);
+            logger_ptr,
+            engine_options);
     };
     services.register_factory<Workflow::IWorkflowEngine>(
         std::function<std::shared_ptr<Workflow::IWorkflowEngine>()>(engine_factory));
@@ -214,7 +223,8 @@ int run_cli_mode(Orcha::Core::ServiceLocator& services, const std::string& yaml_
  * @brief Run in server mode - start HTTP server.
  */
 int run_server_mode(Orcha::Core::ServiceLocator& services,
-                   const Orcha::Config::IConfiguration& config) {
+                   const Orcha::Config::IConfiguration& config,
+                   std::stop_source& run_cancel) {
     using namespace Orcha;
 
     auto server_config = Config::ServerConfig::from_config(config);
@@ -320,6 +330,9 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     }
 
     logger->info("Shutting down Orcha...");
+    // Cancel in-flight workflow runs first so the scheduler and the HTTP
+    // worker pool are not left waiting for long-running steps.
+    run_cancel.request_stop();
     if (scheduler) scheduler->stop();
     agent.stop();
 
@@ -345,7 +358,8 @@ auto main(int argc, char* argv[]) -> int {
 
     // Create service locator and bootstrap services
     Core::ServiceLocator services;
-    bootstrap_services(services, *config);
+    std::stop_source run_cancel;
+    bootstrap_services(services, *config, run_cancel.get_token());
 
     auto logger = services.get<Utils::ILogger>();
     logger->info("Starting Orcha v" + std::string(Orcha::kVersion) + "...");
@@ -364,7 +378,7 @@ auto main(int argc, char* argv[]) -> int {
     }
 
     // Otherwise, run server mode
-    int result = run_server_mode(services, *config);
+    int result = run_server_mode(services, *config, run_cancel);
     services.clear();
     return result;
 }
