@@ -13,9 +13,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -34,6 +36,8 @@ namespace Orcha::Jobs {
         JobScheduler& operator=(const JobScheduler&) = delete;
 
         void start();
+        /// Stop the background thread. Returns promptly (the tick wait is
+        /// interrupted) unless a job is executing; cancel runs first.
         void stop();
         [[nodiscard]] bool is_running() const { return running_.load(); }
 
@@ -47,18 +51,21 @@ namespace Orcha::Jobs {
         size_t evaluate(const std::tm& now_utc);
 
     private:
-        void loop();
+        void loop(std::stop_token stop);
 
         std::shared_ptr<JobService> service_;
         std::shared_ptr<Utils::ILogger> logger_;
         std::chrono::seconds tick_;
 
         std::atomic<bool> running_{false};
-        std::thread thread_;
+        std::mutex wait_mutex_;
+        std::condition_variable_any wait_cv_;
 
         std::mutex mutex_;
         std::unordered_map<std::string, std::string> last_fired_; // job id -> "YYYY-MM-DDTHH:MM"
         std::unordered_set<std::string> warned_bad_cron_;          // jobs with an unparseable cron
+
+        std::jthread thread_;   // last: stopped/joined before the members it uses
     };
 
 } // namespace Orcha::Jobs

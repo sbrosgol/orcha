@@ -14,7 +14,9 @@
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <stop_token>
 #include <unordered_map>
 
 namespace Orcha::Core {
@@ -137,7 +139,8 @@ namespace Orcha::Core {
                            std::chrono::milliseconds interval_ms);
 
         /**
-         * @brief Stop watching for plugin changes.
+         * @brief Stop watching for plugin changes. Returns promptly: the
+         *        watcher's wait between scans is interrupted.
          */
         void stop_watching();
 
@@ -160,7 +163,7 @@ namespace Orcha::Core {
         void on_plugin_error(std::function<void(const std::string&, const std::string&)> callback);
 
     private:
-        void watch_thread_func();
+        void watch_thread_func(std::stop_token stop);
         void notify_loaded(const std::string& name);
         void notify_unloaded(const std::string& name);
         void notify_error(const std::string& name, const std::string& error);
@@ -177,11 +180,16 @@ namespace Orcha::Core {
         // differs from its library/plugin name), used to unregister on unload.
         std::unordered_map<std::string, std::vector<std::string>> plugin_commands_;
 
-        // Watching
+        // Watching. watch_control_mutex_ serialises start/stop (they can be
+        // called concurrently from admin API requests); the directory and
+        // interval are only written while the watcher thread is not running.
+        std::mutex watch_control_mutex_;
         std::atomic<bool> watching_{false};
-        std::thread watch_thread_;
+        std::mutex watch_wait_mutex_;
+        std::condition_variable_any watch_cv_;
         std::filesystem::path watch_directory_;
         std::chrono::milliseconds watch_interval_{5000};
+        std::jthread watch_thread_;   // last: stopped/joined before the members it uses
 
         // Callbacks
         std::vector<PluginCallback> on_loaded_callbacks_;

@@ -4,12 +4,9 @@
 //
 
 #include <algorithm>
-#include <atomic>
-#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
-#include <mutex>
 #include <stop_token>
 #include <thread>
 #ifdef _WIN32
@@ -21,6 +18,10 @@
 #define orcha_isatty ::isatty
 #define orcha_fileno ::fileno
 #endif
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/signal_set.hpp>
 
 // Core
 #include "core/CommandRegistry.hpp"
@@ -290,44 +291,40 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         std::cout << "  [scheduler] cron scheduling active (tick "
                   << scheduler_tick.count() << "s)\n";
     }
-    // Wait for shutdown. In an interactive shell we accept Enter on stdin; in
-    // a detached environment (Docker `up -d`, systemd, nohup) stdin is closed
-    // and cin.get() returns EOF immediately — so we also block on SIGTERM/SIGINT
-    // and race whichever arrives first.
-    static std::condition_variable shutdown_cv;
-    static std::mutex shutdown_mtx;
-    static std::atomic<bool> shutdown_requested{false};
-    auto request_shutdown = [] {
-        {
-            std::lock_guard<std::mutex> lock(shutdown_mtx);
-            shutdown_requested = true;
+    // Wait for shutdown: SIGTERM/SIGINT, or Enter on an interactive stdin. In a
+    // detached environment (Docker `up -d`, systemd, nohup) stdin is closed and
+    // only signals apply. Signals are delivered through asio::signal_set, which
+    // handles them outside signal context (a raw handler may only touch
+    // lock-free atomics, so it cannot wake a waiting thread safely).
+    // Shared ownership: the detached stdin thread may outlive this function.
+    auto shutdown_ioc = std::make_shared<boost::asio::io_context>();
+    boost::asio::signal_set signals(*shutdown_ioc, SIGINT, SIGTERM);
+    std::string shutdown_reason = "stdin";
+    signals.async_wait([&shutdown_reason, shutdown_ioc](const boost::system::error_code& ec, int sig) {
+        if (!ec) {
+            shutdown_reason = (sig == SIGINT) ? "SIGINT" : "SIGTERM";
         }
-        shutdown_cv.notify_all();
-    };
-    std::signal(SIGTERM, [](int) {
-        shutdown_requested = true;
-        shutdown_cv.notify_all();
-    });
-    std::signal(SIGINT, [](int) {
-        shutdown_requested = true;
-        shutdown_cv.notify_all();
+        shutdown_ioc->stop();
     });
 
     const bool interactive = orcha_isatty(orcha_fileno(stdin)) != 0;
     if (interactive) {
         std::cout << "[Orcha] Press Enter (or Ctrl-C) to exit...\n";
-        std::thread([request_shutdown] {
+        std::thread([shutdown_ioc] {
             std::cin.get();
-            request_shutdown();
+            boost::asio::post(*shutdown_ioc, [shutdown_ioc] { shutdown_ioc->stop(); });
         }).detach();
     } else {
         std::cout << "[Orcha] Running detached; send SIGTERM to exit.\n";
     }
 
-    {
-        std::unique_lock<std::mutex> lock(shutdown_mtx);
-        shutdown_cv.wait(lock, [] { return shutdown_requested.load(); });
-    }
+    shutdown_ioc->run();   // returns on the first signal or Enter
+
+    // Restore default dispositions: a second Ctrl-C now terminates immediately
+    // if a graceful shutdown ever gets stuck.
+    boost::system::error_code ignored;
+    signals.clear(ignored);
+    logger->info("Shutdown requested (" + shutdown_reason + ")");
 
     logger->info("Shutting down Orcha...");
     // Cancel in-flight workflow runs first so the scheduler and the HTTP

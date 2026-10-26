@@ -358,56 +358,71 @@ namespace Orcha::Core {
 
     void PluginManager::start_watching(const std::filesystem::path& directory,
                                        std::chrono::milliseconds interval_ms) {
-        stop_watching();
+        std::lock_guard control(watch_control_mutex_);
+        if (watch_thread_.joinable()) {
+            watch_thread_.request_stop();
+            watch_thread_.join();
+        }
 
         watch_directory_ = directory;
         watch_interval_ = interval_ms;
         watching_.store(true);
 
-        watch_thread_ = std::thread(&PluginManager::watch_thread_func, this);
+        watch_thread_ = std::jthread([this](std::stop_token stop) { watch_thread_func(stop); });
 
         logger_->info("Started watching plugin directory: " + directory.string());
     }
 
     void PluginManager::stop_watching() {
+        std::lock_guard control(watch_control_mutex_);
+        if (watch_thread_.joinable()) {
+            watch_thread_.request_stop();   // wakes the interval wait
+            watch_thread_.join();
+        }
         if (watching_.exchange(false)) {
-            if (watch_thread_.joinable()) {
-                watch_thread_.join();
-            }
             logger_->info("Stopped watching plugin directory");
         }
     }
 
-    void PluginManager::watch_thread_func() {
-        while (watching_.load()) {
-            std::this_thread::sleep_for(watch_interval_);
+    void PluginManager::watch_thread_func(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            {
+                // Interruptible sleep: wakes as soon as stop is requested.
+                std::unique_lock wait_lock(watch_wait_mutex_);
+                (void)watch_cv_.wait_for(wait_lock, stop, watch_interval_, [] { return false; });
+            }
+            if (stop.stop_requested()) {
+                break;
+            }
 
-            if (!watching_.load()) break;
+            // A filesystem error must not escape the thread (std::terminate).
+            try {
+                auto plugins = discovery_->scan_plugins(watch_directory_);
 
-            // Scan for changes
-            auto plugins = discovery_->scan_plugins(watch_directory_);
+                std::lock_guard lock(mutex_);
 
-            std::lock_guard lock(mutex_);
-
-            for (const auto& plugin : plugins) {
-                if (!std::filesystem::exists(plugin.library_path)) {
-                    continue;
-                }
-
-                auto current_time = std::filesystem::last_write_time(plugin.library_path);
-
-                auto it = plugin_timestamps_.find(plugin.name);
-                if (it != plugin_timestamps_.end()) {
-                    // Check if modified
-                    if (current_time != it->second) {
-                        logger_->info("Detected change in plugin: " + plugin.name);
-                        // Note: Auto-reload would go here, but it's risky
-                        // Just log for now - user can manually reload
+                for (const auto& plugin : plugins) {
+                    if (!std::filesystem::exists(plugin.library_path)) {
+                        continue;
                     }
-                } else {
-                    // New plugin
-                    logger_->info("Detected new plugin: " + plugin.name);
+
+                    auto current_time = std::filesystem::last_write_time(plugin.library_path);
+
+                    auto it = plugin_timestamps_.find(plugin.name);
+                    if (it != plugin_timestamps_.end()) {
+                        // Check if modified
+                        if (current_time != it->second) {
+                            logger_->info("Detected change in plugin: " + plugin.name);
+                            // Note: Auto-reload would go here, but it's risky
+                            // Just log for now - user can manually reload
+                        }
+                    } else {
+                        // New plugin
+                        logger_->info("Detected new plugin: " + plugin.name);
+                    }
                 }
+            } catch (const std::exception& ex) {
+                logger_->warn(std::string("Plugin directory scan failed: ") + ex.what());
             }
         }
     }

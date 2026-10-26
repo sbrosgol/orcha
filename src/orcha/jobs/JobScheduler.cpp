@@ -30,7 +30,7 @@ namespace Orcha::Jobs {
         if (running_.exchange(true)) {
             return; // already running
         }
-        thread_ = std::thread(&JobScheduler::loop, this);
+        thread_ = std::jthread([this](std::stop_token stop) { loop(stop); });
         if (logger_) {
             logger_->info("Job scheduler started (tick " +
                           std::to_string(tick_.count()) + "s)");
@@ -42,18 +42,20 @@ namespace Orcha::Jobs {
             return;
         }
         if (thread_.joinable()) {
+            thread_.request_stop();   // wakes the tick wait
             thread_.join();
         }
         if (logger_) logger_->info("Job scheduler stopped");
     }
 
-    void JobScheduler::loop() {
-        while (running_.load()) {
-            // Sleep up to tick_ seconds, but wake promptly on stop().
-            for (long i = 0; i < tick_.count() && running_.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+    void JobScheduler::loop(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            {
+                // Interruptible sleep: wakes as soon as stop is requested.
+                std::unique_lock wait_lock(wait_mutex_);
+                (void)wait_cv_.wait_for(wait_lock, stop, tick_, [] { return false; });
             }
-            if (!running_.load()) break;
+            if (stop.stop_requested()) break;
 
             std::time_t now = std::time(nullptr);
             std::tm utc{};
@@ -66,6 +68,9 @@ namespace Orcha::Jobs {
                 evaluate(utc);
             } catch (const std::exception& ex) {
                 if (logger_) logger_->error(std::string("Scheduler tick error: ") + ex.what());
+            } catch (...) {
+                // An exception escaping a thread function calls std::terminate.
+                if (logger_) logger_->error("Scheduler tick error: unknown exception");
             }
         }
     }

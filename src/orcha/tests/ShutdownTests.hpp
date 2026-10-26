@@ -1,13 +1,19 @@
 //
-// ShutdownTests.hpp - HTTP server lifecycle
+// ShutdownTests.hpp - HTTP server lifecycle and background threads
 //
 // - HttpServer: request read timeout, stop() with idle connections (previously
 //   blocked forever), stop() waiting for in-flight handlers, error handling.
+// - PluginManager watcher / JobScheduler: stop() returns promptly.
 //
 
 #pragma once
 
 #include "../agent/HttpServer.hpp"
+#include "../core/CommandRegistry.hpp"
+#include "../core/PluginManager.hpp"
+#include "../jobs/JobScheduler.hpp"
+#include "../jobs/JobService.hpp"
+#include "../jobs/SqliteJobStore.hpp"
 
 #include "Assertions.hpp"
 #include <atomic>
@@ -260,6 +266,56 @@ namespace Orcha::Tests {
 #endif
     }
 
+    // ========== Background threads ==========
+
+    inline void test_plugin_watcher_stops_promptly() {
+        using namespace shutdown;
+        auto logger = std::make_shared<Utils::NullLogger>();
+        auto registry = std::make_shared<Core::CommandRegistry>();
+        Core::PluginManager manager(registry, std::make_shared<Core::PluginDiscoveryService>(), logger);
+        const auto dir = temp_path("watch");
+        std::filesystem::create_directories(dir);
+
+        // Concurrent start/stop from several threads must be safe (TSan).
+        std::vector<std::thread> togglers;
+        for (int i = 0; i < 4; ++i) {
+            togglers.emplace_back([&, i] {
+                for (int k = 0; k < 10; ++k) {
+                    if ((i + k) % 2) manager.start_watching(dir, 10s);
+                    else manager.stop_watching();
+                }
+            });
+        }
+        for (auto& t : togglers) t.join();
+
+        manager.start_watching(dir, 10s);
+        ORCHA_ASSERT(manager.is_watching());
+        std::this_thread::sleep_for(50ms);
+        const auto start = Clock::now();
+        // Previously slept out the full interval.
+        within_deadline("PluginManager::stop_watching", [&] { manager.stop_watching(); });
+        ORCHA_ASSERT(ms_since(start) < 500);
+        ORCHA_ASSERT_FALSE(manager.is_watching());
+        std::filesystem::remove_all(dir);
+        std::cout << "[PASS] test_plugin_watcher_stops_promptly\n";
+    }
+
+    inline void test_job_scheduler_stops_promptly() {
+        using namespace shutdown;
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(store, [] {
+            return std::shared_ptr<Workflow::IWorkflowEngine>{};
+        });
+        Jobs::JobScheduler scheduler(service, nullptr, 30s);
+        scheduler.start();
+        std::this_thread::sleep_for(50ms);
+        const auto start = Clock::now();
+        scheduler.stop();
+        ORCHA_ASSERT(ms_since(start) < 500);
+        ORCHA_ASSERT_FALSE(scheduler.is_running());
+        std::cout << "[PASS] test_job_scheduler_stops_promptly\n";
+    }
+
     inline void run_shutdown_tests() {
         std::cout << "\n-- Shutdown & Threading --\n";
         test_http_server_serves_requests();
@@ -267,6 +323,8 @@ namespace Orcha::Tests {
         test_http_server_stop_with_idle_connections();
         test_http_server_stop_completes_in_flight_requests();
         test_http_server_concurrent_requests();
+        test_plugin_watcher_stops_promptly();
+        test_job_scheduler_stops_promptly();
     }
 
 } // namespace Orcha::Tests
