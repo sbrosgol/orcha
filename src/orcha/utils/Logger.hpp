@@ -8,7 +8,9 @@
 #include "ILogger.hpp"
 #include <mutex>
 #include <condition_variable>
-#include <queue>
+#include <cstdint>
+#include <deque>
+#include <stop_token>
 #include <thread>
 #include <atomic>
 #include <fstream>
@@ -21,9 +23,14 @@ namespace Orcha::Utils {
 
     /**
      * @class Logger
-     * @brief Thread-safe logger with background worker and file output.
+     * @brief Thread-safe logger with a background writer and file output.
      *
      * Implements ILogger interface and provides singleton access for convenience.
+     *
+     * log() formats on the caller's thread and enqueues; a single writer thread
+     * drains the queue to the console and the log file. flush() blocks until
+     * everything logged before the call has been written. After shutdown()
+     * (or during static destruction) entries are written synchronously.
      */
     class Logger : public ILogger {
     public:
@@ -43,10 +50,15 @@ namespace Orcha::Utils {
         static void debug(const std::string& msg) { instance().log(LogLevel::DEBUG, msg); }
 
         /**
-         * @brief Set output log file.
+         * @brief Set output log file (empty disables file output).
          * @param filename Path to log file.
          */
         void set_log_file(const std::string& filename);
+
+        /**
+         * @brief Enable/disable console output (WARN and above go to stderr).
+         */
+        void set_console_output(bool enabled);
 
         // ILogger interface implementation
         void log(LogLevel level,
@@ -56,10 +68,14 @@ namespace Orcha::Utils {
 
         void set_level(LogLevel level) override { min_level_ = level; }
         [[nodiscard]] LogLevel get_level() const override { return min_level_; }
+
+        /**
+         * @brief Block until every entry logged before this call is written.
+         */
         void flush() override;
 
         /**
-         * @brief Graceful shutdown - flush and stop worker.
+         * @brief Graceful shutdown - drain the queue and stop the writer.
          */
         void shutdown();
 
@@ -67,8 +83,13 @@ namespace Orcha::Utils {
         Logger();
         ~Logger() override;
 
-        void logging_thread();
-        void enqueue(const std::string& message);
+        struct Entry {
+            LogLevel level;
+            std::string text;
+        };
+
+        void writer_loop(std::stop_token stop);
+        void write_entries(const std::deque<Entry>& entries);
 
         static std::string timestamp();
         static std::string format_log_entry(LogLevel level,
@@ -76,16 +97,23 @@ namespace Orcha::Utils {
                                            const LogContext& ctx,
                                            const std::source_location& loc);
 
-        std::mutex mtx_;
-        std::condition_variable cv_;
-        std::queue<std::string> log_queue_;
-        std::thread worker_;
-        std::atomic<bool> running_{true};
         std::atomic<LogLevel> min_level_{LogLevel::INFO};
 
+        // Queue state, guarded by queue_mutex_.
+        std::mutex queue_mutex_;
+        std::condition_variable_any queue_cv_;     // writer waits for entries
+        std::condition_variable written_cv_;       // flush() waits for progress
+        std::deque<Entry> queue_;
+        std::uint64_t enqueued_ = 0;
+        std::uint64_t written_ = 0;
+        bool writer_running_ = false;
+
+        // Output state, guarded by output_mutex_.
+        std::mutex output_mutex_;
         std::ofstream file_;
-        std::string log_filename_;
-        bool use_file_ = false;
+        bool console_ = true;
+
+        std::jthread writer_;   // last: stopped/joined before the state it uses
     };
 
     /**
