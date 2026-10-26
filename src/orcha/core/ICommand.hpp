@@ -215,6 +215,15 @@ namespace Orcha::Core {
      */
     extern "C" {
         typedef ICommand* (*CreateCommandFunc)();
+
+        /**
+         * @brief Optional destructor export ("destroy_command").
+         *
+         * When a plugin exports it, the host destroys commands through it so
+         * the object is freed by the allocator that created it. Without it the
+         * host falls back to `delete` (virtual destructor).
+         */
+        typedef void (*DestroyCommandFunc)(ICommand*);
     }
 
 } // namespace Orcha::Core
