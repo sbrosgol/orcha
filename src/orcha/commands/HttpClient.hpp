@@ -7,6 +7,14 @@
 // OpenSSL, and returns the full response body. Header-only so each independently
 // built plugin can include it without a shared link target.
 //
+// Timeouts: every network operation (resolve, connect, handshake, write, each
+// chunk of the read) must make progress within Request::timeout, so a stalled
+// peer fails fast while a slow-but-moving download keeps going. The optional
+// Request::deadline bounds the whole request (all redirects) and
+// Request::stop cancels it. Operations are asynchronous internally and driven
+// on the calling thread, because Beast's stream timeouts only apply to async
+// operations.
+//
 
 #pragma once
 
@@ -25,7 +33,10 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,8 +57,13 @@ namespace Orcha::Http {
         std::string url;
         HeaderList headers;
         std::string body;
+        /// Maximum time any single network operation may take without progress.
         std::chrono::milliseconds timeout{std::chrono::seconds(60)};
         int max_redirects = 10;
+        /// Absolute limit for the whole request, including redirects.
+        std::optional<std::chrono::steady_clock::time_point> deadline;
+        /// Cancels the request when stop is requested.
+        std::stop_token stop;
     };
 
     struct Response {
@@ -104,8 +120,85 @@ namespace Orcha::Http {
             return out;
         }
 
+        /**
+         * @brief Start one async operation and run @p ioc on this thread until
+         *        it completes, enforcing the request's limits.
+         *
+         * @p start receives a completion callback and must initiate exactly one
+         * async operation that invokes it. If the operation does not complete
+         * within Request::timeout, the request deadline passes, or stop is
+         * requested, @p cancel is called (on this thread, so it is safe for
+         * Asio objects) and an exception describing the reason is thrown.
+         */
+        template <typename Start, typename Cancel>
+        void run_op(net::io_context& ioc, const Request& req, const char* what,
+                    Start&& start, Cancel&& cancel) {
+            using Clock = std::chrono::steady_clock;
+            enum class Abort { None, Inactivity, Deadline, Cancelled };
+
+            bool done = false;
+            beast::error_code result;
+            start(std::function<void(beast::error_code)>(
+                [&done, &result](beast::error_code ec) { result = ec; done = true; }));
+
+            auto op_deadline = Clock::now() + req.timeout;
+            if (req.deadline && *req.deadline < op_deadline) {
+                op_deadline = *req.deadline;
+            }
+
+            Abort abort = Abort::None;
+            ioc.restart();
+            while (!done) {
+                ioc.run_for(std::chrono::milliseconds(50));
+                if (done || abort != Abort::None) {
+                    continue;
+                }
+                if (req.stop.stop_requested()) {
+                    abort = Abort::Cancelled;
+                } else if (Clock::now() >= op_deadline) {
+                    abort = (req.deadline && Clock::now() >= *req.deadline)
+                        ? Abort::Deadline : Abort::Inactivity;
+                }
+                if (abort != Abort::None) {
+                    cancel();   // completes the pending operation with an error
+                }
+            }
+
+            switch (abort) {
+                case Abort::Cancelled:
+                    throw std::runtime_error(std::string("HTTP request cancelled during ") + what);
+                case Abort::Deadline:
+                    throw std::runtime_error(std::string("HTTP request timed out during ") + what);
+                case Abort::Inactivity:
+                    throw std::runtime_error(std::string("HTTP ") + what + " timed out after " +
+                                             std::to_string(req.timeout.count()) + " ms");
+                case Abort::None:
+                    break;
+            }
+            if (result) {
+                throw beast::system_error(result);
+            }
+        }
+
+        /// Read a full response, chunk by chunk, so Request::timeout bounds
+        /// inactivity rather than the total transfer time.
+        template <typename Stream>
+        void read_response(net::io_context& ioc, const Request& req, Stream& stream,
+                           beast::flat_buffer& buffer,
+                           http::response_parser<http::string_body>& parser) {
+            auto cancel = [&stream] { beast::get_lowest_layer(stream).cancel(); };
+            while (!parser.is_done()) {
+                run_op(ioc, req, "read",
+                       [&](std::function<void(beast::error_code)> complete) {
+                           http::async_read_some(stream, buffer, parser,
+                               [complete](beast::error_code ec, std::size_t) { complete(ec); });
+                       },
+                       cancel);
+            }
+        }
+
         /// Perform a single request to @p u (no redirect handling) and return
-        /// the response. Throws on transport/TLS errors.
+        /// the response. Throws on transport/TLS errors, timeout or cancellation.
         inline Response perform_once(const Request& req, const urls::url_view& u) {
             const bool is_https = (u.scheme_id() == urls::scheme::https);
             const std::string host(u.host());
@@ -114,7 +207,17 @@ namespace Orcha::Http {
 
             net::io_context ioc;
             tcp::resolver resolver(ioc);
-            const auto results = resolver.resolve(host, port);
+            tcp::resolver::results_type results;
+            run_op(ioc, req, "DNS resolve",
+                   [&](std::function<void(beast::error_code)> complete) {
+                       resolver.async_resolve(host, port,
+                           [&results, complete](beast::error_code ec,
+                                                tcp::resolver::results_type r) {
+                               results = std::move(r);
+                               complete(ec);
+                           });
+                   },
+                   [&resolver] { resolver.cancel(); });
 
             // Read the (potentially large) body without Beast's 1 MiB default cap.
             http::response_parser<http::string_body> parser;
@@ -122,6 +225,30 @@ namespace Orcha::Http {
 
             beast::flat_buffer buffer;
             auto hreq = make_request(req, u);
+
+            auto connect_write_read = [&](auto& stream, auto&& handshake) {
+                auto cancel = [&stream] { beast::get_lowest_layer(stream).cancel(); };
+                run_op(ioc, req, "connect",
+                       [&](std::function<void(beast::error_code)> complete) {
+                           beast::get_lowest_layer(stream).async_connect(results,
+                               [complete](beast::error_code ec, const tcp::endpoint&) { complete(ec); });
+                       },
+                       cancel);
+                handshake(cancel);
+                run_op(ioc, req, "write",
+                       [&](std::function<void(beast::error_code)> complete) {
+                           http::async_write(stream, hreq,
+                               [complete](beast::error_code ec, std::size_t) { complete(ec); });
+                       },
+                       cancel);
+                read_response(ioc, req, stream, buffer, parser);
+
+                // No graceful TLS shutdown: the request asked for
+                // "Connection: close", and waiting for close_notify could block.
+                beast::error_code ec;
+                beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ec);
+                beast::get_lowest_layer(stream).close();
+            };
 
             if (is_https) {
                 ssl::context ctx(ssl::context::tls_client);
@@ -137,27 +264,19 @@ namespace Orcha::Http {
                 }
                 stream.set_verify_callback(ssl::host_name_verification(host));
 
-                beast::get_lowest_layer(stream).expires_after(req.timeout);
-                beast::get_lowest_layer(stream).connect(results);
-                stream.handshake(ssl::stream_base::client);
-
-                beast::get_lowest_layer(stream).expires_after(req.timeout);
-                http::write(stream, hreq);
-                http::read(stream, buffer, parser);
-
-                beast::error_code ec;
-                stream.shutdown(ec); // best-effort; truncated/EOF is normal
+                connect_write_read(stream, [&](auto& cancel) {
+                    run_op(ioc, req, "TLS handshake",
+                           [&](std::function<void(beast::error_code)> complete) {
+                               stream.async_handshake(ssl::stream_base::client,
+                                   [complete](beast::error_code ec) { complete(ec); });
+                           },
+                           cancel);
+                });
                 return to_response(parser.release());
             }
 
             beast::tcp_stream stream(ioc);
-            stream.expires_after(req.timeout);
-            stream.connect(results);
-            http::write(stream, hreq);
-            http::read(stream, buffer, parser);
-
-            beast::error_code ec;
-            stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+            connect_write_read(stream, [](auto&) {});
             return to_response(parser.release());
         }
 
@@ -237,6 +356,22 @@ namespace Orcha::Http {
         Request req;
         req.url = url;
         req.timeout = timeout;
+        return perform(req);
+    }
+
+    /**
+     * @brief Convenience GET bounded by a cancellation token and deadline
+     *        (typically from a command's ExecutionControl).
+     */
+    inline Response get(const std::string& url,
+                        std::stop_token stop,
+                        std::optional<std::chrono::steady_clock::time_point> deadline,
+                        std::chrono::milliseconds timeout = std::chrono::seconds(60)) {
+        Request req;
+        req.url = url;
+        req.timeout = timeout;
+        req.stop = std::move(stop);
+        req.deadline = deadline;
         return perform(req);
     }
 

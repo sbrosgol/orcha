@@ -36,12 +36,18 @@ const std::string ps_folder = "pwsh";
 class PowerShellDownloader final : public Orcha::Core::ICommand {
 public:
     Orcha::Json execute(const Orcha::Json &params) override {
+        return execute_with_control(params, {});
+    }
+
+    // The download honours the step's deadline and cancellation.
+    Orcha::Json execute_with_control(const Orcha::Json &params,
+                                     const Orcha::Core::ExecutionControl &control) override {
         (void) params;
         Orcha::Json result = Orcha::Json::object();
 
         try {
             std::cout << "Downloading PowerShell Core from: " << ps_url << std::endl;
-            const Orcha::Http::Response response = Orcha::Http::get(ps_url);
+            const Orcha::Http::Response response = Orcha::Http::get(ps_url, control.stop_token(), control.deadline());
             if (response.status / 100 != 2) {
                 throw std::runtime_error(
                     "HTTP " + std::to_string(response.status) + " for " + ps_url);

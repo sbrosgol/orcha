@@ -1,7 +1,9 @@
 //
 // TimeoutTests.hpp - Step/workflow timeouts, cancellation and the plugin ABI check
 //
-// Engine behaviour is tested with in-process commands.
+// Engine behaviour is tested with in-process commands. The shell_exec and
+// http_request plugins are loaded from the build tree to test that they stop
+// promptly (killing the child process group / aborting the socket operation).
 //
 
 #pragma once
@@ -21,6 +23,13 @@
 #include <string>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <csignal>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace Orcha::Tests {
 
@@ -80,6 +89,58 @@ namespace Orcha::Tests {
                                             std::make_shared<Workflow::SyncStepExecutor>(),
                                             nullptr, std::move(options));
         }
+
+        inline std::shared_ptr<Core::ICommand> load_plugin(Core::CommandRegistry& registry,
+                                                           const char* path, const char* name) {
+            ORCHA_ASSERT(registry.load_command_library(path));
+            auto cmd = registry.get_command(name);
+            ORCHA_ASSERT(cmd != nullptr);
+            return cmd;
+        }
+
+#if !defined(_WIN32)
+        /// A listening socket that never accepts: connects succeed (backlog),
+        /// requests are never answered.
+        struct SilentServer {
+            int fd = -1;
+            int port = 0;
+            SilentServer() {
+                fd = ::socket(AF_INET, SOCK_STREAM, 0);
+                sockaddr_in addr{};
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                ORCHA_ASSERT(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+                ORCHA_ASSERT(::listen(fd, 8) == 0);
+                socklen_t len = sizeof(addr);
+                ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
+                port = ntohs(addr.sin_port);
+            }
+            ~SilentServer() { if (fd >= 0) ::close(fd); }
+            [[nodiscard]] std::string url() const {
+                return "http://127.0.0.1:" + std::to_string(port) + "/";
+            }
+        };
+
+        /// Answers one request with "200 ok" and closes.
+        struct OneShotServer {
+            SilentServer listener;
+            std::thread worker;
+            OneShotServer() {
+                worker = std::thread([fd = listener.fd] {
+                    const int conn = ::accept(fd, nullptr, nullptr);
+                    if (conn < 0) return;
+                    char buf[4096];
+                    (void)::recv(conn, buf, sizeof(buf), 0);
+                    const std::string resp =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    (void)::send(conn, resp.data(), resp.size(), 0);
+                    ::close(conn);
+                });
+            }
+            ~OneShotServer() { if (worker.joinable()) worker.join(); }
+            [[nodiscard]] std::string url() const { return listener.url(); }
+        };
+#endif
 
     } // namespace timeouts
 
@@ -297,6 +358,137 @@ namespace Orcha::Tests {
 #endif
     }
 
+    // ========== shell_exec ==========
+
+    inline void test_shell_exec_basic() {
+#if defined(ORCHA_TEST_SHELLEXEC_PATH) && !defined(_WIN32)
+        using namespace timeouts;
+        Core::CommandRegistry registry;
+        auto shell = load_plugin(registry, ORCHA_TEST_SHELLEXEC_PATH, "shell_exec");
+
+        auto out = shell->execute_with_control(Json{{"cmd", "echo out; echo err >&2; exit 3"}}, {});
+        ORCHA_ASSERT_EQ(out["exit_code"].get<int>(), 3);
+        ORCHA_ASSERT_FALSE(out["success"].get<bool>());
+        ORCHA_ASSERT(out["output"].get<std::string>().find("out") != std::string::npos);
+        ORCHA_ASSERT(out["output"].get<std::string>().find("err") != std::string::npos);
+
+        // A backgrounded grandchild keeps the pipe open; we must not wait for it.
+        const auto start = Clock::now();
+        auto bg = shell->execute_with_control(Json{{"cmd", "sleep 3 & echo done"}}, {});
+        ORCHA_ASSERT(bg["success"].get<bool>());
+        ORCHA_ASSERT(bg["output"].get<std::string>().find("done") != std::string::npos);
+        ORCHA_ASSERT(ms_since(start) < 2000);
+        std::cout << "[PASS] test_shell_exec_basic\n";
+#else
+        std::cout << "[SKIP] test_shell_exec_basic\n";
+#endif
+    }
+
+    inline void test_shell_exec_timeout_kills_process_group() {
+#if defined(ORCHA_TEST_SHELLEXEC_PATH) && !defined(_WIN32)
+        using namespace timeouts;
+        Core::CommandRegistry registry;
+        auto shell = load_plugin(registry, ORCHA_TEST_SHELLEXEC_PATH, "shell_exec");
+
+        const auto start = Clock::now();
+        // The shell prints its background child's pid, then waits on it.
+        auto out = shell->execute_with_control(
+            Json{{"cmd", "sleep 30 & echo $!; wait"}},
+            Core::ExecutionControl(std::stop_token{}, Clock::now() + 300ms));
+        const auto elapsed = ms_since(start);
+
+        ORCHA_ASSERT_FALSE(out["success"].get<bool>());
+        ORCHA_ASSERT_EQ(out["error"].get<std::string>(), std::string("Timed out; process terminated"));
+        ORCHA_ASSERT(elapsed >= 300 && elapsed < 3000);
+
+        // The grandchild (sleep 30) was in the same process group: it is gone.
+        const pid_t child = static_cast<pid_t>(std::stol(out["output"].get<std::string>()));
+        bool gone = false;
+        for (int i = 0; i < 50 && !gone; ++i) {
+            gone = ::kill(child, 0) != 0;
+            if (!gone) std::this_thread::sleep_for(20ms);
+        }
+        ORCHA_ASSERT(gone);
+        std::cout << "[PASS] test_shell_exec_timeout_kills_process_group\n";
+#else
+        std::cout << "[SKIP] test_shell_exec_timeout_kills_process_group\n";
+#endif
+    }
+
+    inline void test_shell_exec_cancellation() {
+#if defined(ORCHA_TEST_SHELLEXEC_PATH) && !defined(_WIN32)
+        using namespace timeouts;
+        Core::CommandRegistry registry;
+        auto shell = load_plugin(registry, ORCHA_TEST_SHELLEXEC_PATH, "shell_exec");
+
+        std::stop_source stop;
+        auto canceller = std::async(std::launch::async, [&] {
+            std::this_thread::sleep_for(150ms);
+            stop.request_stop();
+        });
+        const auto start = Clock::now();
+        auto out = shell->execute_with_control(Json{{"cmd", "sleep 30"}},
+                                               Core::ExecutionControl(stop.get_token(), std::nullopt));
+        canceller.get();
+        ORCHA_ASSERT_EQ(out["error"].get<std::string>(), std::string("Cancelled; process terminated"));
+        ORCHA_ASSERT(ms_since(start) < 3000);
+        std::cout << "[PASS] test_shell_exec_cancellation\n";
+#else
+        std::cout << "[SKIP] test_shell_exec_cancellation\n";
+#endif
+    }
+
+    // ========== http_request ==========
+
+    inline void test_http_request_timeouts_and_cancellation() {
+#if defined(ORCHA_TEST_HTTPREQUEST_PATH) && !defined(_WIN32)
+        using namespace timeouts;
+        Core::CommandRegistry registry;
+        auto http = load_plugin(registry, ORCHA_TEST_HTTPREQUEST_PATH, "http_request");
+
+        // Sanity: the async client completes a normal exchange.
+        {
+            OneShotServer server;
+            auto ok = http->execute_with_control(Json{{"url", server.url()}}, {});
+            ORCHA_ASSERT(ok["success"].get<bool>());
+            ORCHA_ASSERT_EQ(ok["body"].get<std::string>(), std::string("ok"));
+        }
+
+        SilentServer silent;
+
+        // Per-operation inactivity timeout (timeout_ms param).
+        auto start = Clock::now();
+        auto stalled = http->execute_with_control(Json{{"url", silent.url()}, {"timeout_ms", 200}}, {});
+        ORCHA_ASSERT_FALSE(stalled["success"].get<bool>());
+        ORCHA_ASSERT(stalled["error"].get<std::string>().find("timed out after 200 ms") != std::string::npos);
+        ORCHA_ASSERT(ms_since(start) < 2000);
+
+        // Step deadline bounds the whole request.
+        start = Clock::now();
+        auto deadline = http->execute_with_control(
+            Json{{"url", silent.url()}},
+            Core::ExecutionControl(std::stop_token{}, Clock::now() + 250ms));
+        ORCHA_ASSERT(deadline["error"].get<std::string>().find("HTTP request timed out") != std::string::npos);
+        ORCHA_ASSERT(ms_since(start) < 2000);
+
+        // Cancellation aborts it.
+        std::stop_source stop;
+        auto canceller = std::async(std::launch::async, [&] {
+            std::this_thread::sleep_for(150ms);
+            stop.request_stop();
+        });
+        start = Clock::now();
+        auto cancelled = http->execute_with_control(
+            Json{{"url", silent.url()}}, Core::ExecutionControl(stop.get_token(), std::nullopt));
+        canceller.get();
+        ORCHA_ASSERT(cancelled["error"].get<std::string>().find("cancelled") != std::string::npos);
+        ORCHA_ASSERT(ms_since(start) < 2000);
+        std::cout << "[PASS] test_http_request_timeouts_and_cancellation\n";
+#else
+        std::cout << "[SKIP] test_http_request_timeouts_and_cancellation\n";
+#endif
+    }
+
     inline void run_timeout_tests() {
         std::cout << "\n-- Timeouts & Cancellation --\n";
         test_execution_control_basics();
@@ -308,6 +500,10 @@ namespace Orcha::Tests {
         test_cancel_running_workflow();
         test_cancel_reaches_parallel_steps();
         test_cancel_reaches_nested_run_job();
+        test_shell_exec_basic();
+        test_shell_exec_timeout_kills_process_group();
+        test_shell_exec_cancellation();
+        test_http_request_timeouts_and_cancellation();
         test_plugin_abi_version_checked();   // last: see the ASan note inside
     }
 

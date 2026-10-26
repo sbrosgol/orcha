@@ -72,6 +72,12 @@ const char* extract_dir_name() {
 class PythonDownloader final : public Orcha::Core::ICommand {
 public:
     Orcha::Json execute(const Orcha::Json& params) override {
+        return execute_with_control(params, {});
+    }
+
+    // The download honours the step's deadline and cancellation.
+    Orcha::Json execute_with_control(const Orcha::Json& params,
+                                     const Orcha::Core::ExecutionControl& control) override {
         Orcha::Json result = Orcha::Json::object();
 
         std::string version = kDefaultPythonVersion;
@@ -93,7 +99,7 @@ public:
             std::cout << "Downloading embedded Python " << version
                       << " from: " << url << std::endl;
 
-            const Orcha::Http::Response response = Orcha::Http::get(url);
+            const Orcha::Http::Response response = Orcha::Http::get(url, control.stop_token(), control.deadline());
             if (response.status / 100 != 2) {
                 throw std::runtime_error(
                     "HTTP " + std::to_string(response.status) + " for " + url);

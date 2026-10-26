@@ -3,28 +3,21 @@
 //
 
 #include "../../core/ICommand.hpp"
+#include "../Process.hpp"
 #include "core/Version.hpp"
 
-#include <array>
-#include <cstdio>
-#include <cstdlib>
-#include <memory>
 #include <string>
-
-#if defined(_WIN32)
-  #define ORCHA_POPEN  _popen
-  #define ORCHA_PCLOSE _pclose
-#else
-  #include <sys/wait.h>
-  #define ORCHA_POPEN  popen
-  #define ORCHA_PCLOSE pclose
-#endif
 
 class ShellExec final : public Orcha::Core::ICommand {
 public:
     [[nodiscard]] std::string name() const override { return "shell_exec"; }
 
     Orcha::Json execute(const Orcha::Json& params) override {
+        return execute_with_control(params, {});
+    }
+
+    Orcha::Json execute_with_control(const Orcha::Json& params,
+                                     const Orcha::Core::ExecutionControl& control) override {
         Orcha::Json result;
         try {
             if (!params.contains("cmd")) {
@@ -39,43 +32,26 @@ public:
                 ? params.at("check_exit").get<bool>()
                 : true;
 
-            // Merge stderr into stdout so we capture both in a single stream.
-            const std::string full_cmd = capture_output ? (cmd + " 2>&1") : cmd;
+            // On timeout/cancellation the process group is terminated.
+            const auto run = Orcha::Process::run_shell(cmd, capture_output, control);
 
-            std::string captured;
-            int exit_code = 0;
-
-            if (capture_output) {
-                FILE* raw = ORCHA_POPEN(full_cmd.c_str(), "r");
-                if (!raw) {
-                    throw std::runtime_error("Failed to launch process");
-                }
-                std::array<char, 4096> buf{};
-                while (std::fgets(buf.data(), static_cast<int>(buf.size()), raw) != nullptr) {
-                    captured.append(buf.data());
-                }
-                const int rc = ORCHA_PCLOSE(raw);
-#if defined(_WIN32)
-                exit_code = rc;
-#else
-                exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : rc;
-#endif
-            } else {
-                const int rc = std::system(full_cmd.c_str());
-#if defined(_WIN32)
-                exit_code = rc;
-#else
-                exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : rc;
-#endif
+            if (run.timed_out || run.cancelled) {
+                result["success"]   = false;
+                result["exit_code"] = run.exit_code;
+                result["output"]    = run.output;
+                result["error"]     = run.timed_out
+                    ? "Timed out; process terminated"
+                    : "Cancelled; process terminated";
+                return result;
             }
 
-            const bool ok = (exit_code == 0);
+            const bool ok = (run.exit_code == 0);
             result["success"]   = (ok || !check_exit);
-            result["exit_code"] = exit_code;
-            result["output"]    = captured;
+            result["exit_code"] = run.exit_code;
+            result["output"]    = run.output;
 
             if (check_exit && !ok) {
-                result["error"] = "Command exited with code " + std::to_string(exit_code);
+                result["error"] = "Command exited with code " + std::to_string(run.exit_code);
             }
             return result;
         } catch (const std::exception& ex) {
