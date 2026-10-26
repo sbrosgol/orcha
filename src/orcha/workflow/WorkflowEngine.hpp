@@ -6,6 +6,7 @@
 #pragma once
 
 #include "IWorkflowEngine.hpp"
+#include "../core/CircuitBreaker.hpp"
 #include "../core/ICommandRegistry.hpp"
 #include "../core/Json.hpp"
 #include "../utils/ILogger.hpp"
@@ -88,6 +89,12 @@ namespace Orcha::Workflow {
         std::chrono::milliseconds default_step_timeout{0};
         /// Cancels every run of this engine when requested (server shutdown).
         std::stop_token cancel;
+        /// Per-command breakers consulted by workflows with "circuit_breaker":
+        /// true. Share one registry across engines so state persists between
+        /// runs; if null the engine keeps its own.
+        std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers;
+        /// Thresholds for breakers created by this engine.
+        Core::CircuitBreakerConfig circuit_breaker_config;
     };
 
     /**
@@ -102,6 +109,14 @@ namespace Orcha::Workflow {
      * fails as timed out; once the run is cancelled or past its deadline, no
      * further steps start. The run is cancelled when EngineOptions::cancel
      * or the enclosing run's token (nested run_job) is stopped.
+     *
+     * Per-workflow resilience settings:
+     * - "rollback": when the run fails (not when it is cancelled), completed
+     *   steps are rolled back in reverse completion order with the
+     *   parameters they ran with; outcomes are reported per step.
+     * - "circuit_breaker": each step consults its command's breaker. An open
+     *   circuit rejects the step without running it; command failures and
+     *   timeouts count against the breaker, other failures do not.
      */
     class WorkflowEngine : public IWorkflowEngine {
     public:
@@ -141,6 +156,12 @@ namespace Orcha::Workflow {
             int step_index,
             const Core::ExecutionControl& control);
 
+        void roll_back(const WorkflowDefinition& definition,
+                       WorkflowResult& result,
+                       const std::vector<size_t>& completion_order,
+                       const std::vector<Orcha::Json>& executed_params,
+                       bool cancelled);
+
         void log_step_start(const WorkflowStep& step, int index);
         void log_step_complete(const WorkflowStepResult& result, int index);
 
@@ -148,6 +169,7 @@ namespace Orcha::Workflow {
         std::shared_ptr<IStepExecutor> executor_;
         std::shared_ptr<Utils::ILogger> logger_;
         EngineOptions options_;
+        std::shared_ptr<Core::CircuitBreakerRegistry> breakers_;
     };
 
 } // namespace Orcha::Workflow

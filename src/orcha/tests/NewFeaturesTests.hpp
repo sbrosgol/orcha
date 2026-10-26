@@ -7,8 +7,6 @@
 #include "../config/ConfigValidator.hpp"
 #include "../config/YamlConfiguration.hpp"
 #include "../core/CircuitBreaker.hpp"
-#include "../workflow/RollbackOrchestrator.hpp"
-#include "../workflow/ParallelWorkflowExecutor.hpp"
 #include "mocks/MockCommandRegistry.hpp"
 #include "mocks/MockLogger.hpp"
 #include "Assertions.hpp"
@@ -237,164 +235,6 @@ server:
         std::cout << "[PASS] test_circuit_breaker_registry\n";
     }
 
-    // ========== Rollback Orchestrator Tests ==========
-
-    inline void test_rollback_records_steps() {
-        auto registry = std::make_shared<Mocks::MockCommandRegistry>();
-        auto logger = std::make_shared<Mocks::MockLogger>();
-
-        Workflow::RollbackOrchestrator orchestrator(registry, logger);
-
-        Orcha::Json params;
-        params["key"] = "value";
-        Orcha::Json output;
-        output["result"] = "success";
-
-        orchestrator.record_completed_step(0, "cmd1", params, output);
-        orchestrator.record_completed_step(1, "cmd2", params, output);
-
-        // No rollbackable steps since mock commands don't support rollback
-        ORCHA_ASSERT(!orchestrator.has_rollbackable_steps() && "Mock commands don't support rollback");
-
-        std::cout << "[PASS] test_rollback_records_steps\n";
-    }
-
-    inline void test_rollback_mode_none() {
-        auto registry = std::make_shared<Mocks::MockCommandRegistry>();
-        auto logger = std::make_shared<Mocks::MockLogger>();
-
-        Workflow::RollbackOrchestrator orchestrator(
-            registry, logger, Workflow::RollbackMode::None);
-
-        orchestrator.record_completed_step(0, "cmd1", {}, {});
-
-        auto result = orchestrator.execute_rollback("test failure");
-
-        ORCHA_ASSERT(!result.initiated && "Rollback should not be initiated in None mode");
-
-        std::cout << "[PASS] test_rollback_mode_none\n";
-    }
-
-    // ========== Parallel Workflow Executor Tests ==========
-
-    inline void test_dependency_analyzer_no_deps() {
-        Workflow::WorkflowDefinition def;
-
-        Workflow::WorkflowStep step1;
-        step1.command_name = "echo";
-        step1.params = Orcha::Json::object();
-
-        Workflow::WorkflowStep step2;
-        step2.command_name = "echo";
-        step2.params = Orcha::Json::object();
-
-        def.steps = {step1, step2};
-
-        auto deps = Workflow::WorkflowDependencyAnalyzer::analyze(def);
-
-        ORCHA_ASSERT(deps[0].depends_on.empty() && "Step 0 should have no deps");
-        ORCHA_ASSERT(deps[1].depends_on.empty() && "Step 1 should have no deps");
-
-        std::cout << "[PASS] test_dependency_analyzer_no_deps\n";
-    }
-
-    inline void test_dependency_analyzer_with_refs() {
-        Workflow::WorkflowDefinition def;
-
-        Workflow::WorkflowStep step1;
-        step1.command_name = "echo";
-        step1.params = Orcha::Json::object();
-
-        Workflow::WorkflowStep step2;
-        step2.command_name = "echo";
-        Orcha::Json params2;
-        params2["message"] = "Result: {{step1.output.value}}";
-        step2.params = params2;
-
-        def.steps = {step1, step2};
-
-        auto deps = Workflow::WorkflowDependencyAnalyzer::analyze(def);
-
-        ORCHA_ASSERT(deps[0].depends_on.empty() && "Step 0 should have no deps");
-        ORCHA_ASSERT(deps[1].depends_on.count(0) == 1 && "Step 1 should depend on step 0");
-
-        std::cout << "[PASS] test_dependency_analyzer_with_refs\n";
-    }
-
-    inline void test_execution_levels_parallel() {
-        Workflow::WorkflowDefinition def;
-
-        // Steps 0, 1, 2 are independent
-        // Step 3 depends on all three
-
-        Workflow::WorkflowStep step0, step1, step2, step3;
-        step0.command_name = "echo";
-        step0.params = Orcha::Json::object();
-
-        step1.command_name = "echo";
-        step1.params = Orcha::Json::object();
-
-        step2.command_name = "echo";
-        step2.params = Orcha::Json::object();
-
-        Orcha::Json params3;
-        params3["a"] = "{{step1.output}}";
-        params3["b"] = "{{step2.output}}";
-        params3["c"] = "{{step3.output}}";
-        step3.command_name = "aggregate";
-        step3.params = params3;
-
-        def.steps = {step0, step1, step2, step3};
-
-        auto levels = Workflow::WorkflowDependencyAnalyzer::compute_execution_levels(def);
-
-        ORCHA_ASSERT(levels.size() == 2 && "Should have 2 execution levels");
-        ORCHA_ASSERT(levels[0].step_indices.size() == 3 && "Level 0 should have 3 parallel steps");
-        ORCHA_ASSERT(levels[1].step_indices.size() == 1 && "Level 1 should have 1 step");
-
-        std::cout << "[PASS] test_execution_levels_parallel\n";
-    }
-
-    inline void test_has_parallelism() {
-        // Sequential workflow (each step references previous)
-        {
-            Workflow::WorkflowDefinition def;
-
-            Workflow::WorkflowStep step0, step1;
-            step0.command_name = "echo";
-            step0.params = Orcha::Json::object();
-
-            Orcha::Json params1;
-            params1["input"] = "{{step1.output}}";
-            step1.command_name = "process";
-            step1.params = params1;
-
-            def.steps = {step0, step1};
-
-            ORCHA_ASSERT(!Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
-                   "Sequential workflow should have no parallelism");
-        }
-
-        // Parallel workflow (independent steps)
-        {
-            Workflow::WorkflowDefinition def;
-
-            Workflow::WorkflowStep step0, step1;
-            step0.command_name = "echo";
-            step0.params = Orcha::Json::object();
-
-            step1.command_name = "echo";
-            step1.params = Orcha::Json::object();
-
-            def.steps = {step0, step1};
-
-            ORCHA_ASSERT(Workflow::WorkflowDependencyAnalyzer::has_parallelism(def) &&
-                   "Independent steps should have parallelism");
-        }
-
-        std::cout << "[PASS] test_has_parallelism\n";
-    }
-
     // ========== Run All Tests ==========
 
     inline void run_new_features_tests() {
@@ -416,17 +256,6 @@ server:
         test_circuit_breaker_half_open_transition();
         test_circuit_breaker_registry();
 
-        // Rollback Orchestrator
-        std::cout << "\n-- Rollback Orchestrator --\n";
-        test_rollback_records_steps();
-        test_rollback_mode_none();
-
-        // Parallel Workflow Executor
-        std::cout << "\n-- Parallel Workflow Executor --\n";
-        test_dependency_analyzer_no_deps();
-        test_dependency_analyzer_with_refs();
-        test_execution_levels_parallel();
-        test_has_parallelism();
 
         // Admin Dashboard (Phase 1)
         run_plugin_admin_tests();

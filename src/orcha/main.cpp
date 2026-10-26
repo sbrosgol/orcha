@@ -101,6 +101,18 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     engine_options.default_step_timeout = std::chrono::milliseconds(
         std::max<int64_t>(0, config.get_int("workflow.default_timeout_ms", 0)));
     engine_options.cancel = std::move(run_cancel);
+
+    // Circuit breakers are per command and shared by every engine, so their
+    // state persists across runs; workflows opt in with "circuit_breaker": true.
+    auto circuit_breakers = std::make_shared<Core::CircuitBreakerRegistry>();
+    services.register_singleton<Core::CircuitBreakerRegistry>(circuit_breakers);
+    engine_options.circuit_breakers = circuit_breakers;
+    engine_options.circuit_breaker_config.failure_threshold = static_cast<size_t>(
+        std::max<int64_t>(1, config.get_int("workflow.circuit_breaker.failure_threshold", 5)));
+    engine_options.circuit_breaker_config.success_threshold = static_cast<size_t>(
+        std::max<int64_t>(1, config.get_int("workflow.circuit_breaker.success_threshold", 1)));
+    engine_options.circuit_breaker_config.reset_timeout = std::chrono::milliseconds(
+        std::max<int64_t>(0, config.get_int("workflow.circuit_breaker.reset_timeout_ms", 30000)));
     auto engine_factory = [registry, logger_ptr, engine_options]() {
         return std::make_shared<Workflow::WorkflowEngine>(
             registry,
