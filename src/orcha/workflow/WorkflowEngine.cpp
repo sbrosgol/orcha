@@ -5,6 +5,7 @@
 
 #include "WorkflowEngine.hpp"
 #include "../core/Json.hpp"
+#include "ExecutionContext.hpp"
 #include "../utils/YamlToJson.hpp"
 #include <yaml-cpp/yaml.h>
 #include <regex>
@@ -304,6 +305,7 @@ namespace Orcha::Workflow {
         std::mutex results_mutex;
         // Completion signal of each launched `parallel: true` step.
         std::vector<std::shared_future<void>> in_flight(step_count);
+        const auto context = ExecutionContext::capture();
 
         // Runs step i after every step it references has finished, so a
         // reference to a still-running parallel step never sees a blank result.
@@ -355,7 +357,8 @@ namespace Orcha::Workflow {
                 if (step.parallel) {
                     // in_flight is pre-sized and only element i is written
                     // here; tasks read elements < i, so there is no race.
-                    in_flight[i] = std::async(std::launch::async, [run_step, i] {
+                    in_flight[i] = std::async(std::launch::async, [run_step, context, i] {
+                        ExecutionContext::Scope scope(context);
                         (void)run_step(i);
                     }).share();
                     continue;

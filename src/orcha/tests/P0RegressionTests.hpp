@@ -7,12 +7,16 @@
 // - an out-of-range {{stepN}} index threw out of the engine
 // - a step referencing a still-running parallel step saw a blank result, and
 //   result storage raced (run this binary under TSan to cover the race)
+// - run_job's cycle guard was bypassed by `parallel: true` steps
 // - unregistering a plugin command while it executed unmapped its code
 //
 
 #pragma once
 
 #include "../core/CommandRegistry.hpp"
+#include "../jobs/JobService.hpp"
+#include "../jobs/RunJobCommand.hpp"
+#include "../jobs/SqliteJobStore.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 
 #include "Assertions.hpp"
@@ -176,6 +180,30 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_parallel_and_sequential_steps_stress\n";
     }
 
+    // ========== run_job cycle guard ==========
+
+    inline void test_run_job_cycle_detected_across_parallel_steps() {
+        auto registry = p0::make_registry();
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(store, [registry] {
+            return std::make_shared<Workflow::WorkflowEngine>(registry);
+        });
+        ORCHA_ASSERT(registry->register_command(std::make_shared<Jobs::RunJobCommand>(service)));
+
+        Jobs::JobDefinition job;
+        job.name = "self";
+        job.definition = Json{{"steps", Json::array({
+            {{"command", "run_job"}, {"params", {{"job", "self"}}}, {"parallel", true}}})}};
+        ORCHA_ASSERT(store->create_job(job));
+
+        auto run = p0::run_with_deadline("test_run_job_cycle_detected_across_parallel_steps",
+                                         [&] { return service->run_job(job.id, "manual"); });
+        ORCHA_ASSERT(run.has_value());
+        ORCHA_ASSERT_EQ(run->status, std::string("failed"));
+        ORCHA_ASSERT(run->error.find("cycle detected") != std::string::npos);
+        std::cout << "[PASS] test_run_job_cycle_detected_across_parallel_steps\n";
+    }
+
     // ========== Plugin lifetime ==========
 
     inline void test_unregister_while_plugin_command_executing() {
@@ -216,6 +244,7 @@ namespace Orcha::Tests {
         test_placeholder_mixed_and_nested_paths();
         test_step_waits_for_referenced_parallel_step();
         test_parallel_and_sequential_steps_stress();
+        test_run_job_cycle_detected_across_parallel_steps();
         test_unregister_while_plugin_command_executing();
     }
 
