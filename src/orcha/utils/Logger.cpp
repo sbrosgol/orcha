@@ -14,7 +14,8 @@ namespace Orcha::Utils {
     }
 
     Logger::Logger() {
-        worker_ = std::thread(&Logger::logging_thread, this);
+        writer_running_ = true;
+        writer_ = std::jthread([this](std::stop_token stop) { writer_loop(stop); });
     }
 
     Logger::~Logger() {
@@ -22,17 +23,24 @@ namespace Orcha::Utils {
     }
 
     void Logger::set_log_file(const std::string& filename) {
-        std::lock_guard<std::mutex> lock(mtx_);
-        if (!filename.empty()) {
-            std::filesystem::path p(filename);
-            auto dir = p.parent_path();
-            if (!dir.empty()) {
-                std::filesystem::create_directories(dir);
-            }
+        std::lock_guard lock(output_mutex_);
+        if (file_.is_open()) {
+            file_.close();
         }
-        log_filename_ = filename;
+        if (filename.empty()) {
+            return;
+        }
+        std::error_code ec;
+        const auto dir = std::filesystem::path(filename).parent_path();
+        if (!dir.empty()) {
+            std::filesystem::create_directories(dir, ec);
+        }
         file_.open(filename, std::ios::app);
-        use_file_ = file_.is_open();
+    }
+
+    void Logger::set_console_output(bool enabled) {
+        std::lock_guard lock(output_mutex_);
+        console_ = enabled;
     }
 
     void Logger::log(LogLevel level,
@@ -40,12 +48,23 @@ namespace Orcha::Utils {
                     const LogContext& ctx,
                     const std::source_location& loc) {
         // Check minimum level
-        if (static_cast<int>(level) < static_cast<int>(min_level_.load())) {
+        if (level == LogLevel::OFF ||
+            static_cast<int>(level) < static_cast<int>(min_level_.load())) {
             return;
         }
 
-        std::string formatted = format_log_entry(level, msg, ctx, loc);
-        enqueue(formatted);
+        Entry entry{level, format_log_entry(level, msg, ctx, loc)};
+        {
+            std::lock_guard lock(queue_mutex_);
+            if (writer_running_) {
+                queue_.push_back(std::move(entry));
+                ++enqueued_;
+                queue_cv_.notify_one();
+                return;
+            }
+        }
+        // After shutdown (e.g. during static destruction): write directly.
+        write_entries(std::deque<Entry>{std::move(entry)});
     }
 
     std::string Logger::format_log_entry(LogLevel level,
@@ -94,59 +113,68 @@ namespace Orcha::Utils {
         return oss.str();
     }
 
-    void Logger::enqueue(const std::string& message) {
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            log_queue_.push(message);
+    void Logger::writer_loop(std::stop_token stop) {
+        std::unique_lock lock(queue_mutex_);
+        for (;;) {
+            // Wakes for new entries or for stop; the queue is drained before exit.
+            queue_cv_.wait(lock, stop, [this] { return !queue_.empty(); });
+            if (queue_.empty()) {
+                break;   // stop requested and nothing left
+            }
+            std::deque<Entry> batch;
+            batch.swap(queue_);
+            lock.unlock();
+
+            write_entries(batch);
+
+            lock.lock();
+            written_ += batch.size();
+            written_cv_.notify_all();
         }
-        cv_.notify_one();
     }
 
-    void Logger::logging_thread() {
-        while (running_ || !log_queue_.empty()) {
-            std::unique_lock<std::mutex> lock(mtx_);
-            cv_.wait(lock, [&] { return !log_queue_.empty() || !running_; });
-
-            while (!log_queue_.empty()) {
-                const std::string message = log_queue_.front();
-                log_queue_.pop();
-                lock.unlock();
-
-                // Output to appropriate streams based on level indicators
-                if (message.find("[ERROR]") != std::string::npos ||
-                    message.find("[WARN]") != std::string::npos ||
-                    message.find("[FATAL]") != std::string::npos) {
-                    std::cerr << message;
-                } else {
-                    std::cout << message;
-                }
-
-                if (use_file_ && file_.is_open()) {
-                    file_ << message;
-                    file_.flush();
-                }
-                lock.lock();
+    void Logger::write_entries(const std::deque<Entry>& entries) {
+        std::lock_guard lock(output_mutex_);
+        for (const auto& entry : entries) {
+            if (console_) {
+                (entry.level >= LogLevel::WARNING ? std::cerr : std::cout) << entry.text;
             }
+            if (file_.is_open()) {
+                file_ << entry.text;
+            }
+        }
+        if (file_.is_open()) {
+            file_.flush();
         }
     }
 
     void Logger::flush() {
-        // Wait for queue to empty
-        std::unique_lock<std::mutex> lock(mtx_);
-        cv_.notify_one();
-        // Note: This is a best-effort flush - for synchronous flush,
-        // we'd need a more complex mechanism
+        std::unique_lock lock(queue_mutex_);
+        const auto target = enqueued_;
+        written_cv_.wait(lock, [this, target] { return written_ >= target || !writer_running_; });
     }
 
     void Logger::shutdown() {
-        if (running_.exchange(false)) {
-            cv_.notify_one();
-            if (worker_.joinable()) {
-                worker_.join();
+        {
+            // From here on log() writes synchronously, so nothing enqueued
+            // after the writer's final drain can be lost.
+            std::lock_guard lock(queue_mutex_);
+            if (!writer_running_) {
+                return;
             }
-            if (file_.is_open()) {
-                file_.close();
-            }
+            writer_running_ = false;
+        }
+        if (writer_.joinable()) {
+            writer_.request_stop();   // writer drains the queue, then exits
+            writer_.join();
+        }
+        {
+            std::lock_guard lock(queue_mutex_);
+            written_cv_.notify_all();
+        }
+        std::lock_guard lock(output_mutex_);
+        if (file_.is_open()) {
+            file_.close();
         }
     }
 

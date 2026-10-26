@@ -65,6 +65,12 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     auto& logger = Utils::Logger::instance();
     auto logging_config = Config::LoggingConfig::from_config(config);
     logger.set_log_file(logging_config.file);
+    logger.set_console_output(logging_config.console_output);
+    if (auto level = Utils::parse_log_level(logging_config.level)) {
+        logger.set_level(*level);
+    } else {
+        logger.warn("Unknown logging.level '" + logging_config.level + "'; using INFO");
+    }
 
     // For DI, we wrap the singleton in a shared_ptr
     auto logger_ptr = std::shared_ptr<Utils::ILogger>(&logger, [](Utils::ILogger*){});

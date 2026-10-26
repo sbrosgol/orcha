@@ -1,9 +1,11 @@
 //
-// ShutdownTests.hpp - HTTP server lifecycle and background threads
+// ShutdownTests.hpp - HTTP server lifecycle, background threads and the logger
 //
 // - HttpServer: request read timeout, stop() with idle connections (previously
 //   blocked forever), stop() waiting for in-flight handlers, error handling.
 // - PluginManager watcher / JobScheduler: stop() returns promptly.
+// - Logger: concurrent logging with file switching (run under TSan), flush()
+//   and level filtering.
 //
 
 #pragma once
@@ -14,6 +16,7 @@
 #include "../jobs/JobScheduler.hpp"
 #include "../jobs/JobService.hpp"
 #include "../jobs/SqliteJobStore.hpp"
+#include "../utils/Logger.hpp"
 
 #include "Assertions.hpp"
 #include <atomic>
@@ -316,6 +319,66 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_job_scheduler_stops_promptly\n";
     }
 
+    // ========== Logger ==========
+
+    inline void test_parse_log_level() {
+        using Utils::LogLevel;
+        ORCHA_ASSERT(Utils::parse_log_level("INFO") == LogLevel::INFO);
+        ORCHA_ASSERT(Utils::parse_log_level("warn") == LogLevel::WARNING);
+        ORCHA_ASSERT(Utils::parse_log_level("Warning") == LogLevel::WARNING);
+        ORCHA_ASSERT(Utils::parse_log_level("off") == LogLevel::OFF);
+        ORCHA_ASSERT_FALSE(Utils::parse_log_level("verbose").has_value());
+        std::cout << "[PASS] test_parse_log_level\n";
+    }
+
+    inline void test_logger_concurrent_logging_and_flush() {
+        using namespace shutdown;
+        auto& logger = Utils::Logger::instance();
+        const auto saved_level = logger.get_level();
+        logger.set_console_output(false);
+        logger.set_level(Utils::LogLevel::DEBUG);
+
+        const auto a = temp_path("log-a.log");
+        const auto b = temp_path("log-b.log");
+        std::filesystem::remove(a);
+        std::filesystem::remove(b);
+        logger.set_log_file(a.string());
+
+        // Writers race with file switching; every line must land in one file.
+        constexpr int kThreads = 6, kLines = 200;
+        std::vector<std::thread> writers;
+        for (int t = 0; t < kThreads; ++t) {
+            writers.emplace_back([&logger, t] {
+                for (int i = 0; i < kLines; ++i) {
+                    logger.log(Utils::LogLevel::INFO, "concurrency-line " + std::to_string(t));
+                }
+            });
+        }
+        for (int i = 0; i < 20; ++i) {
+            logger.set_log_file((i % 2 ? a : b).string());
+        }
+        for (auto& w : writers) w.join();
+        logger.flush();   // everything logged above is written once this returns
+        ORCHA_ASSERT_EQ(count_lines(a, "concurrency-line") + count_lines(b, "concurrency-line"),
+                        static_cast<size_t>(kThreads * kLines));
+
+        // Level filtering.
+        logger.set_log_file(a.string());
+        logger.set_level(Utils::LogLevel::WARNING);
+        logger.log(Utils::LogLevel::INFO, "filter-check below");
+        logger.log(Utils::LogLevel::WARNING, "filter-check above");
+        logger.flush();
+        ORCHA_ASSERT_EQ(count_lines(a, "filter-check below"), static_cast<size_t>(0));
+        ORCHA_ASSERT_EQ(count_lines(a, "filter-check above"), static_cast<size_t>(1));
+
+        logger.set_log_file("");
+        logger.set_level(saved_level);
+        logger.set_console_output(true);
+        std::filesystem::remove(a);
+        std::filesystem::remove(b);
+        std::cout << "[PASS] test_logger_concurrent_logging_and_flush\n";
+    }
+
     inline void run_shutdown_tests() {
         std::cout << "\n-- Shutdown & Threading --\n";
         test_http_server_serves_requests();
@@ -325,6 +388,8 @@ namespace Orcha::Tests {
         test_http_server_concurrent_requests();
         test_plugin_watcher_stops_promptly();
         test_job_scheduler_stops_promptly();
+        test_parse_log_level();
+        test_logger_concurrent_logging_and_flush();
     }
 
 } // namespace Orcha::Tests
