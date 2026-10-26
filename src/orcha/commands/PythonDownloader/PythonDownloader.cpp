@@ -168,6 +168,8 @@ public:
     [[nodiscard]] std::string name() const override { return "download_python"; }
 };
 
+ORCHA_PLUGIN_ABI_EXPORT()
+
 extern "C" Orcha::Core::ICommand* create_command() {
     return new PythonDownloader();
 }

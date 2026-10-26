@@ -148,6 +148,8 @@ private:
     }
 };
 
+ORCHA_PLUGIN_ABI_EXPORT()
+
 extern "C" Orcha::Core::ICommand* create_command() {
     return new HttpRequest();
 }

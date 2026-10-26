@@ -180,3 +180,22 @@ target_link_libraries(orcha_test_slow_plugin PRIVATE nlohmann_json::nlohmann_jso
 add_dependencies(test_new_features orcha_test_slow_plugin)
 target_compile_definitions(test_new_features PRIVATE
         ORCHA_TEST_SLOW_PLUGIN_PATH="$<TARGET_FILE:orcha_test_slow_plugin>")
+
+# Same plugin built without the ABI export, as a pre-versioning plugin would be;
+# the registry must refuse to load it.
+add_library(orcha_test_legacy_plugin MODULE tests/plugins/SlowTestPlugin.cpp)
+target_link_libraries(orcha_test_legacy_plugin PRIVATE nlohmann_json::nlohmann_json)
+target_compile_definitions(orcha_test_legacy_plugin PRIVATE ORCHA_TEST_LEGACY_ABI)
+add_dependencies(test_new_features orcha_test_legacy_plugin)
+target_compile_definitions(test_new_features PRIVATE
+        ORCHA_TEST_LEGACY_PLUGIN_PATH="$<TARGET_FILE:orcha_test_legacy_plugin>")
+
+# Timeout/cancellation tests drive the real shell_exec and http_request plugins.
+foreach(plugin ShellExec HttpRequest)
+    if(TARGET ${plugin})
+        add_dependencies(test_new_features ${plugin})
+        string(TOUPPER ${plugin} plugin_upper)
+        target_compile_definitions(test_new_features PRIVATE
+                ORCHA_TEST_${plugin_upper}_PATH="$<TARGET_FILE:${plugin}>")
+    endif()
+endforeach()
