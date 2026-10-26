@@ -97,6 +97,7 @@ add_library(agent STATIC
         agent/routes/SwaggerRoute.hpp
         agent/routes/PluginAdminRoute.hpp
         agent/routes/JobRoute.hpp
+        agent/routes/CircuitBreakerRoute.hpp
         agent/routes/DashboardRoute.hpp
 )
 

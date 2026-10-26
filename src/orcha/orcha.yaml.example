@@ -40,6 +40,11 @@ workflow:
   # 0 = no limit. Steps can also set `timeout_ms`, and a workflow can set a
   # top-level `timeout_ms` for the whole run.
   default_timeout_ms: 0
+  # Per-command circuit breakers, used by workflows with "circuit_breaker": true.
+  circuit_breaker:
+    failure_threshold: 5       # consecutive failures that open the circuit
+    success_threshold: 1       # successful probes needed to close it again
+    reset_timeout_ms: 30000    # how long it stays open before a probe is allowed
 
 # Jobs: saved workflows + run history (SQLite-backed) + cron scheduler.
 jobs:

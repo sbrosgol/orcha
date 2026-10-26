@@ -10,6 +10,7 @@
 #include "routes/PluginAdminRoute.hpp"
 #include "routes/DashboardRoute.hpp"
 #include "routes/JobRoute.hpp"
+#include "routes/CircuitBreakerRoute.hpp"
 #include "AuthMiddleware.hpp"
 #include "HttpJson.hpp"
 
@@ -28,7 +29,8 @@ namespace Orcha::Agent {
         std::chrono::milliseconds watch_interval,
         std::shared_ptr<Jobs::JobService> jobs,
         std::shared_ptr<Core::IPluginDenylist> denylist,
-        Config::ServerConfig server)
+        Config::ServerConfig server,
+        std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers)
         : registry_(std::move(registry))
         , engine_(std::move(engine))
         , logger_(std::move(logger))
@@ -39,7 +41,8 @@ namespace Orcha::Agent {
         , watch_interval_(watch_interval)
         , jobs_(std::move(jobs))
         , denylist_(std::move(denylist))
-        , server_config_(std::move(server)) {
+        , server_config_(std::move(server))
+        , circuit_breakers_(std::move(circuit_breakers)) {
         setup_default_routes();
     }
 
@@ -115,6 +118,10 @@ namespace Orcha::Agent {
         // Jobs API (CRUD + run history). Gated by the same Basic-auth middleware.
         if (jobs_) {
             router_.register_handler(std::make_shared<Routes::JobRoute>(jobs_, logger_));
+        }
+        if (circuit_breakers_) {
+            router_.register_handler(
+                std::make_shared<Routes::CircuitBreakerRoute>(circuit_breakers_, logger_));
         }
 
         if (logger_) {

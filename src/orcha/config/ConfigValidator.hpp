@@ -249,36 +249,17 @@ namespace Orcha::Config {
                 }
             }
 
-            // Max parallel steps validation
-            if (auto max_parallel = config.get_int("workflow.max_parallel_steps")) {
-                if (*max_parallel < 1) {
-                    result.add_error("workflow.max_parallel_steps",
-                        "Max parallel steps must be at least 1");
-                }
-                if (*max_parallel > 32) {
-                    result.add_warning("workflow.max_parallel_steps",
-                        "High parallelism (" + std::to_string(*max_parallel) + ") may exhaust system resources");
+            // Circuit breaker thresholds (workflows opt in with "circuit_breaker": true)
+            for (const char* key : {"workflow.circuit_breaker.failure_threshold",
+                                    "workflow.circuit_breaker.success_threshold"}) {
+                if (auto value = config.get_int(key); value && *value < 1) {
+                    result.add_error(key, "Must be at least 1");
                 }
             }
-
-            // Rollback on failure validation
-            if (auto rollback_mode = config.get_string("workflow.rollback_mode")) {
-                static const std::vector<std::string> valid_modes =
-                    {"none", "all", "completed"};
-
-                bool valid = false;
-                for (const auto& mode : valid_modes) {
-                    if (*rollback_mode == mode) {
-                        valid = true;
-                        break;
-                    }
-                }
-
-                if (!valid) {
-                    result.add_error("workflow.rollback_mode",
-                        "Invalid rollback mode: '" + *rollback_mode + "'",
-                        "Use one of: none, all, completed");
-                }
+            if (auto reset = config.get_int("workflow.circuit_breaker.reset_timeout_ms");
+                reset && *reset < 0) {
+                result.add_error("workflow.circuit_breaker.reset_timeout_ms",
+                    "Cannot be negative", "Use the time in ms an open circuit waits before probing");
             }
         }
 

@@ -116,6 +116,41 @@ that blocks. Every plugin must also expand `ORCHA_PLUGIN_ABI_EXPORT()` once;
 plugins built against an older `core/ICommand.hpp` are refused at load time
 and must be rebuilt.
 
+## Rollback and Circuit Breaking
+
+Both are opt-in per workflow:
+
+```json
+{
+  "rollback": "reverse",
+  "circuit_breaker": true,
+  "steps": [
+    { "command": "create_pg_db", "params": { "dbname": "app" } },
+    { "command": "http_request", "params": { "url": "https://deploy.example.com/hook" } }
+  ]
+}
+```
+
+**`rollback`** (`none` | `reverse` | `best_effort`, default `none`): when the run
+fails (a step fails or times out), the steps that completed are rolled back in
+reverse completion order. Each command's `rollback(params)` receives the
+parameters the step actually ran with (placeholders resolved). `reverse` stops
+at the first rollback that fails; `best_effort` continues. Commands whose
+metadata does not set `supports_rollback` are reported as `not_supported`. If
+the run is *cancelled* (shutdown), rollback is skipped. Each step result in the
+response carries the outcome, e.g. `"rollback": {"status": "rolled_back"}`
+(`rolled_back`, `failed`, `skipped`, `not_supported`).
+
+**`circuit_breaker`** (`true` | `false`, default `false`): each step consults a
+circuit breaker for its command, shared across all runs. After
+`workflow.circuit_breaker.failure_threshold` consecutive failures the circuit
+opens and steps using that command fail immediately (without running it) until
+`reset_timeout_ms` passes; then a single probe is allowed, and
+`success_threshold` successful probes close it again. Only command failures and
+timeouts count — validation errors and cancellations do not. Inspect or reset
+breakers with `GET /api/circuit-breakers` and
+`POST /api/circuit-breakers/{command}/reset` (admin auth).
+
 ## API Documentation (Swagger / OpenAPI)
 
 Once Orcha is running, the agent serves an interactive API explorer and a

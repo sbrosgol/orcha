@@ -206,6 +206,12 @@ namespace Orcha::Agent::Routes {
                 !job.definition.at("steps").is_array()) {
                 return "Job 'definition' must contain a 'steps' array";
             }
+            try {
+                // Same parsing the engine uses at run time (rollback, circuit_breaker, ...).
+                (void)Workflow::WorkflowDefinition::from_json(job.definition);
+            } catch (const std::exception& ex) {
+                return std::string("Invalid job 'definition': ") + ex.what();
+            }
             return std::nullopt;
         }
 

@@ -175,6 +175,7 @@ namespace Orcha::Agent::Routes {
                 {"Jobs",     "Saved workflow definitions (admin)"},
                 {"Runs",     "Execution history (admin)"},
                 {"Plugins",  "Plugin lifecycle (admin)"},
+                {"CircuitBreakers", "Per-command circuit breakers (admin)"},
             };
             value tags = value::array();
             for (size_t i = 0; i < std::size(entries); ++i) {
@@ -223,6 +224,9 @@ namespace Orcha::Agent::Routes {
             schemas["PluginActionResult"] = schema_plugin_action_result();
             schemas["WatchStatus"]      = schema_watch_status();
             schemas["WatchUpdate"]      = schema_watch_update();
+            schemas["StepRollback"]     = schema_step_rollback();
+            schemas["CircuitBreaker"]   = schema_circuit_breaker();
+            schemas["CircuitBreakersList"] = schema_circuit_breakers_list();
             components["schemas"] = schemas;
 
             return components;
@@ -301,6 +305,15 @@ namespace Orcha::Agent::Routes {
             props["timeout_ms"] = type_with_desc("integer",
                 "Time limit in ms for the whole workflow; no further steps start "
                 "after it and running steps are stopped");
+            value rollback = type_with_desc("string",
+                "On failure (not cancellation), roll back completed steps in reverse "
+                "completion order: reverse stops at the first rollback failure, "
+                "best_effort continues. Default none");
+            rollback["enum"] = value::array({"none", "reverse", "best_effort"});
+            props["rollback"] = rollback;
+            props["circuit_breaker"] = type_with_desc("boolean",
+                "Consult per-command circuit breakers: an open circuit fails the step "
+                "without running it. Default false");
             s["properties"] = props;
             value req = value::array();
             req[0] = "steps";
@@ -315,7 +328,60 @@ namespace Orcha::Agent::Routes {
             value props = value::object();
             props["success"] = type_of("boolean");
             props["output"] = type_of("object");
-            props["error"] = type_of("string");
+            props["error_message"] = type_of("string");
+            props["command"] = type_of("string");
+            props["step"] = type_with_desc("integer", "0-based step index");
+            props["name"] = type_with_desc("string", "Step name, if set");
+            value rollback = ref("StepRollback");
+            rollback["description"] = "Present when the run failed and \"rollback\" was set";
+            props["rollback"] = rollback;
+            s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_step_rollback() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            value status = type_of("string");
+            status["enum"] = value::array({"rolled_back", "failed", "skipped", "not_supported"});
+            props["status"] = status;
+            props["message"] = type_with_desc("string", "Error (failed) or reason (skipped)");
+            s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_circuit_breaker() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            props["command"] = type_of("string");
+            value state = type_of("string");
+            state["enum"] = value::array({"closed", "open", "half_open"});
+            props["state"] = state;
+            props["consecutive_failures"] = type_of("integer");
+            props["total_calls"] = type_of("integer");
+            props["failed_calls"] = type_of("integer");
+            props["rejected_calls"] = type_of("integer");
+            value last = type_with_desc("string", "ISO-8601 UTC time of the last failure");
+            last["nullable"] = true;
+            props["last_failure"] = last;
+            s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_circuit_breakers_list() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            value list = value::object();
+            list["type"] = "array";
+            list["items"] = ref("CircuitBreaker");
+            props["circuit_breakers"] = list;
+            props["count"] = type_of("integer");
             s["properties"] = props;
             return s;
         }
@@ -690,6 +756,10 @@ namespace Orcha::Agent::Routes {
             paths["/api/plugins/{name}/disable"]= path_plugin_action("disable", "Disable");
             paths["/api/plugins/_watch"]        = path_plugins_watch();
 
+            // Circuit breakers
+            paths["/api/circuit-breakers"]                  = path_circuit_breakers();
+            paths["/api/circuit-breakers/{command}/reset"] = path_circuit_breaker_reset();
+
             return paths;
         }
 
@@ -998,6 +1068,38 @@ namespace Orcha::Agent::Routes {
             put_op["responses"] = put_resp;
             path["put"] = put_op;
 
+            return path;
+        }
+
+        static Orcha::Json path_circuit_breakers() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value op = value::object();
+            op["summary"] = "List per-command circuit breakers";
+            op["tags"] = tag("CircuitBreakers");
+            op["security"] = basic_auth_security();
+            value resp = value::object();
+            resp["200"] = json_response("Circuit breakers", "CircuitBreakersList");
+            op["responses"] = resp;
+            path["get"] = op;
+            return path;
+        }
+
+        static Orcha::Json path_circuit_breaker_reset() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value op = value::object();
+            op["summary"] = "Close a command's circuit breaker";
+            op["tags"] = tag("CircuitBreakers");
+            op["security"] = basic_auth_security();
+            value params = value::array();
+            params[0] = path_param("command", "Command name");
+            op["parameters"] = params;
+            value resp = value::object();
+            resp["200"] = simple_response("Breaker closed");
+            resp["404"] = error_response("No breaker for this command");
+            op["responses"] = resp;
+            path["post"] = op;
             return path;
         }
 
