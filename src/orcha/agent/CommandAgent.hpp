@@ -78,7 +78,7 @@ namespace Orcha::Agent {
         /**
          * @brief Stop the HTTP server.
          */
-        void stop() const;
+        void stop();
 
         /**
          * @brief Register a custom route handler.

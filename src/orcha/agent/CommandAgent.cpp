@@ -160,7 +160,7 @@ namespace Orcha::Agent {
         }
     }
 
-    void CommandAgent::stop() const {
+    void CommandAgent::stop() {
         if (server_) {
             server_->stop();
         }
