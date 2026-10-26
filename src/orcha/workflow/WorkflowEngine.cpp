@@ -9,6 +9,7 @@
 #include <yaml-cpp/yaml.h>
 #include <regex>
 #include <algorithm>
+#include <charconv>
 #include <ranges>
 
 namespace Orcha::Workflow {
@@ -95,61 +96,77 @@ namespace Orcha::Workflow {
         return input;
     }
 
+    namespace {
+
+        // {{stepN.output.a.b}}  -> group 1 = N
+        // {{steps.<name>.output.a.b}} -> group 2 = name ("steps." prefix avoids
+        // any clash with the positional "stepN" form). Group 3 = the WHOLE
+        // dotted field path (a repeated capturing group would only keep its
+        // last iteration).
+        const std::regex& placeholder_pattern() {
+            static const std::regex re(
+                R"(\{\{(?:step(\d+)|steps\.([A-Za-z_]\w*))\.output((?:\.\w+)*)\}\})");
+            return re;
+        }
+
+        /// Parse a 1-based step position; nullopt on overflow or 0.
+        std::optional<size_t> parse_position(const std::ssub_match& m) {
+            size_t value = 0;
+            const char* first = &*m.first;
+            const char* last = first + m.length();
+            auto [ptr, ec] = std::from_chars(first, last, value);
+            if (ec != std::errc{} || ptr != last || value == 0) {
+                return std::nullopt;
+            }
+            return value;
+        }
+
+    } // namespace
+
     std::string PlaceholderResolver::resolve_string(
         const std::string& input,
         const std::vector<WorkflowStepResult>& previous_results) {
 
-        // Capture the WHOLE dotted path in group 2. A repeated *capturing* group
-        // (\.\w+)* would only capture its last iteration, so nested references
-        // like {{step1.output.a.b}} would lose all but the final segment.
-        static const std::regex placeholder_regex(
-            R"(\{\{step(\d+)\.output((?:\.[\w\d_]+)*)\}\})");
+        // Single left-to-right pass over the ORIGINAL input. Substituted text
+        // is never re-scanned, so a step output that itself contains
+        // "{{step1.output...}}" cannot cause re-expansion or an endless loop.
+        std::string result;
+        result.reserve(input.size());
+        size_t copied_up_to = 0;
 
-        // Named references: {{steps.<name>.output.<path>}}. A step's optional
-        // name lets later steps reference it by name instead of brittle position.
-        // ("steps." prefix avoids any clash with the positional "stepN" form.)
-        static const std::regex named_regex(
-            R"(\{\{steps\.([A-Za-z_][\w]*)\.output((?:\.[\w\d_]+)*)\}\})");
+        const auto& re = placeholder_pattern();
+        for (std::sregex_iterator it(input.begin(), input.end(), re), end; it != end; ++it) {
+            const std::smatch& match = *it;
+            result.append(input, copied_up_to,
+                          static_cast<size_t>(match.position(0)) - copied_up_to);
+            copied_up_to = static_cast<size_t>(match.position(0) + match.length(0));
 
-        std::string result = input;
-        std::smatch match;
+            const std::string field_path = match[3].str();
+            const WorkflowStepResult* source = nullptr;
 
-        while (std::regex_search(result, match, placeholder_regex)) {
-            int step_index = std::stoi(match[1].str()) - 1;
-            std::string field_path = match[2].str();
-            std::string replacement;
-
-            if (step_index >= 0 &&
-                step_index < static_cast<int>(previous_results.size())) {
-
-                auto value = navigate_output(
-                    previous_results[step_index].output, field_path);
-                replacement = json_value_to_string(value);
-            }
-
-            result.replace(match.position(0), match.length(0), replacement);
-        }
-
-        while (std::regex_search(result, match, named_regex)) {
-            const std::string step_name = match[1].str();
-            const std::string field_path = match[2].str();
-            std::string replacement;
-
-            // Walk in reverse so the MOST RECENT step with this name wins when
-            // names are duplicated. This keeps resolution consistent with the
-            // parallel dependency analyzer, whose name_to_index map overwrites
-            // earlier entries and thus also resolves to the last such step.
-            for (const auto& prev : std::views::reverse(previous_results)) {
-                if (!prev.name.empty() && prev.name == step_name) {
-                    replacement = json_value_to_string(
-                        navigate_output(prev.output, field_path));
-                    break;
+            if (match[1].matched) {
+                if (auto pos = parse_position(match[1]);
+                    pos && *pos <= previous_results.size()) {
+                    source = &previous_results[*pos - 1];
+                }
+            } else {
+                // Walk in reverse so the MOST RECENT step with this name wins
+                // when names are duplicated (consistent with the dependency
+                // analysis, which also binds a name to its latest step).
+                const std::string step_name = match[2].str();
+                for (const auto& prev : std::views::reverse(previous_results)) {
+                    if (!prev.name.empty() && prev.name == step_name) {
+                        source = &prev;
+                        break;
+                    }
                 }
             }
 
-            result.replace(match.position(0), match.length(0), replacement);
+            if (source) {
+                result += json_value_to_string(navigate_output(source->output, field_path));
+            }
         }
-
+        result.append(input, copied_up_to);
         return result;
     }
 
