@@ -12,6 +12,7 @@
 
 #include "../IRouteHandler.hpp"
 #include "../HttpJson.hpp"
+#include "../../core/JsonCompat.hpp"
 #include "../../core/PluginManager.hpp"
 #include "../../core/IPluginDiscovery.hpp"
 #include "../../core/ICommandRegistry.hpp"
@@ -174,7 +175,7 @@ namespace Orcha::Agent::Routes {
         HttpResponse set_watch(const HttpRequest& request) {
             bool enabled = false;
             try {
-                Orcha::Json body = Orcha::Json::parse(request.body);
+                Orcha::Json body = Orcha::parse_json_bounded(request.body);
                 if (body.contains("enabled") && body.at("enabled").is_boolean()) {
                     enabled = body.at("enabled").get<bool>();
                 } else {

@@ -9,20 +9,26 @@
 #include "../core/ICommandRegistry.hpp"
 #include "../core/Json.hpp"
 #include "../utils/ILogger.hpp"
+#include <chrono>
 #include <mutex>
 #include <future>
+#include <stop_token>
 
 namespace Orcha::Workflow {
 
     /**
      * @class SyncStepExecutor
      * @brief Synchronous step executor.
+     *
+     * A step fails if the command throws, fails validation, or returns an
+     * object whose "success" field is false (see ICommand::execute).
      */
     class SyncStepExecutor : public IStepExecutor {
     public:
         [[nodiscard]] WorkflowStepResult execute_step(
             const std::shared_ptr<Core::ICommand>& cmd,
-            const Orcha::Json& params) override;
+            const Orcha::Json& params,
+            const Core::ExecutionControl& control) override;
     };
 
     /**
@@ -34,6 +40,20 @@ namespace Orcha::Workflow {
      */
     class PlaceholderResolver {
     public:
+        /**
+         * @struct References
+         * @brief Step references found in a parameter tree.
+         */
+        struct References {
+            std::vector<size_t> positions;   ///< 1-based, from {{stepN.output...}}
+            std::vector<std::string> names;  ///< from {{steps.<name>.output...}}
+        };
+
+        /**
+         * @brief Collect every step referenced by placeholders in @p input.
+         */
+        [[nodiscard]] static References references(const Orcha::Json& input);
+
         /**
          * @brief Resolve placeholders in a JSON value.
          * @param input Input JSON with placeholders.
@@ -49,6 +69,8 @@ namespace Orcha::Workflow {
             const std::string& input,
             const std::vector<WorkflowStepResult>& previous_results);
 
+        static void collect_references(const Orcha::Json& input, References& out);
+
         [[nodiscard]] static Orcha::Json navigate_output(
             const Orcha::Json& output,
             const std::string& field_path);
@@ -58,10 +80,28 @@ namespace Orcha::Workflow {
     };
 
     /**
+     * @struct EngineOptions
+     * @brief Engine-wide execution limits.
+     */
+    struct EngineOptions {
+        /// Applied to steps without their own timeout_ms; zero means none.
+        std::chrono::milliseconds default_step_timeout{0};
+        /// Cancels every run of this engine when requested (server shutdown).
+        std::stop_token cancel;
+    };
+
+    /**
      * @class WorkflowEngine
      * @brief Refactored workflow execution engine.
      *
      * Uses strategy pattern for step execution.
+     *
+     * Timeouts and cancellation: each step runs with an ExecutionControl whose
+     * deadline is the earliest of the step's timeout_ms (or the engine default)
+     * and the workflow's timeout_ms. A step that returns after its deadline
+     * fails as timed out; once the run is cancelled or past its deadline, no
+     * further steps start. The run is cancelled when EngineOptions::cancel
+     * or the enclosing run's token (nested run_job) is stopped.
      */
     class WorkflowEngine : public IWorkflowEngine {
     public:
@@ -70,7 +110,8 @@ namespace Orcha::Workflow {
          */
         WorkflowEngine(std::shared_ptr<Core::ICommandRegistry> registry,
                        std::shared_ptr<IStepExecutor> executor,
-                       std::shared_ptr<Utils::ILogger> logger = nullptr);
+                       std::shared_ptr<Utils::ILogger> logger = nullptr,
+                       EngineOptions options = {});
 
         /**
          * @brief Construct with registry only (uses default executor).
@@ -96,8 +137,9 @@ namespace Orcha::Workflow {
     private:
         [[nodiscard]] WorkflowStepResult execute_single_step(
             const WorkflowStep& step,
-            const std::vector<WorkflowStepResult>& previous_results,
-            int step_index);
+            const Orcha::Json& resolved_params,
+            int step_index,
+            const Core::ExecutionControl& control);
 
         void log_step_start(const WorkflowStep& step, int index);
         void log_step_complete(const WorkflowStepResult& result, int index);
@@ -105,6 +147,7 @@ namespace Orcha::Workflow {
         std::shared_ptr<Core::ICommandRegistry> registry_;
         std::shared_ptr<IStepExecutor> executor_;
         std::shared_ptr<Utils::ILogger> logger_;
+        EngineOptions options_;
     };
 
 } // namespace Orcha::Workflow

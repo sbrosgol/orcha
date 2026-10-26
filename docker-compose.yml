@@ -12,6 +12,9 @@ services:
       # is merged into the configuration at startup (see main.cpp).
       ORCHA_ADMIN_USERNAME: ${ORCHA_ADMIN_USERNAME:-admin}
       ORCHA_ADMIN_PASSWORD: ${ORCHA_ADMIN_PASSWORD:-change-me}
+      # Required to use POST /workflow from outside the container
+      # (send `Authorization: Bearer <token>`). Empty => /workflow returns 503.
+      ORCHA_SERVER_API_TOKEN: ${ORCHA_SERVER_API_TOKEN:-}
       ORCHA_JOBS_DB_PATH: /app/data/orcha-jobs.db
       ORCHA_LOGGING_FILE: /app/logs/orcha.log
     volumes:

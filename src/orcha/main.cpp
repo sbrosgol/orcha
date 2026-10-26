@@ -3,12 +3,11 @@
 // Updated to use new architecture with DI and configuration
 //
 
-#include <atomic>
-#include <condition_variable>
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
-#include <mutex>
+#include <stop_token>
 #include <thread>
 #ifdef _WIN32
 #include <io.h>
@@ -19,6 +18,10 @@
 #define orcha_isatty ::isatty
 #define orcha_fileno ::fileno
 #endif
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/signal_set.hpp>
 
 // Core
 #include "core/CommandRegistry.hpp"
@@ -51,15 +54,23 @@ namespace fs = std::filesystem;
 
 /**
  * @brief Bootstrap application services into the service locator.
+ * @param run_cancel Cancels every workflow run when stopped (shutdown).
  */
 void bootstrap_services(Orcha::Core::ServiceLocator& services,
-                       const Orcha::Config::IConfiguration& config) {
+                       const Orcha::Config::IConfiguration& config,
+                       std::stop_token run_cancel) {
     using namespace Orcha;
 
     // Logger (singleton)
     auto& logger = Utils::Logger::instance();
     auto logging_config = Config::LoggingConfig::from_config(config);
     logger.set_log_file(logging_config.file);
+    logger.set_console_output(logging_config.console_output);
+    if (auto level = Utils::parse_log_level(logging_config.level)) {
+        logger.set_level(*level);
+    } else {
+        logger.warn("Unknown logging.level '" + logging_config.level + "'; using INFO");
+    }
 
     // For DI, we wrap the singleton in a shared_ptr
     auto logger_ptr = std::shared_ptr<Utils::ILogger>(&logger, [](Utils::ILogger*){});
@@ -86,11 +97,16 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     plugin_manager->set_denylist(denylist);
 
     // Workflow Engine (factory - creates new instances)
-    auto engine_factory = [registry, logger_ptr]() {
+    Workflow::EngineOptions engine_options;
+    engine_options.default_step_timeout = std::chrono::milliseconds(
+        std::max<int64_t>(0, config.get_int("workflow.default_timeout_ms", 0)));
+    engine_options.cancel = std::move(run_cancel);
+    auto engine_factory = [registry, logger_ptr, engine_options]() {
         return std::make_shared<Workflow::WorkflowEngine>(
             registry,
             std::make_shared<Workflow::SyncStepExecutor>(),
-            logger_ptr);
+            logger_ptr,
+            engine_options);
     };
     services.register_factory<Workflow::IWorkflowEngine>(
         std::function<std::shared_ptr<Workflow::IWorkflowEngine>()>(engine_factory));
@@ -214,7 +230,8 @@ int run_cli_mode(Orcha::Core::ServiceLocator& services, const std::string& yaml_
  * @brief Run in server mode - start HTTP server.
  */
 int run_server_mode(Orcha::Core::ServiceLocator& services,
-                   const Orcha::Config::IConfiguration& config) {
+                   const Orcha::Config::IConfiguration& config,
+                   std::stop_source& run_cancel) {
     using namespace Orcha;
 
     auto server_config = Config::ServerConfig::from_config(config);
@@ -234,9 +251,15 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
-        job_service, denylist);
+        job_service, denylist, server_config);
 
-    agent.start(server_config.port);
+    try {
+        agent.start();
+    } catch (const std::exception&) {
+        // CommandAgent::start already reported the cause (e.g. address in use
+        // or an invalid server.host); exit cleanly instead of std::terminate.
+        return 1;
+    }
 
     // Cron scheduler (Phase 3): fire enabled jobs whose schedule_cron is due.
     std::unique_ptr<Jobs::JobScheduler> scheduler;
@@ -254,7 +277,10 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
               << ":" << server_config.port << "/\n";
     std::cout << "[Orcha] Available endpoints:\n";
     std::cout << "  GET  /          - Health check\n";
-    std::cout << "  POST /workflow  - Execute workflow\n";
+    std::cout << "  POST /workflow  - Execute workflow"
+              << (!server_config.api_token.empty() ? " (Bearer token)"
+                  : server_config.is_loopback() ? " (local clients only)"
+                  : " (DISABLED: set server.api_token)") << "\n";
     std::cout << "  GET  /commands  - List commands\n";
     std::cout << "  GET  /swagger   - API documentation\n";
     if (admin_on) {
@@ -271,46 +297,45 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         std::cout << "  [scheduler] cron scheduling active (tick "
                   << scheduler_tick.count() << "s)\n";
     }
-    // Wait for shutdown. In an interactive shell we accept Enter on stdin; in
-    // a detached environment (Docker `up -d`, systemd, nohup) stdin is closed
-    // and cin.get() returns EOF immediately — so we also block on SIGTERM/SIGINT
-    // and race whichever arrives first.
-    static std::condition_variable shutdown_cv;
-    static std::mutex shutdown_mtx;
-    static std::atomic<bool> shutdown_requested{false};
-    auto request_shutdown = [] {
-        {
-            std::lock_guard<std::mutex> lock(shutdown_mtx);
-            shutdown_requested = true;
+    // Wait for shutdown: SIGTERM/SIGINT, or Enter on an interactive stdin. In a
+    // detached environment (Docker `up -d`, systemd, nohup) stdin is closed and
+    // only signals apply. Signals are delivered through asio::signal_set, which
+    // handles them outside signal context (a raw handler may only touch
+    // lock-free atomics, so it cannot wake a waiting thread safely).
+    // Shared ownership: the detached stdin thread may outlive this function.
+    auto shutdown_ioc = std::make_shared<boost::asio::io_context>();
+    boost::asio::signal_set signals(*shutdown_ioc, SIGINT, SIGTERM);
+    std::string shutdown_reason = "stdin";
+    signals.async_wait([&shutdown_reason, shutdown_ioc](const boost::system::error_code& ec, int sig) {
+        if (!ec) {
+            shutdown_reason = (sig == SIGINT) ? "SIGINT" : "SIGTERM";
         }
-        shutdown_cv.notify_all();
-    };
-    std::signal(SIGTERM, [](int) {
-        shutdown_requested = true;
-        shutdown_cv.notify_all();
-    });
-    std::signal(SIGINT, [](int) {
-        shutdown_requested = true;
-        shutdown_cv.notify_all();
+        shutdown_ioc->stop();
     });
 
     const bool interactive = orcha_isatty(orcha_fileno(stdin)) != 0;
     if (interactive) {
         std::cout << "[Orcha] Press Enter (or Ctrl-C) to exit...\n";
-        std::thread([request_shutdown] {
+        std::thread([shutdown_ioc] {
             std::cin.get();
-            request_shutdown();
+            boost::asio::post(*shutdown_ioc, [shutdown_ioc] { shutdown_ioc->stop(); });
         }).detach();
     } else {
         std::cout << "[Orcha] Running detached; send SIGTERM to exit.\n";
     }
 
-    {
-        std::unique_lock<std::mutex> lock(shutdown_mtx);
-        shutdown_cv.wait(lock, [] { return shutdown_requested.load(); });
-    }
+    shutdown_ioc->run();   // returns on the first signal or Enter
+
+    // Restore default dispositions: a second Ctrl-C now terminates immediately
+    // if a graceful shutdown ever gets stuck.
+    boost::system::error_code ignored;
+    signals.clear(ignored);
+    logger->info("Shutdown requested (" + shutdown_reason + ")");
 
     logger->info("Shutting down Orcha...");
+    // Cancel in-flight workflow runs first so the scheduler and the HTTP
+    // worker pool are not left waiting for long-running steps.
+    run_cancel.request_stop();
     if (scheduler) scheduler->stop();
     agent.stop();
 
@@ -336,7 +361,8 @@ auto main(int argc, char* argv[]) -> int {
 
     // Create service locator and bootstrap services
     Core::ServiceLocator services;
-    bootstrap_services(services, *config);
+    std::stop_source run_cancel;
+    bootstrap_services(services, *config, run_cancel.get_token());
 
     auto logger = services.get<Utils::ILogger>();
     logger->info("Starting Orcha v" + std::string(Orcha::kVersion) + "...");
@@ -355,7 +381,7 @@ auto main(int argc, char* argv[]) -> int {
     }
 
     // Otherwise, run server mode
-    int result = run_server_mode(services, *config);
+    int result = run_server_mode(services, *config, run_cancel);
     services.clear();
     return result;
 }

@@ -5,26 +5,48 @@
 
 #include "CommandRegistry.hpp"
 #include <dlfcn.h>
-#include <algorithm>
 
 namespace Orcha::Core {
 
-    CommandRegistry::~CommandRegistry() {
-        std::unique_lock lock(mutex_);
-        commands_.clear();
-        for (auto& plugin : plugins_) {
-            plugin.command.reset();
-            if (plugin.handle) {
-                dlclose(plugin.handle);
+    namespace {
+
+        /// Owns a dlopen() handle; closing happens when the last owner lets go.
+        struct SharedLibrary {
+            void* handle = nullptr;
+
+            explicit SharedLibrary(void* h) : handle(h) {}
+            ~SharedLibrary() {
+                if (handle) {
+                    dlclose(handle);
+                }
             }
-        }
-    }
+            SharedLibrary(const SharedLibrary&) = delete;
+            SharedLibrary& operator=(const SharedLibrary&) = delete;
+        };
+
+    } // namespace
 
     bool CommandRegistry::load_command_library(const std::string& path) {
         void* handle = dlopen(path.c_str(), RTLD_NOW);
         if (!handle) {
             if (logger_) {
                 logger_->error("Failed to load plugin: " + path + " (" + dlerror() + ")");
+            }
+            return false;
+        }
+        auto library = std::make_shared<SharedLibrary>(handle);
+
+        // Refuse plugins built against a different ICommand layout: calling
+        // into a mismatched vtable is undefined behaviour.
+        dlerror();
+        const auto abi_func = reinterpret_cast<PluginAbiVersionFunc>(
+            dlsym(handle, "orcha_plugin_abi_version"));
+        if (!abi_func || abi_func() != kPluginAbiVersion) {
+            if (logger_) {
+                logger_->error("Plugin " + path + " was built for plugin ABI " +
+                               (abi_func ? std::to_string(abi_func()) : std::string("1 (unversioned)")) +
+                               ", host requires " + std::to_string(kPluginAbiVersion) +
+                               "; rebuild it against the current core/ICommand.hpp");
             }
             return false;
         }
@@ -35,39 +57,54 @@ namespace Orcha::Core {
             if (logger_) {
                 logger_->error("Cannot load symbol 'create_command' in " + path + ": " + dlsym_error);
             }
-            dlclose(handle);
             return false;
         }
+        // Optional: lets the plugin free the object with its own allocator.
+        const auto destroy_func = reinterpret_cast<DestroyCommandFunc>(dlsym(handle, "destroy_command"));
 
-        std::shared_ptr<ICommand> cmd(create_func());
-        if (!cmd) {
+        ICommand* raw = nullptr;
+        try {
+            raw = create_func();
+        } catch (const std::exception& ex) {
+            if (logger_) {
+                logger_->error("Plugin factory in " + path + " threw: " + ex.what());
+            }
+            return false;
+        } catch (...) {
+            if (logger_) {
+                logger_->error("Plugin factory in " + path + " threw an unknown exception");
+            }
+            return false;
+        }
+        if (!raw) {
             if (logger_) {
                 logger_->error("Plugin in " + path + " did not return a valid command.");
             }
-            dlclose(handle);
             return false;
         }
+
+        // The deleter owns the library: the command is destroyed first, then
+        // the deleter (and with it the last library reference) is released,
+        // so dlclose() can never run while the command is alive or executing.
+        std::shared_ptr<ICommand> cmd(raw, [library, destroy_func](ICommand* p) {
+            if (destroy_func) {
+                destroy_func(p);
+            } else {
+                delete p;
+            }
+        });
 
         const std::string cmd_name = cmd->name();
 
         {
             std::unique_lock lock(mutex_);
-
-            // Check if command already exists
             if (commands_.contains(cmd_name)) {
                 if (logger_) {
                     logger_->error("Command '" + cmd_name + "' already registered, skipping.");
                 }
-                // Drop the duplicate command BEFORE dlclose so its destructor
-                // runs while the library is still mapped (use-after-dlclose
-                // is UB and triggers SIGSEGV in optimised builds).
-                cmd.reset();
-                dlclose(handle);
-                return false;
+                return false; // cmd and library are released here, in that order
             }
-
-            commands_[cmd_name] = cmd;
-            plugins_.push_back({handle, std::move(cmd), path});
+            commands_.emplace(cmd_name, std::move(cmd));
         }
 
         if (logger_) {
@@ -92,8 +129,7 @@ namespace Orcha::Core {
             return false;
         }
 
-        commands_[cmd_name] = command;
-        plugins_.push_back({nullptr, std::move(command), ""});
+        commands_.emplace(cmd_name, std::move(command));
 
         if (logger_) {
             logger_->info("Registered command: " + cmd_name);
@@ -102,32 +138,21 @@ namespace Orcha::Core {
     }
 
     bool CommandRegistry::unregister_command(const std::string& name) {
-        std::unique_lock lock(mutex_);
-
-        auto cmd_it = commands_.find(name);
-        if (cmd_it == commands_.end()) {
-            return false;
-        }
-
-        // Find the owning plugin entry (if this command came from a library).
-        auto plugin_it = std::ranges::find_if(plugins_, [&name](const PluginHandle& p) {
-            return p.command && p.command->name() == name;
-        });
-
-        // Drop ALL references to the command object before dlclose, so the
-        // command's destructor runs while its code is still mapped. Closing the
-        // library first and destroying the object afterwards is undefined
-        // behaviour (use-after-dlclose).
-        commands_.erase(cmd_it);
-
-        if (plugin_it != plugins_.end()) {
-            void* handle = plugin_it->handle;
-            plugin_it->command.reset();   // last reference -> destructor runs now
-            plugins_.erase(plugin_it);
-            if (handle) {
-                dlclose(handle);          // safe: object already destroyed
+        std::shared_ptr<ICommand> removed;
+        {
+            std::unique_lock lock(mutex_);
+            auto it = commands_.find(name);
+            if (it == commands_.end()) {
+                return false;
             }
+            removed = std::move(it->second);
+            commands_.erase(it);
         }
+
+        // Drop the registry's reference outside the lock. If this was the last
+        // reference the command (and then its library) is released now;
+        // otherwise that happens when in-flight executions finish.
+        removed.reset();
 
         if (logger_) {
             logger_->info("Unregistered command: " + name);

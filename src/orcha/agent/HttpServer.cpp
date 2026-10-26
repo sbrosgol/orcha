@@ -4,6 +4,8 @@
 
 #include "HttpServer.hpp"
 
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
@@ -12,7 +14,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
+#include <thread>
+#include <unordered_map>
 
 namespace Orcha::Agent {
 
@@ -92,26 +97,77 @@ namespace Orcha::Agent {
             parse_query(q, query);
         }
 
-        // Read one request off @p socket, dispatch through @p handler, and write
-        // the response. Connections are closed after a single exchange.
-        void serve_connection(tcp::socket socket,
-                              const HttpServer::Handler& handler,
-                              const std::shared_ptr<Utils::ILogger>& logger) {
-            beast::tcp_stream stream(std::move(socket));
-            beast::flat_buffer buffer;
-            http::request_parser<http::string_body> parser;
-            parser.body_limit(static_cast<std::uint64_t>(64) * 1024 * 1024);
+    } // namespace
 
-            beast::error_code ec;
-            stream.expires_after(std::chrono::seconds(30));
-            http::read(stream, buffer, parser, ec);
-            if (ec) {
-                stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+    // ------------------------------------------------------------------------
+    // Impl / HttpSession
+    //
+    // Threading model: the io_context is run by exactly ONE thread (io_thread),
+    // so the acceptor, every session's stream and the session registry are
+    // only touched from that thread and need no locking. Handlers run on the
+    // worker pool and hand their response back by posting to the I/O thread.
+    // ------------------------------------------------------------------------
+
+    class HttpSession;
+
+    struct HttpServer::Impl {
+        net::io_context ioc;
+        net::executor_work_guard<net::io_context::executor_type> work;
+        tcp::acceptor acceptor;
+        net::thread_pool workers;
+        std::thread io_thread;
+
+        const HttpServer::Handler& handler;
+        const std::shared_ptr<Utils::ILogger>& logger;
+        const HttpServer::Options& options;
+
+        // I/O-thread only.
+        bool stopping = false;
+        std::unordered_map<HttpSession*, std::weak_ptr<HttpSession>> sessions;
+
+        Impl(const HttpServer::Handler& h, const std::shared_ptr<Utils::ILogger>& l,
+             const HttpServer::Options& o)
+            : work(net::make_work_guard(ioc))
+            , acceptor(ioc)
+            , workers(o.threads ? o.threads : 1)
+            , handler(h)
+            , logger(l)
+            , options(o) {}
+
+        void accept();
+    };
+
+    class HttpSession : public std::enable_shared_from_this<HttpSession> {
+    public:
+        HttpSession(tcp::socket socket, HttpServer::Impl& impl)
+            : stream_(std::move(socket)), impl_(impl) {}
+
+        void start() {
+            impl_.sessions.emplace(this, weak_from_this());
+            parser_.body_limit(impl_.options.body_limit);
+            stream_.expires_after(impl_.options.read_timeout);
+            http::async_read(stream_, buffer_, parser_,
+                [self = shared_from_this()](beast::error_code ec, std::size_t) {
+                    self->on_read(ec);
+                });
+        }
+
+        /// Called on stop: a connection still waiting for its request is closed.
+        void abort_if_reading() {
+            if (!dispatched_) {
+                close();
+            }
+        }
+
+    private:
+        void on_read(beast::error_code ec) {
+            if (ec || impl_.stopping) {
+                close();
                 return;
             }
+            dispatched_ = true;
 
-            auto req = parser.release();
-
+            auto req = parser_.release();
             HttpRequest hr;
             hr.method = std::string(req.method_string());
             parse_target(std::string(req.target()), hr.path, hr.query);
@@ -120,63 +176,130 @@ namespace Orcha::Agent {
                                         std::string(field.value()));
             }
             hr.body = std::move(req.body());
+            const unsigned version = req.version();
 
-            HttpResponse hres;
-            try {
-                hres = handler(hr);
-            } catch (const std::exception& ex) {
-                if (logger) {
-                    logger->error(
-                        std::string("Unhandled error in request handler: ") + ex.what());
-                }
-                hres = HttpResponse(status::InternalError, "application/json",
-                                    "{\"error\":\"Internal server error\"}");
-            }
-
-            http::response<http::string_body> res(
-                static_cast<http::status>(hres.status), req.version());
-            res.set(http::field::server, "Orcha");
-            res.set(http::field::content_type, hres.content_type);
-            res.keep_alive(false);
-            res.body() = std::move(hres.body);
-            res.prepare_payload();
-
-            stream.expires_after(std::chrono::seconds(30));
-            http::write(stream, res, ec);
-            stream.socket().shutdown(tcp::socket::shutdown_send, ec);
+            // Run the (blocking) handler off the I/O thread.
+            net::post(impl_.workers,
+                [self = shared_from_this(), hr = std::move(hr), version]() {
+                    HttpResponse hres = self->invoke(hr);
+                    net::post(self->stream_.get_executor(),
+                        [self, hres = std::move(hres), version]() mutable {
+                            self->write(std::move(hres), version);
+                        });
+                });
         }
 
-    } // namespace
+        HttpResponse invoke(const HttpRequest& hr) const {
+            try {
+                return impl_.handler(hr);
+            } catch (const std::exception& ex) {
+                if (impl_.logger) {
+                    impl_.logger->error(
+                        std::string("Unhandled error in request handler: ") + ex.what());
+                }
+            } catch (...) {
+                if (impl_.logger) {
+                    impl_.logger->error("Unhandled non-standard exception in request handler");
+                }
+            }
+            return HttpResponse(status::InternalError, "application/json",
+                                "{\"error\":\"Internal server error\"}");
+        }
 
-    struct HttpServer::Impl {
-        net::io_context ioc;
-        tcp::acceptor acceptor;
-        net::thread_pool pool;
-        std::thread accept_thread;
+        void write(HttpResponse hres, unsigned version) {
+            response_.result(static_cast<http::status>(hres.status));
+            response_.version(version);
+            response_.set(http::field::server, "Orcha");
+            response_.set(http::field::content_type, hres.content_type);
+            response_.keep_alive(false);
+            response_.body() = std::move(hres.body);
+            response_.prepare_payload();
 
-        explicit Impl(unsigned int threads)
-            : acceptor(ioc), pool(threads ? threads : 1) {}
+            stream_.expires_after(impl_.options.write_timeout);
+            http::async_write(stream_, response_,
+                [self = shared_from_this()](beast::error_code, std::size_t) {
+                    self->close();
+                });
+        }
+
+        void close() {
+            if (closed_) return;
+            closed_ = true;
+            beast::error_code ec;
+            stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
+            stream_.close();
+            impl_.sessions.erase(this);
+        }
+
+        beast::tcp_stream stream_;
+        HttpServer::Impl& impl_;
+        beast::flat_buffer buffer_;
+        http::request_parser<http::string_body> parser_;
+        http::response<http::string_body> response_;
+        bool dispatched_ = false;   // handed to a worker; do not abort on stop
+        bool closed_ = false;
     };
+
+    void HttpServer::Impl::accept() {
+        acceptor.async_accept(
+            [this](beast::error_code ec, tcp::socket socket) {
+                if (ec) {
+                    if (stopping || !acceptor.is_open()) {
+                        return;           // acceptor closed by stop()
+                    }
+                    if (logger) {
+                        logger->warn("HTTP accept failed: " + ec.message());
+                    }
+                } else {
+                    std::make_shared<HttpSession>(std::move(socket), *this)->start();
+                }
+                accept();
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // HttpServer
+    // ------------------------------------------------------------------------
 
     HttpServer::HttpServer(Handler handler,
                            std::shared_ptr<Utils::ILogger> logger,
                            unsigned int threads)
+        : HttpServer(std::move(handler), std::move(logger),
+                     Options{.threads = threads ? threads : 1}) {}
+
+    HttpServer::HttpServer(Handler handler,
+                           std::shared_ptr<Utils::ILogger> logger,
+                           Options options)
         : handler_(std::move(handler))
         , logger_(std::move(logger))
-        , threads_(threads ? threads : 1) {}
+        , options_(options) {
+        if (options_.threads == 0) {
+            options_.threads = 1;
+        }
+    }
 
     HttpServer::~HttpServer() {
         stop();
     }
 
-    void HttpServer::start(unsigned short port) {
+    void HttpServer::start(const std::string& host, unsigned short port) {
         if (running_.exchange(true)) {
             return; // already started
         }
-        impl_ = std::make_unique<Impl>(threads_);
+        impl_ = std::make_unique<Impl>(handler_, logger_, options_);
 
         beast::error_code ec;
-        const tcp::endpoint endpoint(net::ip::make_address("0.0.0.0"), port);
+        std::string bind_host = host == "localhost" ? "127.0.0.1" : host;
+        if (bind_host.size() > 2 && bind_host.front() == '[' && bind_host.back() == ']') {
+            bind_host = bind_host.substr(1, bind_host.size() - 2); // "[::1]" -> "::1"
+        }
+        const auto address = net::ip::make_address(bind_host, ec);
+        if (ec) {
+            running_ = false;
+            impl_.reset();
+            throw std::runtime_error("Invalid server.host '" + host + "': " + ec.message());
+        }
+        const tcp::endpoint endpoint(address, port);
         impl_->acceptor.open(endpoint.protocol(), ec);
         if (!ec) impl_->acceptor.set_option(net::socket_base::reuse_address(true), ec);
         if (!ec) impl_->acceptor.bind(endpoint, ec);
@@ -184,41 +307,55 @@ namespace Orcha::Agent {
         if (ec) {
             running_ = false;
             impl_.reset();
-            throw std::runtime_error("Failed to bind HTTP server on port " +
+            throw std::runtime_error("Failed to bind HTTP server on " + host + ":" +
                                      std::to_string(port) + ": " + ec.message());
         }
+        port_ = impl_->acceptor.local_endpoint().port();
 
-        impl_->accept_thread = std::thread([this]() {
-            while (running_.load()) {
-                tcp::socket socket(impl_->ioc);
-                beast::error_code accept_ec;
-                impl_->acceptor.accept(socket, accept_ec);
-                if (accept_ec) {
-                    if (!running_.load()) break;
-                    continue; // transient accept error
-                }
-                net::post(impl_->pool,
-                          [handler = handler_, logger = logger_,
-                           s = std::move(socket)]() mutable {
-                              serve_connection(std::move(s), handler, logger);
-                          });
-            }
-        });
+        impl_->accept();
+        impl_->io_thread = std::thread([impl = impl_.get()] { impl->ioc.run(); });
     }
 
     void HttpServer::stop() {
         if (!running_.exchange(false)) {
             return;
         }
-        if (impl_) {
-            beast::error_code ec;
-            impl_->acceptor.close(ec);
-            if (impl_->accept_thread.joinable()) {
-                impl_->accept_thread.join();
-            }
-            impl_->pool.join(); // drain in-flight connections
-            impl_.reset();
+        if (!impl_) {
+            return;
         }
+
+        // 1. On the I/O thread: stop accepting and drop connections that are
+        //    still waiting for their request (idle / slow clients).
+        net::post(impl_->ioc, [impl = impl_.get()] {
+            impl->stopping = true;
+            beast::error_code ec;
+            impl->acceptor.close(ec);
+            // Copy: closing a session erases it from the registry.
+            auto sessions = impl->sessions;
+            for (auto& [ptr, weak] : sessions) {
+                if (auto session = weak.lock()) {
+                    session->abort_if_reading();
+                }
+            }
+        });
+
+        // 2. Wait for in-flight handlers. Their responses are posted to the
+        //    I/O thread, which keeps running meanwhile.
+        impl_->workers.join();
+
+        // 3. Let pending writes finish, bounded by the grace period.
+        //    ioc.run() returns (stopped() becomes true) once no work remains.
+        impl_->work.reset();
+        const auto give_up_at = std::chrono::steady_clock::now() + options_.shutdown_grace;
+        while (!impl_->ioc.stopped() && std::chrono::steady_clock::now() < give_up_at) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        impl_->ioc.stop();
+        if (impl_->io_thread.joinable()) {
+            impl_->io_thread.join();
+        }
+        impl_.reset();
+        port_ = 0;
     }
 
 } // namespace Orcha::Agent

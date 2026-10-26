@@ -170,5 +170,33 @@ target_link_libraries(test_dependency_resolver PRIVATE core)
 add_executable(test_new_features
         tests/test_new_features_main.cpp
 )
-# jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp.
-target_link_libraries(test_new_features PRIVATE jobs config)
+# jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp;
+# agent brings the HTTP server (Boost.Beast) for the shutdown tests.
+target_link_libraries(test_new_features PRIVATE jobs config agent)
+
+# Test-only plugin used by the registry lifetime regression test (a command that
+# is still executing when it is unregistered).
+add_library(orcha_test_slow_plugin MODULE tests/plugins/SlowTestPlugin.cpp)
+target_link_libraries(orcha_test_slow_plugin PRIVATE nlohmann_json::nlohmann_json)
+add_dependencies(test_new_features orcha_test_slow_plugin)
+target_compile_definitions(test_new_features PRIVATE
+        ORCHA_TEST_SLOW_PLUGIN_PATH="$<TARGET_FILE:orcha_test_slow_plugin>")
+
+# Same plugin built without the ABI export, as a pre-versioning plugin would be;
+# the registry must refuse to load it.
+add_library(orcha_test_legacy_plugin MODULE tests/plugins/SlowTestPlugin.cpp)
+target_link_libraries(orcha_test_legacy_plugin PRIVATE nlohmann_json::nlohmann_json)
+target_compile_definitions(orcha_test_legacy_plugin PRIVATE ORCHA_TEST_LEGACY_ABI)
+add_dependencies(test_new_features orcha_test_legacy_plugin)
+target_compile_definitions(test_new_features PRIVATE
+        ORCHA_TEST_LEGACY_PLUGIN_PATH="$<TARGET_FILE:orcha_test_legacy_plugin>")
+
+# Timeout/cancellation tests drive the real shell_exec and http_request plugins.
+foreach(plugin ShellExec HttpRequest)
+    if(TARGET ${plugin})
+        add_dependencies(test_new_features ${plugin})
+        string(TOUPPER ${plugin} plugin_upper)
+        target_compile_definitions(test_new_features PRIVATE
+                ORCHA_TEST_${plugin_upper}_PATH="$<TARGET_FILE:${plugin}>")
+    endif()
+endforeach()

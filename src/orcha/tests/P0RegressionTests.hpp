@@ -1,0 +1,366 @@
+//
+// P0RegressionTests.hpp - Regression tests for the P0 hardening fixes
+//
+// Each test reproduces a defect found in the architecture / concurrency review:
+// - in-band command failures ({"success": false}) were recorded as success
+// - placeholder substitution re-scanned its own output (endless loop)
+// - an out-of-range {{stepN}} index threw out of the engine
+// - a step referencing a still-running parallel step saw a blank result, and
+//   result storage raced (run this binary under TSan to cover the race)
+// - run_job's cycle guard was bypassed by `parallel: true` steps
+// - unregistering a plugin command while it executed unmapped its code
+// - deeply nested request JSON overflowed a worker thread's stack
+// - POST /workflow was served unauthenticated on every interface
+//
+
+#pragma once
+
+#include "../agent/AuthMiddleware.hpp"
+#include "../config/ServerConfig.hpp"
+#include "../core/CommandRegistry.hpp"
+#include "../core/JsonCompat.hpp"
+#include "../jobs/JobService.hpp"
+#include "../jobs/RunJobCommand.hpp"
+#include "../jobs/SqliteJobStore.hpp"
+#include "../workflow/WorkflowEngine.hpp"
+
+#include "Assertions.hpp"
+#include <chrono>
+#include <cstdlib>
+#include <future>
+#include <iostream>
+#include <thread>
+
+namespace Orcha::Tests {
+
+    namespace p0 {
+
+        /// Returns { "out": <params.value> } -- or a literal placeholder.
+        class LiteralCommand : public Core::ICommand {
+        public:
+            [[nodiscard]] std::string name() const override { return "literal"; }
+            Json execute(const Json& params) override {
+                if (params.contains("emit_placeholder")) {
+                    // Built at runtime so it is not itself a placeholder in params.
+                    return Json{{"out", std::string("{{st") + "ep1.output.out}}"}};
+                }
+                return Json{{"out", params.value("value", Json(nullptr))}};
+            }
+        };
+
+        /// Reports failure in-band, like the bundled plugins do.
+        class InBandFailureCommand : public Core::ICommand {
+        public:
+            [[nodiscard]] std::string name() const override { return "inband_fail"; }
+            Json execute(const Json&) override {
+                return Json{{"success", false}, {"error", "exit code 2"}};
+            }
+        };
+
+        /// Sleeps, then returns { "v": 42 }.
+        class SlowValueCommand : public Core::ICommand {
+        public:
+            [[nodiscard]] std::string name() const override { return "slow_value"; }
+            Json execute(const Json& params) override {
+                std::this_thread::sleep_for(std::chrono::milliseconds(params.value("ms", 100)));
+                return Json{{"v", 42}};
+            }
+        };
+
+        inline std::shared_ptr<Core::CommandRegistry> make_registry() {
+            auto registry = std::make_shared<Core::CommandRegistry>();
+            (void)registry->register_command(std::make_shared<LiteralCommand>());
+            (void)registry->register_command(std::make_shared<InBandFailureCommand>());
+            (void)registry->register_command(std::make_shared<SlowValueCommand>());
+            return registry;
+        }
+
+        /// Run @p fn on a worker, failing the whole test binary if it hangs.
+        template <typename Fn>
+        auto run_with_deadline(const char* test, Fn fn) {
+            auto fut = std::async(std::launch::async, std::move(fn));
+            if (fut.wait_for(std::chrono::seconds(10)) == std::future_status::timeout) {
+                std::cerr << "[FAIL] " << test << ": did not finish within 10s\n";
+                std::_Exit(1);
+            }
+            return fut.get();
+        }
+
+        inline Agent::HttpRequest post_workflow(std::optional<std::string> authorization) {
+            Agent::HttpRequest req;
+            req.method = "POST";
+            req.path = "/workflow";
+            if (authorization) {
+                req.headers.emplace_back("Authorization", *authorization);
+            }
+            return req;
+        }
+
+    } // namespace p0
+
+    // ========== Command failure contract ==========
+
+    inline void test_inband_failure_fails_step() {
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        def.steps.push_back({"inband_fail", Json::object()});
+        def.steps.push_back({"literal", Json{{"value", "must not run"}}});
+
+        auto result = engine.execute(def);
+        ORCHA_ASSERT_FALSE(result.success);
+        ORCHA_ASSERT_FALSE(result.step_results[0].success);
+        ORCHA_ASSERT_EQ(result.step_results[0].error_message, std::string("exit code 2"));
+        ORCHA_ASSERT_EQ(result.error_message, std::string("exit code 2"));
+        ORCHA_ASSERT(result.step_results[1].output.is_null()); // stopped after the failure
+        std::cout << "[PASS] test_inband_failure_fails_step\n";
+    }
+
+    // ========== Placeholder resolution ==========
+
+    inline void test_placeholder_output_is_not_reexpanded() {
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        def.steps.push_back({"literal", Json{{"emit_placeholder", true}}});
+        def.steps.push_back({"literal", Json{{"value", "{{step1.output.out}}"}}});
+
+        auto result = p0::run_with_deadline("test_placeholder_output_is_not_reexpanded",
+                                            [&] { return engine.execute(def); });
+        ORCHA_ASSERT(result.success);
+        // Substituted verbatim, never re-scanned.
+        ORCHA_ASSERT_EQ(result.step_results[1].output["out"].get<std::string>(),
+                        std::string("{{step1.output.out}}"));
+        std::cout << "[PASS] test_placeholder_output_is_not_reexpanded\n";
+    }
+
+    inline void test_placeholder_out_of_range_index() {
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        auto out = engine.execute_json(Json{{"steps", Json::array({
+            {{"command", "literal"},
+             {"params", {{"value", "a{{step99999999999999999999.output}}b"}}}}})}});
+        ORCHA_ASSERT(out.is_array() && out.size() == 1);
+        ORCHA_ASSERT(out[0]["success"].get<bool>());
+        ORCHA_ASSERT_EQ(out[0]["output"]["out"].get<std::string>(), std::string("ab"));
+        std::cout << "[PASS] test_placeholder_out_of_range_index\n";
+    }
+
+    inline void test_placeholder_mixed_and_nested_paths() {
+        std::vector<Workflow::WorkflowStepResult> prev(2);
+        prev[0].output = Json{{"a", {{"b", 7}}}};
+        prev[1].output = Json{{"s", "x"}};
+        prev[1].name = "second";
+        auto resolved = Workflow::PlaceholderResolver::resolve(
+            Json{{"p", "{{step1.output.a.b}}-{{steps.second.output.s}}-{{steps.missing.output}}"}},
+            prev);
+        ORCHA_ASSERT_EQ(resolved["p"].get<std::string>(), std::string("7-x-"));
+        std::cout << "[PASS] test_placeholder_mixed_and_nested_paths\n";
+    }
+
+    // ========== Parallel steps ==========
+
+    inline void test_step_waits_for_referenced_parallel_step() {
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        Workflow::WorkflowStep slow{"slow_value", Json{{"ms", 150}}, /*parallel=*/true};
+        slow.name = "slow";
+        def.steps.push_back(slow);
+        def.steps.push_back({"literal", Json{{"value", "{{steps.slow.output.v}}"}}});
+        def.steps.push_back({"literal", Json{{"value", "{{step1.output.v}}"}}});
+
+        auto result = engine.execute(def);
+        ORCHA_ASSERT(result.success);
+        ORCHA_ASSERT_EQ(result.step_results[1].output["out"].get<std::string>(), std::string("42"));
+        ORCHA_ASSERT_EQ(result.step_results[2].output["out"].get<std::string>(), std::string("42"));
+        std::cout << "[PASS] test_step_waits_for_referenced_parallel_step\n";
+    }
+
+    inline void test_parallel_and_sequential_steps_stress() {
+        // Many parallel steps interleaved with sequential steps that read
+        // their results. Under TSan this covers the result-storage race.
+        Workflow::WorkflowEngine engine(p0::make_registry());
+        Workflow::WorkflowDefinition def;
+        for (int i = 0; i < 8; ++i) {
+            Workflow::WorkflowStep s{"slow_value", Json{{"ms", 5 + i}}, /*parallel=*/true};
+            s.name = "p" + std::to_string(i);
+            def.steps.push_back(s);
+        }
+        for (int i = 0; i < 64; ++i) {
+            def.steps.push_back({"literal", Json{{"value",
+                "{{steps.p" + std::to_string(i % 8) + ".output.v}}"}}});
+        }
+        auto result = engine.execute(def);
+        ORCHA_ASSERT(result.success);
+        for (size_t i = 8; i < def.steps.size(); ++i) {
+            ORCHA_ASSERT_EQ(result.step_results[i].output["out"].get<std::string>(), std::string("42"));
+        }
+        std::cout << "[PASS] test_parallel_and_sequential_steps_stress\n";
+    }
+
+    // ========== run_job cycle guard ==========
+
+    inline void test_run_job_cycle_detected_across_parallel_steps() {
+        auto registry = p0::make_registry();
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(store, [registry] {
+            return std::make_shared<Workflow::WorkflowEngine>(registry);
+        });
+        ORCHA_ASSERT(registry->register_command(std::make_shared<Jobs::RunJobCommand>(service)));
+
+        Jobs::JobDefinition job;
+        job.name = "self";
+        job.definition = Json{{"steps", Json::array({
+            {{"command", "run_job"}, {"params", {{"job", "self"}}}, {"parallel", true}}})}};
+        ORCHA_ASSERT(store->create_job(job));
+
+        auto run = p0::run_with_deadline("test_run_job_cycle_detected_across_parallel_steps",
+                                         [&] { return service->run_job(job.id, "manual"); });
+        ORCHA_ASSERT(run.has_value());
+        ORCHA_ASSERT_EQ(run->status, std::string("failed"));
+        ORCHA_ASSERT(run->error.find("cycle detected") != std::string::npos);
+        std::cout << "[PASS] test_run_job_cycle_detected_across_parallel_steps\n";
+    }
+
+    // ========== Plugin lifetime ==========
+
+    inline void test_unregister_while_plugin_command_executing() {
+#ifdef ORCHA_TEST_SLOW_PLUGIN_PATH
+        Core::CommandRegistry registry;
+        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH));
+        auto command = registry.get_command("slow_test_plugin");
+        ORCHA_ASSERT(command != nullptr);
+
+        auto running = std::async(std::launch::async, [command]() mutable {
+            auto out = command->execute(Json{{"ms", 200}});
+            command.reset(); // last reference: destroy, then close the library
+            return out;
+        });
+        command.reset();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        ORCHA_ASSERT(registry.unregister_command("slow_test_plugin")); // mid-execution
+        ORCHA_ASSERT_FALSE(registry.has_command("slow_test_plugin"));
+
+        // Before the fix the library was dlclose()d here and this crashed.
+        const auto out = running.get();
+        ORCHA_ASSERT(out.value("done", false));
+
+        // The library can be loaded again afterwards.
+        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH));
+        std::cout << "[PASS] test_unregister_while_plugin_command_executing\n";
+#else
+        std::cout << "[SKIP] test_unregister_while_plugin_command_executing (no test plugin)\n";
+#endif
+    }
+
+    // ========== Request JSON depth ==========
+
+    inline void test_bounded_json_depth() {
+        auto nested = [](size_t depth) {
+            return std::string(depth, '[') + std::string(depth, ']');
+        };
+        ORCHA_ASSERT(parse_json_bounded(nested(kMaxRequestJsonDepth)).is_array());
+
+        bool rejected = false;
+        try {
+            (void)parse_json_bounded(nested(kMaxRequestJsonDepth + 1));
+        } catch (const JsonDepthError&) {
+            rejected = true;
+        }
+        ORCHA_ASSERT(rejected);
+
+        // Far beyond any stack: must be rejected while parsing, not crash.
+        rejected = false;
+        try {
+            (void)parse_json_bounded(nested(200000));
+        } catch (const JsonDepthError&) {
+            rejected = true;
+        }
+        ORCHA_ASSERT(rejected);
+        std::cout << "[PASS] test_bounded_json_depth\n";
+    }
+
+    // ========== /workflow authentication ==========
+
+    inline void test_server_config_defaults_and_loopback() {
+        Config::ServerConfig cfg;
+        ORCHA_ASSERT_EQ(cfg.host, std::string("127.0.0.1"));
+        ORCHA_ASSERT(cfg.api_token.empty());
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("127.0.0.1"));
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("localhost"));
+        ORCHA_ASSERT(Config::ServerConfig::is_loopback_host("::1"));
+        ORCHA_ASSERT_FALSE(Config::ServerConfig::is_loopback_host("0.0.0.0"));
+        ORCHA_ASSERT_FALSE(Config::ServerConfig::is_loopback_host("10.0.0.5"));
+        std::cout << "[PASS] test_server_config_defaults_and_loopback\n";
+    }
+
+    inline void test_workflow_api_auth() {
+        using p0::post_workflow;
+
+        Config::AdminConfig admin;
+        admin.password = "secret";              // serviceable, auth required
+        const std::string admin_basic = "Basic YWRtaW46c2VjcmV0"; // admin:secret
+
+        // No token + non-loopback bind: disabled (fail closed).
+        {
+            Config::ServerConfig server;
+            server.host = "0.0.0.0";
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+            auto resp = mw(post_workflow(std::nullopt));
+            ORCHA_ASSERT(resp.has_value() && resp->status == Agent::status::ServiceUnavailable);
+        }
+        // No token + loopback bind: allowed.
+        {
+            Config::ServerConfig server; // 127.0.0.1
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+            ORCHA_ASSERT_FALSE(mw(post_workflow(std::nullopt)).has_value());
+        }
+        // Token configured: required everywhere, including loopback.
+        {
+            Config::ServerConfig server;
+            server.host = "0.0.0.0";
+            server.api_token = "t0ken";
+            auto mw = Agent::make_api_auth(server, admin, {"/workflow"});
+
+            auto none = mw(post_workflow(std::nullopt));
+            ORCHA_ASSERT(none.has_value() && none->status == Agent::status::Unauthorized);
+            auto wrong = mw(post_workflow("Bearer nope"));
+            ORCHA_ASSERT(wrong.has_value() && wrong->status == Agent::status::Unauthorized);
+            auto scheme_only = mw(post_workflow("Bearer "));
+            ORCHA_ASSERT(scheme_only.has_value() && scheme_only->status == Agent::status::Unauthorized);
+
+            ORCHA_ASSERT_FALSE(mw(post_workflow("Bearer t0ken")).has_value());
+            ORCHA_ASSERT_FALSE(mw(post_workflow(admin_basic)).has_value());
+
+            Agent::HttpRequest health;
+            health.method = "GET";
+            health.path = "/";
+            ORCHA_ASSERT_FALSE(mw(health).has_value()); // unguarded path
+        }
+        // Admin Basic is not accepted when admin auth is disabled.
+        {
+            Config::ServerConfig server;
+            server.api_token = "t0ken";
+            Config::AdminConfig open_admin;
+            open_admin.auth_required = false;
+            auto mw = Agent::make_api_auth(server, open_admin, {"/workflow"});
+            auto resp = mw(post_workflow(admin_basic));
+            ORCHA_ASSERT(resp.has_value() && resp->status == Agent::status::Unauthorized);
+        }
+        std::cout << "[PASS] test_workflow_api_auth\n";
+    }
+
+    inline void run_p0_regression_tests() {
+        std::cout << "\n-- P0 Regressions --\n";
+        test_inband_failure_fails_step();
+        test_placeholder_output_is_not_reexpanded();
+        test_placeholder_out_of_range_index();
+        test_placeholder_mixed_and_nested_paths();
+        test_step_waits_for_referenced_parallel_step();
+        test_parallel_and_sequential_steps_stress();
+        test_run_job_cycle_detected_across_parallel_steps();
+        test_unregister_while_plugin_command_executing();
+        test_bounded_json_depth();
+        test_server_config_defaults_and_loopback();
+        test_workflow_api_auth();
+    }
+
+} // namespace Orcha::Tests

@@ -31,6 +31,7 @@ namespace Orcha::Agent {
         inline constexpr int Conflict = 409;
         inline constexpr int UnsupportedMediaType = 415;
         inline constexpr int InternalError = 500;
+        inline constexpr int ServiceUnavailable = 503;
     } // namespace status
 
     /**

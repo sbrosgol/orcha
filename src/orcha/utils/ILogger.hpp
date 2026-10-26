@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <cctype>
 #include <string>
+#include <string_view>
 #include <map>
 #include <optional>
 #include <memory>
@@ -19,7 +21,8 @@ namespace Orcha::Utils {
         INFO,
         WARNING,
         ERROR,
-        FATAL
+        FATAL,
+        OFF      ///< Minimum level that disables all output.
     };
 
     /**
@@ -140,8 +143,28 @@ namespace Orcha::Utils {
             case LogLevel::WARNING: return "WARN";
             case LogLevel::ERROR:   return "ERROR";
             case LogLevel::FATAL:   return "FATAL";
+            case LogLevel::OFF:     return "OFF";
             default:                return "UNKNOWN";
         }
+    }
+
+    /**
+     * @brief Parse a configured level name (case-insensitive): trace, debug,
+     *        info, warn/warning, error, fatal, off.
+     */
+    [[nodiscard]] inline std::optional<LogLevel> parse_log_level(std::string_view name) {
+        std::string lower(name);
+        for (auto& c : lower) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (lower == "trace") return LogLevel::TRACE;
+        if (lower == "debug") return LogLevel::DEBUG;
+        if (lower == "info") return LogLevel::INFO;
+        if (lower == "warn" || lower == "warning") return LogLevel::WARNING;
+        if (lower == "error") return LogLevel::ERROR;
+        if (lower == "fatal") return LogLevel::FATAL;
+        if (lower == "off") return LogLevel::OFF;
+        return std::nullopt;
     }
 
 } // namespace Orcha::Utils

@@ -27,7 +27,8 @@ namespace Orcha::Agent {
         std::string plugin_dir,
         std::chrono::milliseconds watch_interval,
         std::shared_ptr<Jobs::JobService> jobs,
-        std::shared_ptr<Core::IPluginDenylist> denylist)
+        std::shared_ptr<Core::IPluginDenylist> denylist,
+        Config::ServerConfig server)
         : registry_(std::move(registry))
         , engine_(std::move(engine))
         , logger_(std::move(logger))
@@ -37,7 +38,8 @@ namespace Orcha::Agent {
         , plugin_dir_(std::move(plugin_dir))
         , watch_interval_(watch_interval)
         , jobs_(std::move(jobs))
-        , denylist_(std::move(denylist)) {
+        , denylist_(std::move(denylist))
+        , server_config_(std::move(server)) {
         setup_default_routes();
     }
 
@@ -46,6 +48,21 @@ namespace Orcha::Agent {
     }
 
     void CommandAgent::setup_default_routes() {
+        // The execution API runs arbitrary commands (e.g. shell_exec), so it is
+        // never served unauthenticated on a reachable interface.
+        router_.use(make_api_auth(server_config_, admin_, {"/workflow"}, logger_));
+        if (logger_) {
+            if (!server_config_.api_token.empty()) {
+                logger_->info("POST /workflow requires a bearer token (server.api_token)");
+            } else if (server_config_.is_loopback()) {
+                logger_->info("POST /workflow is open to local clients only (bound to " +
+                              server_config_.host + ")");
+            } else {
+                logger_->warn("POST /workflow is DISABLED: bound to " + server_config_.host +
+                              " without server.api_token (set ORCHA_SERVER_API_TOKEN)");
+            }
+        }
+
         // Health check
         router_.register_handler(
             std::make_shared<Routes::HealthRoute>(logger_));
@@ -110,36 +127,40 @@ namespace Orcha::Agent {
         router_.register_handler(std::move(handler));
     }
 
-    void CommandAgent::start(unsigned short port) {
+    void CommandAgent::start() {
+        const auto port = server_config_.port;
         server_ = std::make_unique<HttpServer>(
             [this](const HttpRequest& request) { return handle_request(request); },
-            logger_);
+            logger_,
+            static_cast<unsigned int>(server_config_.worker_threads));
 
         if (logger_) {
             logger_->info("CommandAgent starting on port " + std::to_string(port));
         }
 
         try {
-            server_->start(port);
-            std::cout << "[Orcha] CommandAgent listening on port " << port << '\n';
+            server_->start(server_config_.host, port);
+            std::cout << "[Orcha] CommandAgent listening on " << server_config_.host
+                      << ":" << port << '\n';
 
             if (logger_) {
-                logger_->info("CommandAgent listening on port " + std::to_string(port));
+                logger_->info("CommandAgent listening on " + server_config_.host + ":" +
+                              std::to_string(port));
             }
         } catch (const std::exception& ex) {
-            std::cerr << "[Orcha] Failed to start HTTP server on port "
-                      << port << ": " << ex.what() << '\n';
+            std::cerr << "[Orcha] Failed to start HTTP server on "
+                      << server_config_.host << ":" << port << ": " << ex.what() << '\n';
 
             if (logger_) {
                 logger_->error(
-                    "Failed to start HTTP server on port " +
+                    "Failed to start HTTP server on " + server_config_.host + ":" +
                     std::to_string(port) + ": " + ex.what());
             }
             throw;
         }
     }
 
-    void CommandAgent::stop() const {
+    void CommandAgent::stop() {
         if (server_) {
             server_->stop();
         }

@@ -275,6 +275,13 @@ namespace Orcha::Agent::Routes {
             params["additionalProperties"] = true;
             params["description"] = "Command-specific parameters";
             props["params"] = params;
+            props["name"] = type_with_desc("string",
+                "Optional step name, referenced as {{steps.<name>.output...}}");
+            props["parallel"] = type_with_desc("boolean",
+                "Run concurrently with the following steps");
+            props["timeout_ms"] = type_with_desc("integer",
+                "Step time limit in ms (default: workflow.default_timeout_ms); "
+                "the step fails as timed out when exceeded");
             s["properties"] = props;
             value req = value::array();
             req[0] = "command";
@@ -291,6 +298,9 @@ namespace Orcha::Agent::Routes {
             steps["type"] = "array";
             steps["items"] = ref("WorkflowStep");
             props["steps"] = steps;
+            props["timeout_ms"] = type_with_desc("integer",
+                "Time limit in ms for the whole workflow; no further steps start "
+                "after it and running steps are stopped");
             s["properties"] = props;
             value req = value::array();
             req[0] = "steps";

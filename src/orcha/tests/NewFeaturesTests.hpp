@@ -15,6 +15,9 @@
 #include "PluginAdminTests.hpp"
 #include "JobStoreTests.hpp"
 #include "CronTests.hpp"
+#include "P0RegressionTests.hpp"
+#include "TimeoutTests.hpp"
+#include "ShutdownTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -432,6 +435,15 @@ server:
 
         // Cron (Phase 3)
         run_cron_tests();
+
+        // P0 hardening regressions
+        run_p0_regression_tests();
+
+        // Timeouts & cancellation
+        run_timeout_tests();
+
+        // Shutdown & threading
+        run_shutdown_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }
