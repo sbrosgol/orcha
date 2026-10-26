@@ -284,6 +284,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
              border:1px solid color-mix(in srgb,var(--c) 30%,transparent); }
     .alert svg { color:var(--c); margin-top:1px; }
     .alert.err { --c:var(--err); } .alert.info { --c:var(--info); }
+    .step-card .shd .tag { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+    .tag svg.i { width:12px; height:12px; flex:none; }
 
     /* ---------- Toolbar ---------- */
     .toolbar { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
@@ -1334,7 +1336,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     let editingId=null;
     let manifests=null;       // { [command_name]: pluginMeta }
     let allCommands=[];        // string[] of all registered commands
-    let editorVisual=[];       // [{command, name?, params}]
+    let editorVisual=[];       // [{command, name?, params, extra}] (extra: other step fields, kept as-is)
+    let editorDefExtra={};     // workflow-level fields other than steps (rollback, timeout_ms, ...), kept as-is
     let editorTab='visual';
     const DEFAULT_DEF = JSON.stringify({steps:[
       {name:"greet", command:"echo", params:{message:"Hello from Orcha"}},
@@ -1380,26 +1383,35 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     }
 
     // Visual <-> JSON sync ---------------------------------------------------
+    // Rebuilds the JSON from the visual builder. Fields the builder does not
+    // edit (workflow timeout_ms, a step's parallel/timeout_ms, ...) are carried
+    // over untouched so saving from the visual tab never drops them.
     function visualToJson(){
       const steps = editorVisual.map(s=>{
         const o={};
         if(s.name) o.name=s.name;
         o.command=s.command;
         o.params=s.params||{};
-        return o;
+        return Object.assign(o, s.extra||{});
       });
-      $('jDef').value = JSON.stringify({steps}, null, 2);
+      $('jDef').value = JSON.stringify(Object.assign({}, editorDefExtra, {steps}), null, 2);
     }
+    const splitFields = (obj, keys) => {
+      const extra={}; Object.keys(obj).forEach(k=>{ if(!keys.includes(k)) extra[k]=obj[k]; }); return extra;
+    };
     function jsonToVisual(){
       const raw=$('jDef').value.trim();
-      if(!raw){ editorVisual=[]; return {ok:true}; }
+      if(!raw){ editorVisual=[]; editorDefExtra={}; return {ok:true}; }
       let parsed;
       try { parsed=JSON.parse(raw); } catch(e){ return {ok:false, err:'Invalid JSON: '+e.message}; }
       if(!parsed || !Array.isArray(parsed.steps)) return {ok:false, err:'Expected an object with a "steps" array.'};
+      if(parsed.steps.some(s=>!s || typeof s!=='object' || Array.isArray(s))) return {ok:false, err:'Every step must be an object.'};
+      editorDefExtra = splitFields(parsed, ['steps']);
       editorVisual = parsed.steps.map(s=>({
         name: s.name || '',
         command: s.command || '',
-        params: (s.params && typeof s.params==='object' && !Array.isArray(s.params)) ? s.params : {}
+        params: (s.params && typeof s.params==='object' && !Array.isArray(s.params)) ? s.params : {},
+        extra: splitFields(s, ['name','command','params'])
       }));
       return {ok:true};
     }
@@ -1419,7 +1431,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       return `<div class="step-card" data-step="${i}">
         <div class="shd"><span class="n">${i+1}</span><span class="cmd">${esc(s.command || '(no command)')}</span>
           ${m ? (m.description?`<span class="muted" style="font-size:12px">${esc(m.description)}</span>`:'') : '<span class="badge plain unknown" title="No manifest for this command">raw</span>'}
-          <span class="sp"></span>
+          <span class="sp"></span>${stepExtraChips(s.extra)}
           <button type="button" class="btn ghost sm icon" data-act="up" data-i="${i}" ${i===0?'disabled':''} title="Move up" aria-label="Move step ${i+1} up">${icon('up')}</button>
           <button type="button" class="btn ghost sm icon" data-act="down" data-i="${i}" ${i===editorVisual.length-1?'disabled':''} title="Move down" aria-label="Move step ${i+1} down">${icon('down')}</button>
           <button type="button" class="btn ghost sm icon" data-act="del" data-i="${i}" title="Remove step" aria-label="Remove step ${i+1}">${icon('trash')}</button>
@@ -1431,6 +1443,15 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ${params}
         </div>
       </div>`;
+    }
+    function fmtMs(ms){ const n=Number(ms); return n>=1000 && n%1000===0 ? (n/1000)+' s' : n+' ms'; }
+    // Step-level settings the builder keeps but does not edit (edit them in JSON).
+    function stepExtraChips(extra){
+      if(!extra) return '';
+      const chips=[];
+      if(extra.parallel===true) chips.push('<span class="tag" title="Runs concurrently with the following steps (edit in JSON)">parallel</span>');
+      if(Number(extra.timeout_ms)>0) chips.push(`<span class="tag" title="Step time limit (edit in JSON)">${icon('clock')}${esc(fmtMs(extra.timeout_ms))}</span>`);
+      return chips.join('');
     }
     function renderParamField(i, p, value){
       const req = p.required ? '<span class="req" title="Required">*</span>' : '';
@@ -1523,7 +1544,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     function addStep(){
       const cmd=$('addStepCmd').value;
       if(!cmd){ $('addStepCmd').focus(); toast('Select a command to add','err'); return; }
-      editorVisual.push({ name:'', command:cmd, params:defaultParamsFor(cmd) });
+      editorVisual.push({ name:'', command:cmd, params:defaultParamsFor(cmd), extra:{} });
       $('addStepCmd').value='';
       rerenderAndSync();
       const cards=$('defSteps').querySelectorAll('.step-card'); const last=cards[cards.length-1];
@@ -1624,6 +1645,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       syncPreset();
       $('jEnabled').checked = job ? !!job.enabled : true;
       $('jDef').value  = job ? JSON.stringify(job.definition, null, 2) : DEFAULT_DEF;
+      editorDefExtra = {}; editorVisual = [];
       modalError(''); defWarn('');
       updateCronPreview();
       $('defSteps').innerHTML = '<span class="skel" style="width:50%"></span>';
