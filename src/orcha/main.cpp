@@ -256,6 +256,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     auto discovery = services.get<Core::IPluginDiscovery>();
     auto job_service = services.try_get<Jobs::JobService>(); // may be null if store failed
     auto denylist = services.try_get<Core::IPluginDenylist>();
+    auto circuit_breakers = services.try_get<Core::CircuitBreakerRegistry>();
 
     // Create agent with injected dependencies (including the admin dashboard).
     Agent::CommandAgent agent(
@@ -263,7 +264,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
-        job_service, denylist, server_config);
+        job_service, denylist, server_config, circuit_breakers);
 
     try {
         agent.start();
@@ -299,6 +300,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         std::cout << "  GET  /admin     - Admin dashboard"
                   << (admin_config.auth_required ? " (Basic auth)" : "") << "\n";
         std::cout << "  *    /api/plugins - Plugin admin API\n";
+        std::cout << "  *    /api/circuit-breakers - Circuit breaker state/reset\n";
         if (job_service) {
             std::cout << "  *    /api/jobs    - Jobs admin API\n";
         }

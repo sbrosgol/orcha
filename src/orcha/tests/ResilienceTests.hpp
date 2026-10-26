@@ -2,18 +2,23 @@
 // ResilienceTests.hpp - Per-workflow rollback and circuit breaking
 //
 // Rollback: reverse completion order, resolved parameters, reverse vs
-// best_effort, not-supported commands, rollback on timeout, and no rollback
-// when cancelled.
+// best_effort, not-supported commands, rollback on timeout, no rollback when
+// cancelled, and validation of the setting at the HTTP boundary.
 // Circuit breaking: shared state across runs/engines, which failures count,
-// the single half-open probe, recovery, and config validation.
+// the single half-open probe, recovery, and the admin API.
 //
 
 #pragma once
 
+#include "../agent/routes/CircuitBreakerRoute.hpp"
+#include "../agent/routes/JobRoute.hpp"
+#include "../agent/routes/WorkflowRoute.hpp"
 #include "../config/ConfigValidator.hpp"
 #include "../config/YamlConfiguration.hpp"
 #include "../core/CircuitBreaker.hpp"
 #include "../core/CommandRegistry.hpp"
+#include "../jobs/JobService.hpp"
+#include "../jobs/SqliteJobStore.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 
 #include "Assertions.hpp"
@@ -139,6 +144,16 @@ namespace Orcha::Tests {
 
         inline std::string rollback_status(const Workflow::WorkflowStepResult& r) {
             return r.rollback ? r.rollback->to_json()["status"].get<std::string>() : "<none>";
+        }
+
+        inline Agent::HttpRequest json_request(const std::string& method, const std::string& path,
+                                               const Json& body) {
+            Agent::HttpRequest req;
+            req.method = method;
+            req.path = path;
+            req.headers.emplace_back("Content-Type", "application/json");
+            req.body = body.dump();
+            return req;
         }
 
     } // namespace resilience
@@ -268,6 +283,38 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_rollback_follows_completion_order\n";
     }
 
+    inline void test_invalid_resilience_settings_rejected() {
+        using namespace resilience;
+        auto expect_invalid = [](const Json& wf) {
+            bool threw = false;
+            try { (void)Workflow::WorkflowDefinition::from_json(wf); }
+            catch (const std::invalid_argument&) { threw = true; }
+            ORCHA_ASSERT(threw);
+        };
+        expect_invalid(Json{{"rollback", "sideways"}, {"steps", Json::array()}});
+        expect_invalid(Json{{"rollback", true}, {"steps", Json::array()}});
+        expect_invalid(Json{{"circuit_breaker", "yes"}, {"steps", Json::array()}});
+
+        Fixture fx;
+        auto engine = std::make_shared<Workflow::WorkflowEngine>(fx.registry);
+
+        // POST /workflow -> 400, nothing executed.
+        Agent::Routes::WorkflowRoute route(engine);
+        auto resp = route.handle(json_request("POST", "/workflow",
+            Json{{"rollback", "sideways"}, {"steps", Json::array({step("flaky", {{"n", 1}})})}}));
+        ORCHA_ASSERT_EQ(resp.status, Agent::status::BadRequest);
+        ORCHA_ASSERT_EQ(fx.flaky->calls.load(), 0);
+
+        // Saving a job validates the definition too.
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(store, [engine] { return engine; });
+        Agent::Routes::JobRoute jobs(service);
+        auto created = jobs.handle(json_request("POST", "/api/jobs",
+            Json{{"name", "bad"}, {"definition", {{"circuit_breaker", 1}, {"steps", Json::array()}}}}));
+        ORCHA_ASSERT_EQ(created.status, Agent::status::BadRequest);
+        std::cout << "[PASS] test_invalid_resilience_settings_rejected\n";
+    }
+
     // ========== Circuit breaking ==========
 
     inline void test_circuit_breaker_opens_across_runs() {
@@ -368,6 +415,32 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_circuit_breaker_recovers\n";
     }
 
+    inline void test_circuit_breaker_admin_route() {
+        using namespace resilience;
+        auto registry = std::make_shared<Core::CircuitBreakerRegistry>();
+        auto& breaker = registry->get_or_create("flaky", {1, 1, std::chrono::seconds(60)});
+        breaker.record_failure();
+
+        Agent::Routes::CircuitBreakerRoute route(registry);
+        auto list = route.handle(json_request("GET", "/api/circuit-breakers", Json::object()));
+        ORCHA_ASSERT_EQ(list.status, Agent::status::OK);
+        auto body = Json::parse(list.body);
+        ORCHA_ASSERT_EQ(body["count"].get<int>(), 1);
+        ORCHA_ASSERT_EQ(body["circuit_breakers"][0]["command"].get<std::string>(), std::string("flaky"));
+        ORCHA_ASSERT_EQ(body["circuit_breakers"][0]["state"].get<std::string>(), std::string("open"));
+        ORCHA_ASSERT(body["circuit_breakers"][0]["last_failure"].is_string());
+
+        auto reset = route.handle(json_request("POST", "/api/circuit-breakers/flaky/reset", Json::object()));
+        ORCHA_ASSERT_EQ(reset.status, Agent::status::OK);
+        ORCHA_ASSERT(breaker.state() == Core::CircuitState::Closed);
+
+        ORCHA_ASSERT_EQ(route.handle(json_request("POST", "/api/circuit-breakers/nope/reset", Json::object())).status,
+                        Agent::status::NotFound);
+        ORCHA_ASSERT_EQ(route.handle(json_request("POST", "/api/circuit-breakers", Json::object())).status,
+                        Agent::status::MethodNotAllowed);
+        std::cout << "[PASS] test_circuit_breaker_admin_route\n";
+    }
+
     inline void test_circuit_breaker_config_validation() {
         Config::YamlConfiguration config;
         config.load_from_string(R"(
@@ -390,10 +463,12 @@ workflow:
         test_rollback_on_timeout();
         test_rollback_skipped_when_cancelled();
         test_rollback_follows_completion_order();
+        test_invalid_resilience_settings_rejected();
         test_circuit_breaker_opens_across_runs();
         test_circuit_breaker_ignores_non_health_failures();
         test_circuit_breaker_half_open_single_probe();
         test_circuit_breaker_recovers();
+        test_circuit_breaker_admin_route();
         test_circuit_breaker_config_validation();
     }
 
