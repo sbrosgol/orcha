@@ -18,6 +18,7 @@
 #include "P0RegressionTests.hpp"
 #include "TimeoutTests.hpp"
 #include "ShutdownTests.hpp"
+#include "ResilienceTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -444,6 +445,9 @@ server:
 
         // Shutdown & threading
         run_shutdown_tests();
+
+        // Rollback & circuit breaking
+        run_resilience_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }

@@ -10,7 +10,11 @@
 #include <unordered_map>
 #include <functional>
 #include <atomic>
+#include <algorithm>
+#include <memory>
 #include <optional>
+#include <stdexcept>
+#include <vector>
 
 namespace Orcha::Core {
 
@@ -29,9 +33,9 @@ namespace Orcha::Core {
      * @brief Configuration for circuit breaker behavior.
      */
     struct CircuitBreakerConfig {
-        size_t failure_threshold = 5;           // Failures before opening
-        size_t success_threshold = 2;           // Successes in half-open to close
-        std::chrono::seconds reset_timeout{30}; // Time before trying half-open
+        size_t failure_threshold = 5;                // Consecutive failures before opening
+        size_t success_threshold = 1;                // Successful probes in half-open to close
+        std::chrono::milliseconds reset_timeout{30000}; // Open time before probing (half-open)
 
         // Factory for common configurations
         static CircuitBreakerConfig strict() {
@@ -42,6 +46,16 @@ namespace Orcha::Core {
             return {10, 3, std::chrono::seconds{15}};
         }
     };
+
+    /// Text form of a state ("closed" / "open" / "half_open").
+    [[nodiscard]] inline const char* to_string(CircuitState state) {
+        switch (state) {
+            case CircuitState::Closed:   return "closed";
+            case CircuitState::Open:     return "open";
+            case CircuitState::HalfOpen: return "half_open";
+        }
+        return "unknown";
+    }
 
     /**
      * @struct CircuitStats
@@ -69,7 +83,12 @@ namespace Orcha::Core {
      * States:
      * - CLOSED: Normal operation, all requests pass through
      * - OPEN: Too many failures, requests are rejected immediately
-     * - HALF-OPEN: Testing recovery, limited requests allowed
+     * - HALF-OPEN: Testing recovery; exactly one probe request at a time is
+     *   admitted, the rest are rejected until it is recorded
+     *
+     * Every request admitted by allow_request() must be concluded with
+     * record_success(), record_failure() or abandon() (when the outcome says
+     * nothing about the dependency's health, e.g. the run was cancelled).
      */
     class CircuitBreaker {
     public:
@@ -98,20 +117,22 @@ namespace Orcha::Core {
 
                 case CircuitState::Open: {
                     // Check if reset timeout has elapsed
-                    auto now = Clock::now();
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                        now - state_changed_time_);
-
-                    if (elapsed >= config_.reset_timeout) {
+                    if (Clock::now() - state_changed_time_ >= config_.reset_timeout) {
                         transition_to(CircuitState::HalfOpen);
-                        return true;  // Allow one request to test
+                        probe_in_flight_ = true;
+                        return true;  // This request is the probe
                     }
                     rejected_count_++;
                     return false;
                 }
 
                 case CircuitState::HalfOpen:
-                    // Allow limited requests in half-open state
+                    // One probe at a time.
+                    if (probe_in_flight_) {
+                        rejected_count_++;
+                        return false;
+                    }
+                    probe_in_flight_ = true;
                     return true;
             }
 
@@ -123,6 +144,7 @@ namespace Orcha::Core {
          */
         void record_success() {
             std::lock_guard lock(mutex_);
+            probe_in_flight_ = false;
             total_count_++;
             success_count_++;
 
@@ -150,6 +172,7 @@ namespace Orcha::Core {
          */
         void record_failure() {
             std::lock_guard lock(mutex_);
+            probe_in_flight_ = false;
             total_count_++;
             failure_count_++;
             total_failures_++;
@@ -172,6 +195,28 @@ namespace Orcha::Core {
                     // Already open, nothing to do
                     break;
             }
+        }
+
+        /**
+         * @brief Conclude an admitted request without counting it (its outcome
+         *        does not reflect the dependency's health).
+         */
+        void abandon() {
+            std::lock_guard lock(mutex_);
+            probe_in_flight_ = false;
+        }
+
+        /**
+         * @brief Time until an open circuit admits a probe; zero if not open.
+         */
+        [[nodiscard]] std::chrono::milliseconds time_until_probe() const {
+            std::lock_guard lock(mutex_);
+            if (state_ != CircuitState::Open) {
+                return std::chrono::milliseconds::zero();
+            }
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                config_.reset_timeout - (Clock::now() - state_changed_time_));
+            return std::max(left, std::chrono::milliseconds::zero());
         }
 
         /**
@@ -257,6 +302,7 @@ namespace Orcha::Core {
             failure_count_ = 0;
             total_failures_ = 0;
             half_open_successes_ = 0;
+            probe_in_flight_ = false;
         }
 
         /**
@@ -288,6 +334,7 @@ namespace Orcha::Core {
         size_t total_failures_ = 0;
         size_t rejected_count_ = 0;
         size_t half_open_successes_ = 0;
+        bool probe_in_flight_ = false;
         TimePoint last_failure_time_;
         TimePoint state_changed_time_;
 
@@ -313,6 +360,20 @@ namespace Orcha::Core {
                     std::make_unique<CircuitBreaker>(name, config)).first;
             }
             return *it->second;
+        }
+
+        /**
+         * @brief Reset one circuit breaker to closed.
+         * @return false if no breaker exists for @p name.
+         */
+        bool reset(const std::string& name) {
+            std::lock_guard lock(mutex_);
+            auto it = breakers_.find(name);
+            if (it == breakers_.end()) {
+                return false;
+            }
+            it->second->reset();
+            return true;
         }
 
         /**
