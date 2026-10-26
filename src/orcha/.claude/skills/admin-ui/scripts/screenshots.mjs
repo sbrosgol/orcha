@@ -1,6 +1,7 @@
 // Headless-Chrome screenshot + JS-error harness for the Orcha /admin dashboard.
 // Signs in through the real login form, walks every view in light and dark
-// themes, saves PNGs and prints any uncaught exceptions / console.error calls.
+// themes (overview, plugins, jobs, a rolled-back run, circuit breakers), saves
+// PNGs and prints any uncaught exceptions / console.error calls.
 //
 // usage: node screenshots.mjs <baseUrl> <outDir> [width=1440] [height=900]
 // env:   ADMIN_USER (default admin), ADMIN_PASS (default change-me),
@@ -64,6 +65,12 @@ for (const theme of ['light', 'dark']) {
     if (await click('#editJob')) { await sleep(800); await shot(`${theme}-5-editor`); await click('#modal [data-close]'); await sleep(200); }
     if (await click('#jobMenuBtn') && await click('#delJob')) { await sleep(400); await shot(`${theme}-6-confirm`); await click('#cfCancel'); await sleep(200); }
   } else { await shot(`${theme}-4-jobs-empty`); }
+  // A job that failed with rollback enabled (seeded as "deploy-with-rollback").
+  if (await ev(`(() => { const e = [...document.querySelectorAll('.jitem')].find(x => x.textContent.includes('deploy-with-rollback'));
+      if (!e) return false; e.click(); return true; })()`)) { await sleep(1000); await shot(`${theme}-7-job-rollback`); }
+  else console.log('  (skip: no deploy-with-rollback job; run seed.sh)');
+  await ev(`location.hash='#/breakers'; 1`); await sleep(500); await shot(`${theme}-8-breakers`);
+  if (await click('button[data-br]')) { await sleep(400); await shot(`${theme}-9-breaker-confirm`); await click('#cfCancel'); await sleep(200); }
 }
 console.log('JS ERRORS:', errors.length ? JSON.stringify(errors, null, 2) : 'none');
 ws.close();

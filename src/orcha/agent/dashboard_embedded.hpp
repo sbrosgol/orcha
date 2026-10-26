@@ -152,6 +152,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .badge.schedule, .badge.cron { --c:var(--violet); }
     .badge.manual { --c:var(--pink); }
     .badge.disabled, .badge.unknown { --c:var(--muted); }
+    /* Circuit breaker states and per-step rollback outcomes */
+    .badge.closed { --c:var(--ok); }
+    .badge.open { --c:var(--err); }
+    .badge.half_open { --c:var(--warn); }
+    .badge.rb-done { --c:var(--violet); }
+    .badge.rb-failed { --c:var(--err); }
+    .badge.rb-skipped, .badge.rb-na { --c:var(--muted); }
     .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; display:inline-block; }
     .dot.ok { background:var(--ok); } .dot.err { background:var(--err); } .dot.off { background:transparent; border:1.5px solid var(--faint); }
     .tag { display:inline-block; font-size:11.5px; color:var(--fg-2); background:var(--bg-sunken); border:1px solid var(--line);
@@ -174,6 +181,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .nav a.active { background:var(--accent-soft); color:var(--accent); }
     :root[data-theme="dark"] .nav a.active { color:var(--accent-hover); }
     .nav a .ct { margin-left:auto; font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .nav a .ct.hot { color:var(--err); font-weight:650; }
     .sidebar .foot { margin-top:auto; display:flex; flex-direction:column; gap:10px; padding-top:12px; border-top:1px solid var(--line); }
     .user { display:flex; align-items:center; gap:10px; padding:4px 4px 0; }
     .avatar { width:28px; height:28px; border-radius:50%; background:var(--accent-soft); color:var(--accent);
@@ -265,7 +273,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .tbl tbody tr.sel td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
     .tbl .r { text-align:right; }
     .tbl .nowrap { white-space:nowrap; }
-    .tbl .pname { font-weight:600; } .tbl .pdesc { color:var(--muted); font-size:12.5px; margin-top:1px; }
+    .tbl .pname { font-weight:600; } .tbl .pname.wrap { overflow-wrap:anywhere; } .tbl .pdesc { color:var(--muted); font-size:12.5px; margin-top:1px; }
     .tbl .trunc { max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tbl .acts { display:flex; gap:6px; justify-content:flex-end; }
 
@@ -284,7 +292,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
              border:1px solid color-mix(in srgb,var(--c) 30%,transparent); }
     .alert svg { color:var(--c); margin-top:1px; }
     .alert.err { --c:var(--err); } .alert.info { --c:var(--info); }
-    .step-card .shd .tag { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+    .alert a { color:inherit; font-weight:600; }
+    .alert.mid { align-items:center; margin-bottom:0; } .alert.mid > span { flex:1; } .alert.mid svg { margin-top:0; }
+    .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+    .chips .tag, .step-card .shd .tag { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
     .tag svg.i { width:12px; height:12px; flex:none; }
 
     /* ---------- Toolbar ---------- */
@@ -343,13 +354,21 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     /* Step output cards */
     .outcard { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; overflow:hidden; background:var(--panel); }
-    .outcard summary { display:flex; align-items:center; gap:10px; padding:9px 12px; background:var(--panel-2); cursor:pointer; list-style:none; font-size:13px; }
+    .outcard summary { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; padding:9px 12px; background:var(--panel-2); cursor:pointer; list-style:none; font-size:13px; }
+    .outcard summary strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .outcard summary .sbadges { display:inline-flex; flex-wrap:wrap; gap:6px; margin-left:auto; }
     .outcard summary::-webkit-details-marker { display:none; }
     .outcard summary .chev { color:var(--faint); transition:transform .15s; }
     .outcard[open] summary .chev { transform:rotate(90deg); }
     .outcard summary .idx { font:600 11px var(--mono); color:var(--muted); }
     .outcard summary .sp { flex:1; }
     .outcard[open] summary { border-bottom:1px solid var(--line); }
+    .outcard .rb { display:flex; gap:8px; align-items:flex-start; padding:9px 14px; font-size:12.5px; color:var(--fg-2);
+                   border-bottom:1px solid var(--line); }
+    .outcard .rb svg.i { color:var(--violet); margin-top:1px; }
+    .outcard .rb.err, .outcard .rb.err svg.i, .runhd .rbsum .bad { color:var(--err); }
+    .runhd .rbsum { display:inline-flex; align-items:center; gap:6px; }
+    .runhd .rbsum svg.i { color:var(--violet); }
     .outcard pre { margin:0; padding:12px 14px; max-height:320px; overflow:auto; font:12px/1.55 var(--mono); white-space:pre-wrap; word-break:break-word; }
     .outcard .err { color:var(--err); padding:10px 14px; font-size:13px; border-bottom:1px solid var(--line);
                     background:color-mix(in srgb,var(--err) 6%,transparent); }
@@ -392,6 +411,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .confirm-bd { display:flex; gap:14px; }
     .confirm-bd .ic { width:38px; height:38px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
                       color:var(--err); background:color-mix(in srgb,var(--err) 12%,transparent); }
+    #confirm.tone-primary .confirm-bd .ic { color:var(--accent); background:var(--accent-soft); }
     .confirm-bd h3 { margin:0 0 4px; font-size:15px; }
     .confirm-bd p { margin:0; color:var(--muted); }
     .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
@@ -472,6 +492,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       .step-card .param { grid-template-columns:1fr; gap:4px; }
       .step-card .param .pname { padding-top:0; }
       .g-kpi { grid-template-columns:minmax(0,1fr); }
+      .tbl .hide-sm { display:none; }
+      .tbl .sr-sm { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
   </style>
@@ -509,6 +531,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       <symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.56"/></symbol>
       <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/></symbol>
       <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
     </defs>
   </svg>
@@ -541,6 +565,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         <a href="#/overview" data-nav="overview"><svg class="i"><use href="#i-home"/></svg>Overview</a>
         <a href="#/plugins" data-nav="plugins"><svg class="i"><use href="#i-plug"/></svg>Plugins<span class="ct" id="navPlugins"></span></a>
         <a href="#/jobs" data-nav="jobs"><svg class="i"><use href="#i-flow"/></svg>Jobs<span class="ct" id="navJobs"></span></a>
+        <a href="#/breakers" data-nav="breakers"><svg class="i"><use href="#i-shield"/></svg>Circuit breakers<span class="ct" id="navBreakers"></span></a>
       </nav>
       <div class="foot">
         <div class="theme-switch" role="radiogroup" aria-label="Theme"></div>
@@ -563,6 +588,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         <!-- ---------- Overview ---------- -->
         <section class="view" id="view-overview" aria-labelledby="h-overview">
           <div class="page-hd"><div><h1 id="h-overview">Overview</h1><p>Health of plugins, jobs and recent workflow runs.</p></div></div>
+          <div id="ovAlerts"></div>
           <div class="grid g-kpi" id="kpis"></div>
           <div class="grid g-2-1">
             <div class="card">
@@ -622,6 +648,19 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="card" id="jobDetail"></div>
           </div>
         </section>
+
+        <!-- ---------- Circuit breakers ---------- -->
+        <section class="view" id="view-breakers" aria-labelledby="h-breakers">
+          <div class="page-hd"><div><h1 id="h-breakers">Circuit breakers</h1>
+            <p>Per-command breakers used by workflows with <code>"circuit_breaker": true</code>. An open circuit fails those steps
+              without running the command until a recovery probe succeeds.</p></div></div>
+          <div class="card">
+            <div class="table-wrap"><table class="tbl">
+              <thead><tr><th>Command</th><th>State</th><th class="r hide-sm" title="Consecutive failures">Failures</th><th class="r hide-sm">Calls</th>
+                <th class="r hide-sm">Failed</th><th class="r hide-sm">Rejected</th><th class="hide-sm">Last failure</th><th class="r"><span class="sr-sm">Actions</span></th></tr></thead>
+              <tbody id="breakerRows"></tbody></table></div>
+          </div>
+        </section>
       </main>
     </div>
   </div>
@@ -654,6 +693,18 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           <div id="cronPreview" class="hint"></div>
         </div>
         <div class="field"><label class="switch"><input id="jEnabled" type="checkbox" /><span class="track"></span>Enabled — the scheduler runs this job when due</label></div>
+        <div class="row2">
+          <div class="field"><label for="jRollback">On failure</label>
+            <select class="input" id="jRollback">
+              <option value="none">Do nothing</option>
+              <option value="reverse">Roll back, stop on error</option>
+              <option value="best_effort">Roll back, best effort</option>
+            </select>
+            <div class="hint">Rolls back completed steps in reverse order (commands that support it). Skipped when a run is cancelled.</div></div>
+          <div class="field"><span class="label">Circuit breaker</span>
+            <label class="switch"><input id="jBreaker" type="checkbox" /><span class="track"></span>Fail fast while a command’s circuit is open</label>
+            <div class="hint">Thresholds are set server-wide under <code>workflow.circuit_breaker</code>.</div></div>
+        </div>
         <div class="field" style="margin-bottom:0"><span class="label">Workflow definition</span>
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" role="tab" data-deftab="visual">Visual builder</button>
@@ -799,8 +850,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     $('modal').addEventListener('mousedown', e => { if(e.target===$('modal')) closeOverlay($('modal')); });
 
     let confirmResolve=()=>{};
-    function confirmDialog(title, body, okLabel){
+    // opts.tone: 'danger' (default, destructive) or 'primary' (recovery actions).
+    function confirmDialog(title, body, okLabel, opts){
+      const primary = opts && opts.tone==='primary';
       $('cfTitle').textContent=title; $('cfBody').textContent=body; $('cfOk').textContent=okLabel||'Confirm';
+      $('cfOk').className = 'btn '+(primary?'primary':'danger-solid');
+      $('confirm').classList.toggle('tone-primary', primary);
+      $('confirm').querySelector('.confirm-bd .ic use').setAttribute('href', primary?'#i-info':'#i-warn');
       openOverlay($('confirm'), '#cfCancel');
       return new Promise(res => { confirmResolve = (v)=>{ closeOverlay($('confirm')); confirmResolve=()=>{}; res(v); }; });
     }
@@ -865,12 +921,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     $('logout').addEventListener('click', () => { signOut(''); toast('Signed out','ok'); });
 
     // ================= State + routing =================
-    const state = { view:'overview', plugins:null, jobs:[], runs:[], currentJob:null, selectedRunId:null,
+    const state = { view:'overview', plugins:null, jobs:[], runs:[], breakers:null, breakersErr:null, currentJob:null, selectedRunId:null,
                     pluginFilter:'all', pluginQuery:'', jobQuery:'', loadedAt:null, jobRuns:[] };
 
     function route(){
       const h=(location.hash||'#/overview').replace(/^#\/?/,'').split('/');
-      const view=['overview','plugins','jobs'].includes(h[0]) ? h[0] : 'overview';
+      const view=['overview','plugins','jobs','breakers'].includes(h[0]) ? h[0] : 'overview';
       const jobId = view==='jobs' && h[1] ? decodeURIComponent(h[1]) : null;
       state.view=view;
       $$('.view').forEach(v=>v.classList.toggle('active', v.id==='view-'+view));
@@ -882,11 +938,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         else if(flow.job) flow.resize();
       }
       if(view==='overview') renderOverview();
+      if(view==='breakers') renderBreakers();
       renderCrumbs();
     }
     window.addEventListener('hashchange', route);
     function renderCrumbs(){
-      const titles={overview:'Overview', plugins:'Plugins', jobs:'Jobs'};
+      const titles={overview:'Overview', plugins:'Plugins', jobs:'Jobs', breakers:'Circuit breakers'};
       let html=`<span class="faint root">Orcha</span>${icon('chev','faint')}`;
       if(state.view==='jobs' && state.currentJob){
         html+=`<a href="#/jobs">Jobs</a>${icon('chev','faint')}<span class="cur">${esc(state.currentJob.name)}</span>`;
@@ -902,17 +959,21 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function loadPluginsData(){ state.plugins = await api('/api/plugins'); }
     async function loadJobsData(){ const d=await api('/api/jobs'); state.jobs=d.jobs||[]; }
     async function loadRunsData(){ const d=await api('/api/runs?limit=200'); state.runs=d.runs||[]; }
+    async function loadBreakersData(){
+      try { const d=await api('/api/circuit-breakers'); state.breakers=d.circuit_breakers||[]; state.breakersErr=null; }
+      catch(e){ if(!isAuthErr(e)) state.breakersErr=e.message||'request failed'; throw e; }
+    }
 
     async function refreshAll(){
       const btn=$('refreshBtn'); btn.classList.add('spinning'); btn.disabled=true;
       // Fail soft per endpoint: render whatever we can.
-      const results = await Promise.allSettled([loadPluginsData(), loadJobsData(), loadRunsData()]);
+      const results = await Promise.allSettled([loadPluginsData(), loadJobsData(), loadRunsData(), loadBreakersData()]);
       btn.classList.remove('spinning'); btn.disabled=false;
       if(!document.body.classList.contains('authed')) return;
       const failed=results.filter(r=>r.status==='rejected' && !isAuthErr(r.reason));
       if(failed.length) toast('Some data failed to load: '+failed[0].reason.message,'err');
       state.loadedAt=Date.now(); tickUpdated();
-      renderNavCounts(); renderPlugins(); renderJobList(); renderOverview();
+      renderNavCounts(); renderPlugins(); renderJobList(); renderOverview(); renderBreakers();
       if(state.view==='jobs' && state.currentJob) refreshCurrentJob();
     }
     $('refreshBtn').addEventListener('click', refreshAll);
@@ -931,7 +992,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const pl=(state.plugins&&state.plugins.plugins)||[];
       $('navPlugins').textContent = state.plugins ? pl.length : '';
       $('navJobs').textContent = state.jobs.length || '';
+      const tripped=trippedBreakers(), nb=$('navBreakers');
+      if(state.breakersErr){ nb.textContent='?'; nb.classList.add('hot'); nb.title='Circuit breaker status unavailable'; return; }
+      nb.textContent = tripped.length || '';
+      nb.classList.toggle('hot', tripped.length>0);
+      nb.title = tripped.length ? tripped.length+' circuit'+(tripped.length===1?'':'s')+' not closed' : '';
     }
+    const trippedBreakers = () => (state.breakers||[]).filter(b=>b.state!=='closed');
     const jobNameById = () => Object.fromEntries(state.jobs.map(j=>[j.id,j.name]));
     function lastRunByJob(){
       const m={}; state.runs.forEach(r=>{ if(r.job_id && !m[r.job_id]) m[r.job_id]=r; }); return m; // runs are newest-first
@@ -970,6 +1037,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           <div class="meter"><span style="width:${rate||0}%;background:${rateColor}"></span></div>
           <div class="meta">${lastFail ? 'Last failure '+timeCell(lastFail.started_at) : 'No failures recorded'}</div></div>`
       ].join('');
+
+      $('ovAlerts').innerHTML = breakerNotice();
 
       renderRunsChart(runs);
 
@@ -1135,6 +1204,70 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       openOverlay($('drawer'), '[data-close].btn');
     }
 
+    // ================= Circuit breakers =================
+    const BREAKER_STATES = { closed:'closed', open:'open', half_open:'half-open' };
+    const breakerLabel = (st) => BREAKER_STATES[st] || String(st||'unknown');
+    const breakerBadge = (st) => `<span class="badge ${BREAKER_STATES[st]?st:'unknown'}">${esc(breakerLabel(st))}</span>`;
+
+    function renderBreakers(){
+      const host=$('breakerRows'); if(!host) return;
+      const list=state.breakers;
+      if(state.breakersErr){
+        host.innerHTML=`<tr><td colspan="8"><div class="alert err mid" role="alert">${icon('alert')}<span>Could not load circuit breakers: ${esc(state.breakersErr)}</span>
+          <button type="button" class="btn sm" data-act="retry-breakers">${icon('refresh','ico')}${icon('loader','spin')}Retry</button></div></td></tr>`;
+        return;
+      }
+      if(!list){ host.innerHTML=skeletonRows(8,3); return; }
+      if(!list.length){
+        host.innerHTML=`<tr><td colspan="8">${emptyState('shield','No circuit breakers yet','A breaker appears once a workflow with "circuit_breaker": true runs a step using that command.')}</td></tr>`;
+        return;
+      }
+      const order={open:0, half_open:1, closed:2};
+      const rows=[...list].sort((a,b)=>(order[a.state]??3)-(order[b.state]??3) || String(a.command).localeCompare(String(b.command)));
+      host.innerHTML = rows.map(b=>{
+        const n=esc(b.command);
+        const act = b.state!=='closed'
+          ? `<button class="btn sm" data-br="${n}" title="Close the circuit so steps run again" aria-label="Reset circuit for ${n}">${icon('refresh','ico')}${icon('loader','spin')}<span class="sr-sm">Reset</span></button>`
+          : '<span class="faint">—</span>';
+        return `<tr><td><div class="pname mono wrap">${n}</div></td><td>${breakerBadge(b.state)}</td>
+          <td class="r num hide-sm" title="Consecutive failures">${fmtNum(b.consecutive_failures)}</td><td class="r num muted hide-sm">${fmtNum(b.total_calls)}</td>
+          <td class="r num muted hide-sm">${fmtNum(b.failed_calls)}</td><td class="r num muted hide-sm">${fmtNum(b.rejected_calls)}</td>
+          <td class="nowrap muted hide-sm">${b.last_failure?timeCell(b.last_failure):'—'}</td><td><div class="acts">${act}</div></td></tr>`;
+      }).join('');
+    }
+    // Overview notice: open circuits (error), only recovering ones (warning),
+    // or breaker status unavailable.
+    function breakerNotice(){
+      if(state.breakersErr) return `<div class="alert" role="status">${icon('warn')}<span>Circuit breaker status is unavailable (${esc(state.breakersErr)}). <a href="#/breakers">View breakers →</a></span></div>`;
+      const tripped=trippedBreakers(); if(!tripped.length) return '';
+      const open=tripped.filter(b=>b.state==='open');
+      const names=tripped.slice(0,5).map(b=>`<span class="mono">${esc(b.command)}</span> (${esc(breakerLabel(b.state))})`).join(', ')+(tripped.length>5?', …':'');
+      const n=tripped.length, plural=n===1?'':'s';
+      const detail = open.length
+        ? 'Steps using an open circuit fail fast in workflows that opt in.'
+        : 'Each lets a single recovery probe through; the circuit closes if it succeeds.';
+      return `<div class="alert${open.length?' err':''}" role="status">${icon('shield')}<span>
+          ${n} circuit breaker${plural} ${open.length?'not closed':'recovering'}: ${names}. ${detail} <a href="#/breakers">View breakers →</a></span></div>`;
+    }
+
+    async function retryBreakers(btn){
+      busy(btn,true);
+      try { await loadBreakersData(); } catch(e){ /* state.breakersErr is set */ }
+      finally { busy(btn,false); renderBreakers(); renderNavCounts(); renderOverview(); }
+    }
+    async function resetBreaker(btn, command){
+      const ok=await confirmDialog('Reset circuit for '+command+'?',
+        'Steps using this command will run again immediately. If it is still failing, the circuit opens again after the configured number of failures.',
+        'Reset circuit', {tone:'primary'});
+      if(!ok) return;
+      busy(btn,true);
+      try { await api('/api/circuit-breakers/'+encodeURIComponent(command)+'/reset',{method:'POST'});
+        toast('Circuit for '+command+' reset','ok');
+        await loadBreakersData(); renderBreakers(); renderNavCounts(); renderOverview();
+      } catch(e){ if(!isAuthErr(e)) toast('Reset failed: '+e.message,'err'); }
+      finally { busy(btn,false); }
+    }
+
     // ================= Jobs =================
     function renderJobList(){
       const q=state.jobQuery, last=lastRunByJob();
@@ -1198,11 +1331,23 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       loadRuns(j.id);
     }
 
+    const ROLLBACK_LABELS = { reverse:'reverse, stop on error', best_effort:'best effort' };
+    function fmtMs(ms){ const n=Number(ms); return n>=1000 && n%1000===0 ? (n/1000)+' s' : n+' ms'; }
+    // Workflow-level settings shown under the job title.
+    function jobChips(def){
+      if(!def || typeof def!=='object') return '';
+      const chips=[];
+      if(ROLLBACK_LABELS[def.rollback]) chips.push(`<span class="tag" title="Completed steps are rolled back when a run fails">${icon('undo')}Rollback: ${esc(ROLLBACK_LABELS[def.rollback])}</span>`);
+      if(def.circuit_breaker===true) chips.push(`<span class="tag" title="Steps fail fast while their command's circuit is open">${icon('shield')}Circuit breaker</span>`);
+      if(Number(def.timeout_ms)>0) chips.push(`<span class="tag" title="Time limit for the whole run">${icon('clock')}Timeout ${esc(fmtMs(def.timeout_ms))}</span>`);
+      return chips.length ? `<div class="chips">${chips.join('')}</div>` : '';
+    }
+
     function renderJobHeader(){
       const j=state.currentJob; if(!j || !$('jobHeader')) return;
       $('jobHeader').innerHTML = `<div class="row">
           <div style="min-width:0"><h2>${esc(j.name)} ${j.enabled?statusBadge('enabled'):statusBadge('disabled')}</h2>
-            ${j.description?`<p>${esc(j.description)}</p>`:''}</div>
+            ${j.description?`<p>${esc(j.description)}</p>`:''}${jobChips(j.definition)}</div>
           <div class="acts">
             <button class="btn primary" id="runJob">${icon('play','ico')}${icon('loader','spin')}Run now</button>
             <button class="btn" id="editJob">${icon('edit')}Edit</button>
@@ -1245,23 +1390,53 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     function fmtOutput(o){ if(o===undefined) return ''; try { return JSON.stringify(o, null, 2); } catch(e){ return String(o); } }
 
+    // [badge class, badge text, summary text]
+    const ROLLBACK_STATUS = {
+      rolled_back:  ['rb-done',    'rolled back',         'rolled back'],
+      failed:       ['rb-failed',  'rollback failed',     'failed'],
+      skipped:      ['rb-skipped', 'rollback skipped',    'skipped'],
+      not_supported:['rb-na',      'no rollback support', 'not supported']
+    };
+    const rollbackInfo = (rb) => (rb && ROLLBACK_STATUS[rb.status]) || null;
+    function rollbackBadge(rb){
+      const m=rollbackInfo(rb); if(!m) return '';
+      return `<span class="badge ${m[0]}" title="${esc(rb.message||'')}">${esc(m[1])}</span>`;
+    }
+    // Header summary of rollback outcomes. "not supported" is left to the
+    // per-step badges: it is the norm while few commands implement rollback.
+    function rollbackSummary(steps){
+      const counts={};
+      steps.forEach(s=>{ const st=s.rollback && s.rollback.status; if(ROLLBACK_STATUS[st] && st!=='not_supported') counts[st]=(counts[st]||0)+1; });
+      const parts=Object.keys(counts).map(st=>{
+        const txt=esc(counts[st]+' '+ROLLBACK_STATUS[st][2]);
+        return st==='failed' ? `<span class="bad">${txt}</span>` : txt;
+      });
+      return parts.length ? `<span>·</span><span class="rbsum" title="Rollback outcome of completed steps">${icon('undo')}Rollback: ${parts.join(' · ')}</span>` : '';
+    }
+    const failedRollbacks = (steps) => steps.filter(s=>s.rollback && s.rollback.status==='failed').length;
+
     function renderRunOutput(run){
       const el=$('runOutput'); if(!el) return;
       if(!run){ el.innerHTML=emptyState('play','No runs yet','Click “Run now” to execute this workflow and inspect each step’s output.'); return; }
       const steps=Array.isArray(run.result)?run.result:[];
       const head=`<div class="runhd">${statusBadge(run.status)}<span>Run <span class="mono">${esc(run.id.slice(0,8))}</span></span>
-        <span>·</span><span class="badge plain ${esc(run.trigger||'unknown')}">${esc(run.trigger||'—')}</span><span>·</span>${timeCell(run.started_at)}<span>·</span><span class="num">${fmtDur(run)}</span></div>`;
+        <span>·</span><span class="badge plain ${esc(run.trigger||'unknown')}">${esc(run.trigger||'—')}</span><span>·</span>${timeCell(run.started_at)}<span>·</span><span class="num">${fmtDur(run)}</span>${Array.isArray(run.result)?rollbackSummary(run.result):''}</div>`;
       if(!steps.length){
         el.innerHTML=head+(run.error?`<div class="alert err">${icon('alert')}<span>${esc(run.error)}</span></div>`:'<div class="muted">No step output recorded for this run.</div>');
         return;
       }
-      el.innerHTML=head+(run.error?`<div class="alert err">${icon('alert')}<span>${esc(run.error)}</span></div>`:'')+steps.map((s,i)=>{
-        const ok=!!s.success, open = !ok || steps.length<=3;
+      const rbFailed=failedRollbacks(steps);
+      const rbAlert = rbFailed ? `<div class="alert err">${icon('undo')}<span>Rollback failed for ${rbFailed} step${rbFailed===1?'':'s'}. The changes they made may still be in place; check them before re-running.</span></div>` : '';
+      el.innerHTML=head+(run.error?`<div class="alert err">${icon('alert')}<span>${esc(run.error)}</span></div>`:'')+rbAlert+steps.map((s,i)=>{
+        const rb=rollbackInfo(s.rollback);
+        const ok=!!s.success, open = !ok || steps.length<=3 || (rb && s.rollback.status==='failed');
         const out=fmtOutput(s.output);
-        const body=(!ok && s.error_message ? `<div class="err">${esc(s.error_message)}</div>` : '')+(out?`<pre>${esc(out)}</pre>`:'<pre class="faint">(no output)</pre>');
+        // The badge carries the status; the line explains it (error / skip reason).
+        const rbLine = (rb && s.rollback.message) ? `<div class="rb${s.rollback.status==='failed'?' err':''}">${icon('undo')}<span>${esc(rb[1][0].toUpperCase()+rb[1].slice(1))}: ${esc(s.rollback.message)}</span></div>` : '';
+        const body=(!ok && s.error_message ? `<div class="err">${esc(s.error_message)}</div>` : '')+rbLine+(out?`<pre>${esc(out)}</pre>`:'<pre class="faint">(no output)</pre>');
         return `<details class="outcard" id="out-step-${i}"${open?' open':''}><summary>${icon('chev','chev')}<span class="idx">#${i+1}</span>
           <strong>${esc(s.name||s.command||'step')}</strong>${s.name?`<span class="mono muted">${esc(s.command||'')}</span>`:''}
-          <span class="sp"></span>${statusBadge(ok?'success':'failed')}</summary>${body}</details>`;
+          <span class="sbadges">${rollbackBadge(s.rollback)}${statusBadge(ok?'success':'failed')}</span></summary>${body}</details>`;
       }).join('');
     }
 
@@ -1315,6 +1490,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // Delegated clicks: plugin actions/rows, job items, run rows, links in rows.
     document.addEventListener('click', ev=>{
       const pa=ev.target.closest('button[data-pa]'); if(pa){ ev.stopPropagation(); pluginAct(pa, pa.dataset.name, pa.dataset.pa); return; }
+      const br=ev.target.closest('button[data-br]'); if(br){ resetBreaker(br, br.dataset.br); return; }
+      const rb=ev.target.closest('button[data-act="retry-breakers"]'); if(rb){ retryBreakers(rb); return; }
       if(ev.target.closest('a')) return;
       const nj=ev.target.closest('[data-act="new"]'); if(nj){ openEditor(null); return; }
       const pr=ev.target.closest('tr[data-plugin]'); if(pr){ openPluginDrawer(pr.dataset.plugin); return; }
@@ -1399,9 +1576,43 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     const splitFields = (obj, keys) => {
       const extra={}; Object.keys(obj).forEach(k=>{ if(!keys.includes(k)) extra[k]=obj[k]; }); return extra;
     };
+
+    // Resilience controls <-> definition. The controls mirror the definition;
+    // changing one writes it into the definition (visual state or JSON text).
+    let shownSettings={rollback:'none', breaker:false};   // what the controls last reflected
+    function setSettingsControls(def){
+      const d=(def && typeof def==='object') ? def : {};
+      shownSettings={ rollback: ROLLBACK_LABELS[d.rollback] ? d.rollback : 'none', breaker: d.circuit_breaker===true };
+      $('jRollback').value = shownSettings.rollback;
+      $('jBreaker').checked = shownSettings.breaker;
+    }
+    function applySetting(def, key, value){
+      if(value===undefined) delete def[key]; else def[key]=value;
+    }
+    function onSettingChange(key, value){
+      if(editorTab==='visual'){ applySetting(editorDefExtra, key, value); visualToJson(); return; }
+      let def;
+      try { def=JSON.parse($('jDef').value); } catch(e){ def=null; }
+      if(!def || typeof def!=='object' || Array.isArray(def)){
+        // Undo just this control; the JSON text still holds the old value.
+        defWarn('Fix the JSON before changing this setting.');
+        $('jRollback').value = shownSettings.rollback; $('jBreaker').checked = shownSettings.breaker;
+        return;
+      }
+      defWarn('');
+      applySetting(def, key, value);
+      const steps=def.steps; delete def.steps;
+      $('jDef').value = JSON.stringify(Object.assign(def, steps!==undefined?{steps}:{}), null, 2);
+    }
+    $('jRollback').addEventListener('change', e=>{ onSettingChange('rollback', e.target.value==='none'?undefined:e.target.value); shownSettings.rollback=$('jRollback').value; });
+    $('jBreaker').addEventListener('change', e=>{ onSettingChange('circuit_breaker', e.target.checked?true:undefined); shownSettings.breaker=$('jBreaker').checked; });
+    let defDeb=null;
+    $('jDef').addEventListener('input', ()=>{ clearTimeout(defDeb); defDeb=setTimeout(()=>{
+      try { setSettingsControls(JSON.parse($('jDef').value)); } catch(e){ /* keep controls while the JSON is mid-edit */ }
+    }, 200); });
     function jsonToVisual(){
       const raw=$('jDef').value.trim();
-      if(!raw){ editorVisual=[]; editorDefExtra={}; return {ok:true}; }
+      if(!raw){ editorVisual=[]; editorDefExtra={}; setSettingsControls(null); return {ok:true}; }
       let parsed;
       try { parsed=JSON.parse(raw); } catch(e){ return {ok:false, err:'Invalid JSON: '+e.message}; }
       if(!parsed || !Array.isArray(parsed.steps)) return {ok:false, err:'Expected an object with a "steps" array.'};
@@ -1413,6 +1624,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         params: (s.params && typeof s.params==='object' && !Array.isArray(s.params)) ? s.params : {},
         extra: splitFields(s, ['name','command','params'])
       }));
+      setSettingsControls(parsed);
       return {ok:true};
     }
 
@@ -1444,7 +1656,6 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         </div>
       </div>`;
     }
-    function fmtMs(ms){ const n=Number(ms); return n>=1000 && n%1000===0 ? (n/1000)+' s' : n+' ms'; }
     // Step-level settings the builder keeps but does not edit (edit them in JSON).
     function stepExtraChips(extra){
       if(!extra) return '';
@@ -1646,6 +1857,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('jEnabled').checked = job ? !!job.enabled : true;
       $('jDef').value  = job ? JSON.stringify(job.definition, null, 2) : DEFAULT_DEF;
       editorDefExtra = {}; editorVisual = [];
+      setSettingsControls(job ? job.definition : null);
+      // Until the definition is loaded into the builder below, a settings
+      // change could serialise stale builder state.
+      $('jRollback').disabled = true; $('jBreaker').disabled = true;
       modalError(''); defWarn('');
       updateCronPreview();
       $('defSteps').innerHTML = '<span class="skel" style="width:50%"></span>';
@@ -1658,6 +1873,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const r = jsonToVisual();
       if(r.ok){ showDefTab('visual'); renderVisual(); }
       else { showDefTab('json'); defWarn("This definition can't be shown in the visual builder: "+r.err+" Edit the JSON directly."); }
+      $('jRollback').disabled = false; $('jBreaker').disabled = false;
     }
     async function saveJob(){
       const btn=$('modalSave'); if(btn.disabled) return;
