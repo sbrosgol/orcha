@@ -12,6 +12,9 @@ server:
   # When empty, /workflow is served only if `host` is a loopback address;
   # on any other host it is disabled (503). Prefer ORCHA_SERVER_API_TOKEN.
   api_token: ""
+  # Longest a POST /workflow request may wait for its run when the client
+  # sends "Prefer: wait=<seconds>" (otherwise it answers 202 immediately).
+  max_wait_ms: 60000
 
 logging:
   file: "./logs/orcha.log"
@@ -40,6 +43,9 @@ workflow:
   # 0 = no limit. Steps can also set `timeout_ms`, and a workflow can set a
   # top-level `timeout_ms` for the whole run.
   default_timeout_ms: 0
+  # Run queue: every run (API, dashboard, scheduler) waits here for a runner.
+  max_concurrent_runs: 4     # runs executing at once
+  max_queued_runs: 64        # runs that may wait; more are rejected (HTTP 429)
   # Per-command circuit breakers, used by workflows with "circuit_breaker": true.
   circuit_breaker:
     failure_threshold: 5       # consecutive failures that open the circuit
@@ -48,6 +54,9 @@ workflow:
 
 # Jobs: saved workflows + run history (SQLite-backed) + cron scheduler.
 jobs:
+  # If this file cannot be opened the server still starts, with an in-memory
+  # store (logged as an error, flagged in the dashboard and GET /api/runs).
   db_path: "./orcha-jobs.db"
+  max_runs: 10000               # finished runs kept; older ones are pruned (0 = keep all)
   scheduler_enabled: true       # run due jobs (schedule_cron) on a timer
   scheduler_tick_seconds: 30    # how often the scheduler checks (< 60)
