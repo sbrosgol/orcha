@@ -45,4 +45,11 @@ for id in $ids; do c -X POST "$URL/api/jobs/$id/run" >/dev/null || true; done
 # the last run is rejected without executing.
 flaky=$(c "$URL/api/jobs" | python3 -c 'import json,sys;print(next((j["id"] for j in json.load(sys.stdin)["jobs"] if j["name"]=="flaky-api"),""))')
 if [ -n "$flaky" ]; then for _ in 1 2 3 4 5; do c -X POST "$URL/api/jobs/$flaky/run" >/dev/null || true; done; fi
+
+# Runs are queued (POST .../run answers 202): wait until the queue drains so
+# screenshots show finished runs and the breaker state.
+for _ in $(seq 1 100); do
+  busy=$(c "$URL/api/runs?limit=1" | python3 -c 'import json,sys;q=json.load(sys.stdin).get("queue",{});print(q.get("queued",0)+q.get("running",0))')
+  [ "$busy" = "0" ] && break; sleep 0.2
+done
 echo "seeded: $(c "$URL/api/jobs" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["jobs"]))') jobs"

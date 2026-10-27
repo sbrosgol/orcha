@@ -7,6 +7,7 @@
 #pragma once
 
 #include "IConfiguration.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -27,6 +28,8 @@ namespace Orcha::Config {
         uint16_t port = 8070;
         size_t worker_threads = 4;
         std::string api_token;          ///< Bearer token for POST /workflow.
+        /// Longest a POST /workflow request may wait (`Prefer: wait=<s>`).
+        int64_t max_wait_ms = 60000;
 
         static ServerConfig from_config(const IConfiguration& config) {
             ServerConfig cfg;
@@ -35,6 +38,7 @@ namespace Orcha::Config {
             const auto workers = config.get_int("server.worker_threads", 4);
             cfg.worker_threads = workers > 0 ? static_cast<size_t>(workers) : 1;
             cfg.api_token = config.get_string("server.api_token", "");
+            cfg.max_wait_ms = std::max<int64_t>(0, config.get_int("server.max_wait_ms", 60000));
             return cfg;
         }
 

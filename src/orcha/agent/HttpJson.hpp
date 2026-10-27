@@ -19,7 +19,9 @@ namespace Orcha::Agent {
      * @brief Build an application/json response with @p body and status @p code.
      */
     [[nodiscard]] inline HttpResponse reply_json(int code, const Orcha::Json& body) {
-        return HttpResponse(code, "application/json", body.dump());
+        // Step outputs may contain invalid UTF-8: replace it rather than throw.
+        return HttpResponse(code, "application/json",
+                            body.dump(-1, ' ', false, Orcha::Json::error_handler_t::replace));
     }
 
     /**

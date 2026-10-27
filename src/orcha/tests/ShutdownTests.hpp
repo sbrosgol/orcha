@@ -15,6 +15,7 @@
 #include "../core/PluginManager.hpp"
 #include "../jobs/JobScheduler.hpp"
 #include "../jobs/JobService.hpp"
+#include "../jobs/RunQueue.hpp"
 #include "../jobs/SqliteJobStore.hpp"
 #include "../utils/Logger.hpp"
 
@@ -309,7 +310,8 @@ namespace Orcha::Tests {
         auto service = std::make_shared<Jobs::JobService>(store, [] {
             return std::shared_ptr<Workflow::IWorkflowEngine>{};
         });
-        Jobs::JobScheduler scheduler(service, nullptr, 30s);
+        auto runs = std::make_shared<Jobs::RunQueue>(service, Jobs::RunQueue::Options{1, 4});
+        Jobs::JobScheduler scheduler(service, runs, nullptr, 30s);
         scheduler.start();
         std::this_thread::sleep_for(50ms);
         const auto start = Clock::now();

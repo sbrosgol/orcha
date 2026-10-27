@@ -316,8 +316,15 @@ namespace Orcha::Workflow {
         const std::optional<milliseconds> run_limit =
             definition.timeout_ms && *definition.timeout_ms > 0
                 ? std::optional(milliseconds(*definition.timeout_ms)) : std::nullopt;
-        const std::optional<Clock::time_point> run_deadline =
+        std::optional<Clock::time_point> run_deadline =
             run_limit ? std::optional(started + *run_limit) : std::nullopt;
+        // A nested run (run_job) must finish within the calling step's deadline.
+        bool inherited_deadline_binds = false;
+        if (const auto inherited = ExecutionContext::deadline();
+            inherited && (!run_deadline || *inherited < *run_deadline)) {
+            run_deadline = inherited;
+            inherited_deadline_binds = true;
+        }
 
         // The run is cancelled by the engine's token (shutdown) or by the
         // enclosing run's token when this is a nested run_job. Installing the
@@ -364,10 +371,14 @@ namespace Orcha::Workflow {
                 deadline = step_start + step_limit;
                 run_deadline_binds = false;
             }
-            const auto timeout_message = [&] {
-                return run_deadline_binds
-                    ? "Workflow timed out after " + std::to_string(run_limit->count()) + " ms"
-                    : "Step timed out after " + std::to_string(step_limit.count()) + " ms";
+            const auto timeout_message = [&]() -> std::string {
+                if (!run_deadline_binds) {
+                    return "Step timed out after " + std::to_string(step_limit.count()) + " ms";
+                }
+                if (inherited_deadline_binds) {
+                    return "Timed out: the calling step's deadline passed";
+                }
+                return "Workflow timed out after " + std::to_string(run_limit->count()) + " ms";
             };
 
             Core::CircuitBreaker* breaker = definition.circuit_breaker
@@ -494,8 +505,10 @@ namespace Orcha::Workflow {
                 }
             }
             if (definition.rollback != RollbackStrategy::None && !completion_order.empty()) {
+                // A user cancel (the run's own token) still rolls back; only a
+                // server shutdown (the engine token) skips it.
                 roll_back(definition, result, completion_order, executed_params,
-                          run_stop.stop_requested());
+                          options_.cancel.stop_requested());
             }
         }
 
@@ -506,10 +519,10 @@ namespace Orcha::Workflow {
                                    WorkflowResult& result,
                                    const std::vector<size_t>& completion_order,
                                    const std::vector<Orcha::Json>& executed_params,
-                                   bool cancelled) {
+                                   bool shutting_down) {
         if (logger_) {
-            logger_->info(cancelled
-                ? "Workflow cancelled; skipping rollback of " +
+            logger_->info(shutting_down
+                ? "Server shutting down; skipping rollback of " +
                       std::to_string(completion_order.size()) + " completed step(s)"
                 : "Workflow failed; rolling back " +
                       std::to_string(completion_order.size()) + " completed step(s)");
@@ -520,9 +533,9 @@ namespace Orcha::Workflow {
             auto& step_result = result.step_results[*it];
             StepRollback rollback;
 
-            if (cancelled) {
+            if (shutting_down) {
                 // Rollback cannot be cancelled; do not hold up shutdown with it.
-                rollback.message = "run cancelled";
+                rollback.message = "server shutting down";
             } else if (halted) {
                 rollback.message = "an earlier rollback failed";
             } else if (auto cmd = registry_->get_command(step_result.command_name); !cmd) {

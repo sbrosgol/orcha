@@ -67,7 +67,7 @@ check "POST /api/jobs (create, 201)" 201 \
 JID=$(curl -s -u "$USER:$PASS" "$URL/api/jobs" \
   | sed 's/{/\n{/g' | grep 'smoke-job' | grep -oE '"id":"[a-f0-9]+"' | head -1 | cut -d'"' -f4)
 if [[ -n "$JID" ]]; then
-  check "POST /api/jobs/{id}/run (200)" 200 "$(code POST "/api/jobs/$JID/run" -u "$USER:$PASS")"
+  check "POST /api/jobs/{id}/run (202 queued)" 202 "$(code POST "/api/jobs/$JID/run" -u "$USER:$PASS")"
   check "GET  /api/jobs/{id}/runs (200)" 200 "$(code GET "/api/jobs/$JID/runs" -u "$USER:$PASS")"
   check "DELETE /api/jobs/{id} (200)" 200 "$(code DELETE "/api/jobs/$JID" -u "$USER:$PASS")"
 else

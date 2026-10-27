@@ -12,8 +12,7 @@
 #include "../core/IPluginDiscovery.hpp"
 #include "../core/PluginDenylist.hpp"
 #include "../core/CircuitBreaker.hpp"
-#include "../workflow/IWorkflowEngine.hpp"
-#include "../workflow/WorkflowEngine.hpp"
+#include "../jobs/RunQueue.hpp"
 #include "../jobs/JobService.hpp"
 #include "../utils/ILogger.hpp"
 #include "../config/AdminConfig.hpp"
@@ -40,7 +39,7 @@ namespace Orcha::Agent {
          * with no password), the admin routes and auth middleware are skipped.
          *
          * @param registry        Command registry (read side).
-         * @param engine          Workflow engine.
+         * @param runs            Run queue: every workflow run is admitted here.
          * @param logger          Optional logger.
          * @param plugins         Plugin manager (enables /api/plugins + /admin).
          * @param discovery       Plugin discovery (lists available-on-disk plugins).
@@ -55,7 +54,7 @@ namespace Orcha::Agent {
          *                        /api/circuit-breakers).
          */
         CommandAgent(std::shared_ptr<Core::ICommandRegistry> registry,
-                    std::shared_ptr<Workflow::IWorkflowEngine> engine,
+                    std::shared_ptr<Jobs::RunQueue> runs,
                     std::shared_ptr<Utils::ILogger> logger = nullptr,
                     std::shared_ptr<Core::PluginManager> plugins = nullptr,
                     std::shared_ptr<Core::IPluginDiscovery> discovery = nullptr,
@@ -100,7 +99,7 @@ namespace Orcha::Agent {
         void setup_admin_routes();
 
         std::shared_ptr<Core::ICommandRegistry> registry_;
-        std::shared_ptr<Workflow::IWorkflowEngine> engine_;
+        std::shared_ptr<Jobs::RunQueue> runs_;
         std::shared_ptr<Utils::ILogger> logger_;
         std::shared_ptr<Core::PluginManager> plugins_;
         std::shared_ptr<Core::IPluginDiscovery> discovery_;

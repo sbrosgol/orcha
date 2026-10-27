@@ -16,8 +16,11 @@ namespace Orcha::Agent::Routes {
      */
     class HealthRoute : public IRouteHandler {
     public:
-        explicit HealthRoute(std::shared_ptr<Utils::ILogger> logger = nullptr)
-            : logger_(std::move(logger)) {}
+        /// @param persistent False when runs are kept in memory only (the job
+        ///        database could not be opened); the page then says so.
+        explicit HealthRoute(std::shared_ptr<Utils::ILogger> logger = nullptr,
+                             bool persistent = true)
+            : logger_(std::move(logger)), persistent_(persistent) {}
 
         [[nodiscard]] bool can_handle(
             const std::string& method,
@@ -30,12 +33,17 @@ namespace Orcha::Agent::Routes {
             if (logger_) {
                 logger_->debug("Health check endpoint hit");
             }
-            return HttpResponse::text(status::OK,
+            std::string body =
                 "Orcha Command Agent is running.\n"
                 "POST your workflow JSON (application/json) to /workflow\n"
                 "OpenAPI UI: /swagger\n"
                 "Spec: /swagger.json\n"
-                "Commands: /commands\n");
+                "Commands: /commands\n";
+            if (!persistent_) {
+                body += "Warning: the job database could not be opened; jobs and run history "
+                        "are kept in memory and lost on restart\n";
+            }
+            return HttpResponse::text(status::OK, body);
         }
 
         [[nodiscard]] std::vector<RouteInfo> get_routes() const override {
@@ -48,6 +56,7 @@ namespace Orcha::Agent::Routes {
 
     private:
         std::shared_ptr<Utils::ILogger> logger_;
+        bool persistent_ = true;
     };
 
 } // namespace Orcha::Agent::Routes

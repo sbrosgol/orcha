@@ -78,6 +78,8 @@ add_library(jobs STATIC
         jobs/CronExpr.hpp
         jobs/JobScheduler.cpp
         jobs/JobScheduler.hpp
+        jobs/RunQueue.cpp
+        jobs/RunQueue.hpp
 )
 target_link_libraries(jobs PUBLIC core workflow logger
         unofficial::sqlite3::sqlite3)
