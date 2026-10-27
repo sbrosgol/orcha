@@ -31,7 +31,8 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 | Circuit breakers | `core/CircuitBreaker.hpp` (one shared `CircuitBreakerRegistry`) |
 | HTTP server / routing / auth | `agent/HttpServer.*`, `agent/CommandAgent.*`, `agent/IRouteHandler.hpp`, `agent/AuthMiddleware.hpp`, `agent/routes/*` |
 | Admin dashboard | `agent/dashboard_embedded.hpp` (single raw-string page) — use the `admin-ui` skill |
-| Jobs | `jobs/JobService.hpp`, `jobs/SqliteJobStore.*`, `jobs/JobScheduler.*`, `jobs/RunJobCommand.hpp` |
+| Run queue (async runs) | `jobs/RunQueue.*` (admission, runners, cancel, wait), `agent/routes/RunResponses.hpp` (run resource, 202/429/409 replies) |
+| Jobs | `jobs/JobService.hpp` (`execute` persists a run's lifecycle), `jobs/SqliteJobStore.*`, `jobs/JobScheduler.*`, `jobs/RunJobCommand.hpp` |
 | Config | `config/YamlConfiguration.*`, `config/ServerConfig.hpp`, `config/AdminConfig.hpp`, `orcha.yaml.example` |
 | Composition root | `main.cpp` (`bootstrap_services`, `run_server_mode`) |
 | Bundled plugins | `commands/*` (+ shared `commands/HttpClient.hpp`, `commands/Process.hpp`) |
@@ -65,16 +66,35 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   `"circuit_breaker": true`; per step `timeout_ms`, `parallel`, `name`. Invalid
   settings throw `std::invalid_argument` from `WorkflowDefinition::from_json`
   (routes answer 400). The dashboard editor must preserve fields it does not edit.
+- **Runs are asynchronous**: every top-level run (`POST /workflow`, dashboard
+  "Run now", scheduler) goes through the one bounded `RunQueue` (202 + `Location`;
+  full → 429 + `Retry-After`; 503 only for "API disabled"/shutting down;
+  `Prefer: wait=N` → 200 if done in time). Nested `run_job` runs inline in the
+  parent's slot (never queue it: deadlock) and inherits its deadline and
+  cancellation; it cannot be cancelled on its own (409). One response shape: the
+  run resource. Lifecycle `queued → running → success|failed|cancelled`, plus
+  `interrupted` / `skipped`; final statuses never change (`update_run` only
+  touches live rows). A user cancel rolls back (per the workflow's `rollback`);
+  only shutdown (`EngineOptions::cancel`) skips rollback. Store I/O never runs
+  under `RunQueue::mutex_`.
+- **Job store**: always exists (in-memory fallback, reported as
+  `persistent: false`). Rows carry their process's `owner`; only
+  `run_server_mode`, after the agent has bound its port, marks other owners'
+  live runs `interrupted`. Schema changes go through `migrate_schema()` in a
+  transaction with `PRAGMA user_version`. Serialize stored/sent JSON with the
+  UTF-8 `replace` handler (step output may be binary).
 - **Threads**: background loops use `std::jthread` + `condition_variable_any`
   waits on the stop token (no sleep loops); nothing may let an exception escape a
-  thread function. Shutdown order in `main`: cancel runs → scheduler → agent.
+  thread function. Shutdown order in `main`: scheduler → cancel runs
+  (`run_cancel`) → `RunQueue::stop()` → agent.
 
 Config keys (env override `ORCHA_<SECTION>_<KEY>`, `_`→`.`): `server.{host,port,
-worker_threads,api_token}`, `logging.{file,level,console_output}`,
+worker_threads,api_token,max_wait_ms}`, `logging.{file,level,console_output}`,
 `plugins.{directory,auto_reload,scan_interval_ms,denylist_path}`,
 `admin.{enabled,auth_required,username,password,realm}`,
-`jobs.{db_path,scheduler_enabled,scheduler_tick_seconds}`,
-`workflow.{default_timeout_ms, circuit_breaker.{failure_threshold,success_threshold,reset_timeout_ms}}`.
+`jobs.{db_path,max_runs,scheduler_enabled,scheduler_tick_seconds}`,
+`workflow.{default_timeout_ms, max_concurrent_runs, max_queued_runs,
+circuit_breaker.{failure_threshold,success_threshold,reset_timeout_ms}}`.
 Document new keys in `orcha.yaml.example` and the README; validate in
 `config/ConfigValidator.hpp`.
 
@@ -87,7 +107,7 @@ Document new keys in `orcha.yaml.example` and the README; validate in
   agent. Design/contract changes: `architecture-reviewer`. C++ API/idiom changes:
   `cpp-reviewer`. Threads, locks, lifetimes, cancellation: `concurrency-reviewer`.
 - Git: branch from `dev` (`fix/…`, `feat/…`, `chore/…`), PRs target **`dev`**
-  (`main` lags far behind). Commit only when asked; one focused commit per fix,
+  (`main` is updated from `dev`). Commit only when asked; one focused commit per fix,
   each building and passing tests on its own — see the `ship` skill.
 - Ask before decisions that change the public API or behaviour for existing
   clients (auth model, response shapes, defaults).

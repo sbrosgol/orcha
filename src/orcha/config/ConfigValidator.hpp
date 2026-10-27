@@ -249,6 +249,29 @@ namespace Orcha::Config {
                 }
             }
 
+            // Run queue (every top-level run is admitted through it)
+            if (auto v = config.get_int("workflow.max_concurrent_runs")) {
+                if (*v < 1) {
+                    result.add_error("workflow.max_concurrent_runs", "Must be at least 1");
+                } else if (*v > 256) {
+                    result.add_warning("workflow.max_concurrent_runs",
+                        "Each concurrent run uses its own thread (" + std::to_string(*v) + " configured)",
+                        "Runs mostly wait on child processes and network; a few dozen is usually plenty");
+                }
+            }
+            if (auto v = config.get_int("jobs.max_runs"); v && *v < 0) {
+                result.add_error("jobs.max_runs", "Cannot be negative",
+                                 "Use 0 to keep every run");
+            }
+            if (auto v = config.get_int("workflow.max_queued_runs"); v && *v < 0) {
+                result.add_error("workflow.max_queued_runs", "Cannot be negative",
+                                 "Use 0 to reject runs whenever every runner is busy");
+            }
+            if (auto v = config.get_int("server.max_wait_ms"); v && *v < 0) {
+                result.add_error("server.max_wait_ms", "Cannot be negative",
+                                 "Use 0 to never wait (POST /workflow always answers 202)");
+            }
+
             // Circuit breaker thresholds (workflows opt in with "circuit_breaker": true)
             for (const char* key : {"workflow.circuit_breaker.failure_threshold",
                                     "workflow.circuit_breaker.success_threshold"}) {

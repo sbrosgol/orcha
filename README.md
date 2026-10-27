@@ -68,11 +68,15 @@ when the server is bound to a loopback address (the non-Docker default is
 `server.host: 127.0.0.1`); otherwise it answers `503`.
 
 ```bash
-curl -H "Authorization: Bearer $ORCHA_SERVER_API_TOKEN" \
+curl -i -H "Authorization: Bearer $ORCHA_SERVER_API_TOKEN" \
      -H 'Content-Type: application/json' \
      -d '{"steps":[{"command":"echo","params":{"message":"hi"}}]}' \
      http://localhost:8070/workflow
+# HTTP/1.1 202 Accepted
+# Location: /workflow/runs/3f2a...
 ```
+
+Runs are asynchronous — see [Workflow runs](#workflow-runs).
 
 To use a custom `orcha.yaml`, copy the example next to the compose file and
 uncomment the bind mount in `docker-compose.yml`:
@@ -82,6 +86,51 @@ cp src/orcha/orcha.yaml.example orcha.yaml
 ```
 
 ---
+
+## Workflow runs
+
+`POST /workflow` validates the workflow, queues a run and answers
+**`202 Accepted`** with the run and a `Location` header. Poll the run until its
+`status` is final:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /workflow` | Submit a run → `202` (`200` with `Prefer: wait`) |
+| `GET /workflow/runs/{id}` | Status, timestamps and, once finished, per-step `result` |
+| `POST /workflow/runs/{id}/cancel` | Cancel: a queued run never starts (`200`); a running one stops cooperatively (`202`) |
+
+A run moves through `queued → running → success | failed | cancelled`; a final
+status never changes. Runs a previous server left queued or running are marked
+`interrupted` when the next one starts. To wait for the result in one call,
+send `Prefer: wait=<seconds>`: the server answers `200` with the finished run if
+it completes in time (capped by `server.max_wait_ms`), otherwise `202`. The wait
+is best effort: while another request is already waiting (one fewer than
+`server.worker_threads`, none with a single worker) it answers `202` at once.
+
+Cancelling a running run rolls back its completed steps if the workflow sets
+`rollback`. A nested run (started by a `run_job` step) cannot be cancelled on
+its own (`409`); cancel the run that started it.
+
+```bash
+curl -H "Authorization: Bearer $ORCHA_SERVER_API_TOKEN" -H 'Prefer: wait=30' \
+     -H 'Content-Type: application/json' \
+     -d '{"steps":[{"command":"echo","params":{"message":"hi"}}]}' \
+     http://localhost:8070/workflow
+```
+
+Every run — API, the dashboard's "Run now" and the cron scheduler — goes
+through one bounded queue: `workflow.max_concurrent_runs` (default 4) run at
+once and `workflow.max_queued_runs` (default 64) may wait. When the queue is
+full, submissions get **`429 Too Many Requests`** with `Retry-After`; a
+scheduled run that finds it full is recorded as `skipped`. A nested `run_job`
+step runs inside its parent's slot, not through the queue. The admin API has
+the same operations for all runs (`POST /api/jobs/{id}/run`,
+`GET /api/runs/{id}`, `POST /api/runs/{id}/cancel`), and `GET /api/runs`
+reports the queue load and `persistent` (false when the job database could not
+be opened and runs are only kept in memory).
+
+Run history keeps the last `jobs.max_runs` finished runs (default 10000,
+`0` = unlimited); older ones are pruned automatically.
 
 ## Timeouts and Cancellation
 
@@ -100,8 +149,9 @@ for the whole run; steps without their own limit use
 ```
 
 A step that exceeds its limit fails with `Step timed out after N ms` (or
-`Workflow timed out after N ms`), and no further steps start. Shutting the
-server down (SIGTERM / Ctrl-C) cancels in-flight workflows instead of waiting
+`Workflow timed out after N ms`), and no further steps start. A job started by
+a `run_job` step is bound by its caller's deadline too. Shutting the server
+down (SIGTERM / Ctrl-C) cancels queued and in-flight runs instead of waiting
 for them.
 
 Commands stop cooperatively: `shell_exec` terminates the command's whole
@@ -132,12 +182,12 @@ Both are opt-in per workflow:
 ```
 
 **`rollback`** (`none` | `reverse` | `best_effort`, default `none`): when the run
-fails (a step fails or times out), the steps that completed are rolled back in
+fails (a step fails or times out) or is cancelled, the steps that completed are rolled back in
 reverse completion order. Each command's `rollback(params)` receives the
 parameters the step actually ran with (placeholders resolved). `reverse` stops
 at the first rollback that fails; `best_effort` continues. Commands whose
 metadata does not set `supports_rollback` are reported as `not_supported`. If
-the run is *cancelled* (shutdown), rollback is skipped. Each step result in the
+the run is stopped by a server *shutdown*, rollback is skipped. Each step result in the
 response carries the outcome, e.g. `"rollback": {"status": "rolled_back"}`
 (`rolled_back`, `failed`, `skipped`, `not_supported`).
 
@@ -163,7 +213,7 @@ machine-readable spec:
 | `GET /sample`         | A minimal `POST /workflow` payload |
 | `GET /commands`       | Loaded command plugins and their parameters |
 
-The spec covers every public route (`/`, `/workflow`, `/commands`, `/sample`)
+The spec covers every public route (`/`, `/workflow`, `/workflow/runs/*`, `/commands`, `/sample`)
 plus the admin surface under `/api/*` (jobs, run history, plugin lifecycle).
 Admin endpoints are gated by HTTP Basic auth — credentials come from
 `admin.username` / `admin.password` in `orcha.yaml` (or

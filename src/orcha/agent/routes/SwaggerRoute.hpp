@@ -202,6 +202,13 @@ namespace Orcha::Agent::Routes {
             basic["description"] = 
                 "Admin HTTP Basic credentials (see `admin.username` / `admin.password` in `orcha.yaml`).";
             security_schemes["basicAuth"] = basic;
+            value bearer = value::object();
+            bearer["type"] = "http";
+            bearer["scheme"] = "bearer";
+            bearer["description"] =
+                "API token for the workflow execution API (`server.api_token` / ORCHA_SERVER_API_TOKEN). "
+                "Without a token the API is served only when the server is bound to a loopback address.";
+            security_schemes["bearerAuth"] = bearer;
             components["securitySchemes"] = security_schemes;
 
             // Schemas
@@ -306,9 +313,9 @@ namespace Orcha::Agent::Routes {
                 "Time limit in ms for the whole workflow; no further steps start "
                 "after it and running steps are stopped");
             value rollback = type_with_desc("string",
-                "On failure (not cancellation), roll back completed steps in reverse "
-                "completion order: reverse stops at the first rollback failure, "
-                "best_effort continues. Default none");
+                "On failure, timeout or cancellation, roll back completed steps in reverse "
+                "completion order (not when the server is shutting down): reverse stops "
+                "at the first rollback failure, best_effort continues. Default none");
             rollback["enum"] = value::array({"none", "reverse", "best_effort"});
             props["rollback"] = rollback;
             props["circuit_breaker"] = type_with_desc("boolean",
@@ -507,20 +514,32 @@ namespace Orcha::Agent::Routes {
             trig_enum[0] = "manual";
             trig_enum[1] = "api";
             trig_enum[2] = "schedule";
+            trig_enum[3] = "nested";
             trig["enum"] = trig_enum;
             props["trigger"] = trig;
-            value st = type_of("string");
-            value st_enum = value::array();
-            st_enum[0] = "success";
-            st_enum[1] = "failed";
-            st["enum"] = st_enum;
+            value st = type_with_desc("string",
+                "queued -> running -> success | failed | cancelled; interrupted = the server "
+                "stopped before it finished; skipped = a scheduled run rejected because the queue was full");
+            st["enum"] = value::array({"queued", "running", "success", "failed", "cancelled",
+                                       "interrupted", "skipped"});
             props["status"] = st;
-            props["started_at"] = type_of("string");
+            value queued = type_with_desc("string", "When the run was accepted (ISO-8601 UTC)");
+            queued["nullable"] = true;
+            props["queued_at"] = queued;
+            value started = type_with_desc("string", "When it began executing; null while queued");
+            started["nullable"] = true;
+            props["started_at"] = started;
             value fin = type_of("string");
             fin["nullable"] = true;
             props["finished_at"] = fin;
-            props["result"] = ref("WorkflowResult");
+            value result = ref("WorkflowResult");
+            result["description"] = "Per-step results; null until the run finishes";
+            props["result"] = result;
             props["error"] = type_of("string");
+            value links = value::object();
+            links["type"] = "object";
+            links["properties"] = value{{"self", type_of("string")}, {"cancel", type_of("string")}};
+            props["links"] = links;
             s["properties"] = props;
             return s;
         }
@@ -535,6 +554,15 @@ namespace Orcha::Agent::Routes {
             items["items"] = ref("RunRecord");
             props["runs"] = items;
             props["count"] = type_of("integer");
+            value queue = value::object();
+            queue["type"] = "object";
+            queue["description"] = "Run queue load";
+            queue["properties"] = value{{"queued", type_of("integer")}, {"running", type_of("integer")},
+                                        {"max_concurrent", type_of("integer")}, {"max_queued", type_of("integer")}};
+            props["queue"] = queue;
+            props["persistent"] = type_with_desc("boolean",
+                "False when the job database could not be opened: jobs and runs are kept "
+                "in memory and lost on restart");
             s["properties"] = props;
             return s;
         }
@@ -735,6 +763,8 @@ namespace Orcha::Agent::Routes {
             // Public
             paths["/"]            = path_health();
             paths["/workflow"]    = path_workflow();
+            paths["/workflow/runs/{id}"]        = path_workflow_run();
+            paths["/workflow/runs/{id}/cancel"] = path_run_cancel("Workflow", false);
             paths["/commands"]    = path_commands();
             paths["/sample"]      = path_sample();
 
@@ -747,6 +777,7 @@ namespace Orcha::Agent::Routes {
             // Admin: runs
             paths["/api/runs"]                  = path_runs_collection();
             paths["/api/runs/{id}"]             = path_run_item();
+            paths["/api/runs/{id}/cancel"]      = path_run_cancel("Runs", true);
 
             // Admin: plugins
             paths["/api/plugins"]               = path_plugins_collection();
@@ -780,19 +811,93 @@ namespace Orcha::Agent::Routes {
             return path;
         }
 
+        static Orcha::Json bearer_auth_security() {
+            using value = Orcha::Json;
+            value req = value::object();
+            req["bearerAuth"] = value::array();
+            value arr = value::array();
+            arr[0] = req;
+            return arr;
+        }
+
         static Orcha::Json path_workflow() {
             using value = Orcha::Json;
             value path = value::object();
             value op = value::object();
-            op["summary"] = "Execute a workflow";
-            op["description"] = 
-                "Executes the supplied steps and returns per-step results.";
+            op["summary"] = "Submit a workflow run";
+            op["description"] =
+                "Validates the workflow and queues a run. Answers 202 Accepted with the queued run "
+                "and a Location header; poll GET /workflow/runs/{id} until its status is final. "
+                "Send `Prefer: wait=<seconds>` (RFC 7240) to wait for the result: 200 with the "
+                "finished run if it completes in time (capped by `server.max_wait_ms`), else 202. "
+                "The wait is best effort: when other requests are already waiting (or the server "
+                "has a single HTTP worker) it answers 202 at once. "
+                "When the run queue is full the request is rejected with 429 and Retry-After.";
             op["tags"] = tag("Workflow");
+            op["security"] = bearer_auth_security();
+            value prefer = value::object();
+            prefer["name"] = "Prefer";
+            prefer["in"] = "header";
+            prefer["required"] = false;
+            prefer["description"] = "`wait=<seconds>` to wait for the run to finish";
+            prefer["schema"] = type_of("string");
+            prefer["example"] = "wait=30";
+            value params = value::array();
+            params[0] = prefer;
+            op["parameters"] = params;
             op["requestBody"] = json_body("WorkflowRequest");
             value responses = value::object();
-            responses["200"] = json_response("Workflow result", "WorkflowResult");
+            responses["202"] = json_response("Run accepted (queued or still running); see Location", "RunRecord");
+            responses["200"] = json_response("Finished run (only with Prefer: wait)", "RunRecord");
+            responses["400"] = error_response("Invalid JSON or workflow settings");
+            responses["401"] = error_response("Missing or wrong bearer token");
             responses["415"] = error_response("Unsupported media type");
-            responses["500"] = error_response("Execution error");
+            responses["429"] = error_response("Run queue full; retry after Retry-After seconds");
+            responses["503"] = error_response("API disabled (no token on a non-loopback bind) or shutting down");
+            op["responses"] = responses;
+            path["post"] = op;
+            return path;
+        }
+
+        static Orcha::Json path_workflow_run() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value params = value::array();
+            params[0] = path_param("id", "Run ID");
+            path["parameters"] = params;
+            value op = value::object();
+            op["summary"] = "Get a workflow run";
+            op["description"] = "Status and, once finished, per-step results of a run submitted via POST /workflow.";
+            op["tags"] = tag("Workflow");
+            op["security"] = bearer_auth_security();
+            value responses = value::object();
+            responses["200"] = json_response("Run", "RunRecord");
+            responses["404"] = error_response("Not found");
+            op["responses"] = responses;
+            path["get"] = op;
+            return path;
+        }
+
+        static Orcha::Json path_run_cancel(const std::string& tag_name, bool admin) {
+            using value = Orcha::Json;
+            value path = value::object();
+            value params = value::array();
+            params[0] = path_param("id", "Run ID");
+            path["parameters"] = params;
+            value op = value::object();
+            op["summary"] = "Cancel a run";
+            op["description"] =
+                "A queued run is removed and never starts (200, status cancelled). A running run is asked "
+                "to stop at its next cancellation point (202) and ends as cancelled; its completed steps "
+                "are rolled back if the workflow sets \"rollback\". A nested run (started by a "
+                "run_job step) cannot be cancelled on its own: cancel the run that started it (409).";
+            op["tags"] = tag(tag_name);
+            op["security"] = admin ? basic_auth_security() : bearer_auth_security();
+            value responses = value::object();
+            responses["200"] = json_response("Cancelled", "RunRecord");
+            responses["202"] = json_response("Cancellation requested", "RunRecord");
+            responses["404"] = error_response("Not found");
+            responses["409"] = error_response("The run has already finished, or is a nested run");
             op["responses"] = responses;
             path["post"] = op;
             return path;
@@ -912,13 +1017,14 @@ namespace Orcha::Agent::Routes {
 
             value op = value::object();
             op["summary"] = "Run a job now";
-            op["description"] = 
-                "Synchronously executes the job and returns the resulting run record.";
+            op["description"] =
+                "Queues a run of the job and returns it (202 + Location); poll GET /api/runs/{id}.";
             op["tags"] = tag("Jobs");
             op["security"] = basic_auth_security();
             value responses = value::object();
-            responses["200"] = json_response("Run record", "RunRecord");
+            responses["202"] = json_response("Queued run", "RunRecord");
             responses["404"] = error_response("Not found");
+            responses["429"] = error_response("Run queue full; retry after Retry-After seconds");
             op["responses"] = responses;
             path["post"] = op;
             return path;

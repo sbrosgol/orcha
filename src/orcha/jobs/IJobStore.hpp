@@ -106,16 +106,37 @@ namespace Orcha::Jobs {
         }
     };
 
+    /// Run lifecycle states (RunRecord::status).
+    namespace run_status {
+        inline constexpr const char* Queued      = "queued";      ///< accepted, waiting for a runner
+        inline constexpr const char* Running     = "running";
+        inline constexpr const char* Success     = "success";
+        inline constexpr const char* Failed      = "failed";
+        inline constexpr const char* Cancelled   = "cancelled";   ///< cancelled by a user or shutdown
+        inline constexpr const char* Interrupted = "interrupted"; ///< server stopped before it finished
+        inline constexpr const char* Skipped     = "skipped";     ///< scheduled run rejected (queue full)
+
+        /// True once a run can no longer change.
+        [[nodiscard]] inline bool is_terminal(const std::string& s) {
+            return s != Queued && s != Running;
+        }
+    } // namespace run_status
+
     /**
      * @struct RunRecord
      * @brief A single workflow execution and its outcome.
+     *
+     * Lifecycle: queued -> running -> success | failed | cancelled, or
+     * queued -> cancelled, or interrupted (server restart), or skipped
+     * (a scheduled run that found the queue full).
      */
     struct RunRecord {
         std::string id;
         std::optional<std::string> job_id;     ///< Null for ad-hoc /workflow runs.
-        std::string trigger;                    ///< "manual" | "api" | "schedule"
-        std::string status;                     ///< "success" | "failed"
-        std::string started_at;
+        std::string trigger;                    ///< "manual" | "api" | "schedule" | "nested"
+        std::string status;                     ///< See run_status.
+        std::string queued_at;                  ///< When the run was accepted.
+        std::string started_at;                 ///< When it began executing; empty if it never did.
         std::optional<std::string> finished_at;
         Json result = Json(nullptr);
         std::string error;
@@ -126,7 +147,8 @@ namespace Orcha::Jobs {
             o["job_id"] = job_id ? Json(*job_id) : Json(nullptr);
             o["trigger"] = trigger;
             o["status"] = status;
-            o["started_at"] = started_at;
+            o["queued_at"] = queued_at.empty() ? Json(nullptr) : Json(queued_at);
+            o["started_at"] = started_at.empty() ? Json(nullptr) : Json(started_at);
             o["finished_at"] = finished_at ? Json(*finished_at) : Json(nullptr);
             o["result"] = result;
             o["error"] = error;
@@ -153,8 +175,20 @@ namespace Orcha::Jobs {
         [[nodiscard]] virtual bool delete_job(const std::string& id) = 0;
 
         // Runs
-        /// Assigns id if empty. Returns false on error.
+        /// Assigns id and queued_at if empty. Returns false on error.
         [[nodiscard]] virtual bool insert_run(RunRecord& run) = 0;
+        /// Updates status, started_at, finished_at, result and error of an
+        /// existing run that is still queued/running (a final status never
+        /// changes). Returns false if there was no such live run, or on error.
+        [[nodiscard]] virtual bool update_run(const RunRecord& run) = 0;
+        /// Marks runs that other (dead) processes left queued/running as
+        /// interrupted; runs created through this store are not touched.
+        /// Returns how many were updated.
+        virtual size_t mark_interrupted_runs(const std::string& reason) = 0;
+        /// Deletes the oldest finished runs beyond @p keep. Returns how many.
+        virtual size_t prune_runs(size_t keep) = 0;
+        /// False when runs and jobs do not survive a restart (in-memory store).
+        [[nodiscard]] virtual bool persistent() const = 0;
         /// Most recent runs first; job_id == nullopt lists all runs.
         [[nodiscard]] virtual std::vector<RunRecord> list_runs(
             const std::optional<std::string>& job_id, size_t limit) const = 0;

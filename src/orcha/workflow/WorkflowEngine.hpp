@@ -111,9 +111,10 @@ namespace Orcha::Workflow {
      * or the enclosing run's token (nested run_job) is stopped.
      *
      * Per-workflow resilience settings:
-     * - "rollback": when the run fails (not when it is cancelled), completed
-     *   steps are rolled back in reverse completion order with the
-     *   parameters they ran with; outcomes are reported per step.
+     * - "rollback": when the run fails, times out or is cancelled by a user,
+     *   completed steps are rolled back in reverse completion order with the
+     *   parameters they ran with; outcomes are reported per step. Skipped
+     *   only when EngineOptions::cancel fires (server shutdown).
      * - "circuit_breaker": each step consults its command's breaker. An open
      *   circuit rejects the step without running it; command failures and
      *   timeouts count against the breaker, other failures do not.
@@ -160,7 +161,7 @@ namespace Orcha::Workflow {
                        WorkflowResult& result,
                        const std::vector<size_t>& completion_order,
                        const std::vector<Orcha::Json>& executed_params,
-                       bool cancelled);
+                       bool shutting_down);
 
         void log_step_start(const WorkflowStep& step, int index);
         void log_step_complete(const WorkflowStepResult& result, int index);

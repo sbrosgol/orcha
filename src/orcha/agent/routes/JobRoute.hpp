@@ -7,9 +7,10 @@
 //   GET    /api/jobs/{id}            get a job
 //   PUT    /api/jobs/{id}            update a job        (body: JobDefinition)
 //   DELETE /api/jobs/{id}            delete a job
-//   POST   /api/jobs/{id}/run        run a job now -> RunRecord
+//   POST   /api/jobs/{id}/run        queue a run of the job -> 202 + run
+//   POST   /api/runs/{id}/cancel     cancel a queued or running run
 //   GET    /api/jobs/{id}/runs       run history for a job
-//   GET    /api/runs                 recent runs (all jobs + ad-hoc)
+//   GET    /api/runs                 recent runs (all jobs + ad-hoc) + queue stats
 //   GET    /api/runs/{id}            single run detail
 //
 
@@ -17,7 +18,9 @@
 
 #include "../IRouteHandler.hpp"
 #include "../HttpJson.hpp"
+#include "RunResponses.hpp"
 #include "../../core/JsonCompat.hpp"
+#include "../../jobs/RunQueue.hpp"
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
 
@@ -28,8 +31,10 @@ namespace Orcha::Agent::Routes {
     class JobRoute : public IRouteHandler {
     public:
         JobRoute(std::shared_ptr<Jobs::JobService> service,
+                 std::shared_ptr<Jobs::RunQueue> runs,
                  std::shared_ptr<Utils::ILogger> logger = nullptr)
             : service_(std::move(service))
+            , runs_(std::move(runs))
             , logger_(std::move(logger)) {}
 
         [[nodiscard]] bool can_handle(
@@ -48,6 +53,9 @@ namespace Orcha::Agent::Routes {
             if (root == "runs") {
                 if (seg.size() == 2 && method == "GET") return list_runs(request, std::nullopt);
                 if (seg.size() == 3 && method == "GET") return get_run(seg[2]);
+                if (seg.size() == 4 && seg[3] == "cancel" && method == "POST") {
+                    return reply_cancel(*runs_, seg[2], kRuns);
+                }
                 return reply_error(status::MethodNotAllowed,
                                    "Unsupported /api/runs request");
             }
@@ -81,10 +89,11 @@ namespace Orcha::Agent::Routes {
                 {.method = "GET",    .path = "/api/jobs/{id}",       .description = "Get a job"},
                 {.method = "PUT",    .path = "/api/jobs/{id}",       .description = "Update a job"},
                 {.method = "DELETE", .path = "/api/jobs/{id}",       .description = "Delete a job"},
-                {.method = "POST",   .path = "/api/jobs/{id}/run",   .description = "Run a job now"},
+                {.method = "POST",   .path = "/api/jobs/{id}/run",   .description = "Queue a run of a job"},
                 {.method = "GET",    .path = "/api/jobs/{id}/runs",  .description = "Job run history"},
                 {.method = "GET",    .path = "/api/runs",            .description = "Recent runs"},
-                {.method = "GET",    .path = "/api/runs/{id}",       .description = "Run detail"}
+                {.method = "GET",    .path = "/api/runs/{id}",       .description = "Run detail"},
+                {.method = "POST",   .path = "/api/runs/{id}/cancel", .description = "Cancel a run"}
             };
         }
 
@@ -170,11 +179,16 @@ namespace Orcha::Agent::Routes {
         }
 
         HttpResponse run_job(const std::string& id) {
-            auto run = service_->run_job(id, "manual");
-            if (!run) {
+            auto job = service_->store()->get_job(id);
+            if (!job) {
                 return reply_error(status::NotFound, "No such job: " + id);
             }
-            return reply_json(status::OK, run->to_json());
+            auto submitted = runs_->submit(job->id, "manual", job->definition, job->name);
+            if (submitted.is_err()) {
+                return reply_submit_error(submitted.error(), runs_->retry_after());
+            }
+            if (logger_) logger_->info("Queued run of job '" + job->name + "'");
+            return reply_run_accepted(submitted.value(), kRuns);
         }
 
         // ---- Runs ----
@@ -188,12 +202,15 @@ namespace Orcha::Agent::Routes {
             Orcha::Json out = Orcha::Json::object();
             out["runs"] = arr;
             out["count"] = static_cast<int>(runs.size());
+            out["queue"] = runs_->stats().to_json();
+            // False when the job database could not be opened (in-memory fallback).
+            out["persistent"] = service_->store()->persistent();
             return reply_json(status::OK, out);
         }
 
         HttpResponse get_run(const std::string& id) {
             if (auto run = service_->store()->get_run(id))
-                return reply_json(status::OK, run->to_json());
+                return reply_run(*run, kRuns);
             return reply_error(status::NotFound, "No such run: " + id);
         }
 
@@ -225,7 +242,10 @@ namespace Orcha::Agent::Routes {
             return def;
         }
 
+        static constexpr const char* kRuns = "/api/runs";
+
         std::shared_ptr<Jobs::JobService> service_;
+        std::shared_ptr<Jobs::RunQueue> runs_;
         std::shared_ptr<Utils::ILogger> logger_;
     };
 

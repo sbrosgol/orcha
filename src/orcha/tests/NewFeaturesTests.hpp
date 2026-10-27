@@ -17,6 +17,7 @@
 #include "TimeoutTests.hpp"
 #include "ShutdownTests.hpp"
 #include "ResilienceTests.hpp"
+#include "RunQueueTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -277,6 +278,9 @@ server:
 
         // Rollback & circuit breaking
         run_resilience_tests();
+
+        // Async runs
+        run_run_queue_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }
