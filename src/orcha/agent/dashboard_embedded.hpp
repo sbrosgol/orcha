@@ -148,7 +148,11 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .badge.loaded, .badge.success, .badge.enabled { --c:var(--ok); }
     .badge.available, .badge.api { --c:var(--info); }
     .badge.failed, .badge.error { --c:var(--err); }
-    .badge.running { --c:var(--warn); }
+    .badge.running, .badge.queued { --c:var(--info); }
+    .badge.running::before { animation:pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity:.3; } }
+    .badge.cancelled, .badge.skipped { --c:var(--muted); }
+    .badge.interrupted { --c:var(--warn); }
     .badge.schedule, .badge.cron { --c:var(--violet); }
     .badge.manual { --c:var(--pink); }
     .badge.disabled, .badge.unknown { --c:var(--muted); }
@@ -160,7 +164,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .badge.rb-failed { --c:var(--err); }
     .badge.rb-skipped, .badge.rb-na { --c:var(--muted); }
     .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; display:inline-block; }
-    .dot.ok { background:var(--ok); } .dot.err { background:var(--err); } .dot.off { background:transparent; border:1.5px solid var(--faint); }
+    .dot.ok { background:var(--ok); } .dot.err { background:var(--err); }
+    .dot.live { background:var(--info); } .dot.warn { background:var(--warn); } .dot.muted { background:var(--faint); } .dot.off { background:transparent; border:1.5px solid var(--faint); }
     .tag { display:inline-block; font-size:11.5px; color:var(--fg-2); background:var(--bg-sunken); border:1px solid var(--line);
            border-radius:4px; padding:0 6px; line-height:18px; margin:0 4px 4px 0; }
 
@@ -605,7 +610,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="card">
               <div class="card-hd"><h2>Recent runs</h2><span class="sp"></span><a href="#/jobs" class="sub">View jobs →</a></div>
               <div class="table-wrap"><table class="tbl">
-                <thead><tr><th>Status</th><th>Job</th><th>Trigger</th><th>Started</th><th class="r">Duration</th><th>Error</th></tr></thead>
+                <thead><tr><th>Status</th><th>Job</th><th>Trigger</th><th title="Start time (queue time while queued)">When</th><th class="r">Duration</th><th>Error</th></tr></thead>
                 <tbody id="recentRuns"></tbody></table></div>
             </div>
             <div class="card">
@@ -639,6 +644,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           <div class="page-hd"><div><h1 id="h-jobs">Jobs</h1><p>Saved workflows, their schedules and run history.</p></div>
             <span class="sp"></span>
             <button class="btn primary" id="newJob"><svg class="i"><use href="#i-plus"/></svg>New job</button></div>
+          <div id="jobsAlerts"></div>
           <div class="jobs-layout">
             <div class="card joblist">
               <div class="toolbar"><div class="search"><svg class="i"><use href="#i-search"/></svg>
@@ -700,7 +706,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
               <option value="reverse">Roll back, stop on error</option>
               <option value="best_effort">Roll back, best effort</option>
             </select>
-            <div class="hint">Rolls back completed steps in reverse order (commands that support it). Skipped when a run is cancelled.</div></div>
+            <div class="hint">Rolls back completed steps in reverse order (commands that support it) when a run fails, times out or is cancelled. Skipped when the server shuts down.</div></div>
           <div class="field"><span class="label">Circuit breaker</span>
             <label class="switch"><input id="jBreaker" type="checkbox" /><span class="track"></span>Fail fast while a command’s circuit is open</label>
             <div class="hint">Thresholds are set server-wide under <code>workflow.circuit_breaker</code>.</div></div>
@@ -783,7 +789,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       return Math.round(s/86400/30)+'mo';
     }
     function fmtDur(run){
-      const a=parseTs(run.started_at), b=parseTs(run.finished_at);
+      const a=parseTs(run.started_at);
+      const b=parseTs(run.finished_at) || (run.status==='running' ? new Date() : null); // live elapsed
       if(!a||!b) return '—';
       const ms=b-a; if(ms<1000) return '<1s';
       const s=ms/1000; if(s<60) return s.toFixed(s<10?1:0)+'s';
@@ -791,6 +798,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     }
     const timeCell = (iso) => `<time datetime="${esc(iso||'')}" title="${esc(fmtAbs(iso))}">${esc(fmtAgo(iso))}</time>`;
     const statusBadge = (st) => `<span class="badge ${esc(st||'unknown')}">${esc(st||'unknown')}</span>`;
+    // Run lifecycle: queued -> running -> success | failed | cancelled; or interrupted / skipped.
+    const isLive = (st) => st==='queued' || st==='running';
+    const runTime = (r) => r.started_at || r.queued_at;   // queued runs have no started_at yet
 
     // ================= Theme =================
     const THEME_KEY='orcha_theme';
@@ -851,9 +861,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     let confirmResolve=()=>{};
     // opts.tone: 'danger' (default, destructive) or 'primary' (recovery actions).
+    // opts.cancelLabel: the dismiss button's text (default "Cancel"; use it when
+    // the action itself is a cancel, e.g. "Keep run").
     function confirmDialog(title, body, okLabel, opts){
-      const primary = opts && opts.tone==='primary';
+      const primary = !!(opts && opts.tone==='primary');   // toggle(x, undefined) would flip, not clear
       $('cfTitle').textContent=title; $('cfBody').textContent=body; $('cfOk').textContent=okLabel||'Confirm';
+      $('cfCancel').textContent=(opts && opts.cancelLabel) || 'Cancel';
       $('cfOk').className = 'btn '+(primary?'primary':'danger-solid');
       $('confirm').classList.toggle('tone-primary', primary);
       $('confirm').querySelector('.confirm-bd .ic use').setAttribute('href', primary?'#i-info':'#i-warn');
@@ -879,7 +892,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const res=await fetch(path, Object.assign({}, opts, {headers}));
       if(res.status===401){ signOut('Your session has expired. Please sign in again.'); throw new Error('Unauthorized'); }
       let body=null; try{ body=await res.json(); }catch(e){}
-      if(!res.ok) throw new Error((body&&(body.error||body.message))||('HTTP '+res.status));
+      if(!res.ok){
+        const err=new Error((body&&(body.error||body.message))||('HTTP '+res.status));
+        err.status=res.status; err.body=body;
+        const ra=parseInt(res.headers.get('Retry-After')||'',10); if(ra>0) err.retryAfter=ra;
+        throw err;
+      }
       return body;
     }
     function loginError(msg){
@@ -921,8 +939,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     $('logout').addEventListener('click', () => { signOut(''); toast('Signed out','ok'); });
 
     // ================= State + routing =================
-    const state = { view:'overview', plugins:null, jobs:[], runs:[], breakers:null, breakersErr:null, currentJob:null, selectedRunId:null,
-                    pluginFilter:'all', pluginQuery:'', jobQuery:'', loadedAt:null, jobRuns:[] };
+    const state = { view:'overview', plugins:null, jobs:[], runs:[], queue:null, breakers:null, breakersErr:null, currentJob:null, selectedRunId:null,
+                    pluginFilter:'all', pluginQuery:'', jobQuery:'', loadedAt:null, jobRuns:[], persistent:true, watchErr:null };
 
     function route(){
       const h=(location.hash||'#/overview').replace(/^#\/?/,'').split('/');
@@ -958,7 +976,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // ================= Data loading =================
     async function loadPluginsData(){ state.plugins = await api('/api/plugins'); }
     async function loadJobsData(){ const d=await api('/api/jobs'); state.jobs=d.jobs||[]; }
-    async function loadRunsData(){ const d=await api('/api/runs?limit=200'); state.runs=d.runs||[]; }
+    async function loadRunsData(){ const d=await api('/api/runs?limit=200'); state.runs=d.runs||[]; state.queue=d.queue||null; state.persistent=d.persistent!==false; }
     async function loadBreakersData(){
       try { const d=await api('/api/circuit-breakers'); state.breakers=d.circuit_breakers||[]; state.breakersErr=null; }
       catch(e){ if(!isAuthErr(e)) state.breakersErr=e.message||'request failed'; throw e; }
@@ -1007,6 +1025,11 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // ================= Overview =================
     const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || '#888';
 
+    // The job database could not be opened: the server runs on an in-memory store.
+    function storeNotice(){
+      return state.persistent ? '' : `<div class="alert err" role="alert">${icon('alert')}<span><strong>Run history is not saved.</strong>
+        The job database could not be opened, so jobs and runs are kept in memory and will be lost when the server restarts. Check <code>jobs.db_path</code> and the server log.</span></div>`;
+    }
     function renderOverview(){
       if(!document.body.classList.contains('authed')) return;
       const pl=(state.plugins&&state.plugins.plugins)||[];
@@ -1014,7 +1037,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             disabled=pl.filter(p=>p.status==='disabled').length;
       const jobs=state.jobs, enabled=jobs.filter(j=>j.enabled).length, scheduled=jobs.filter(j=>j.schedule_cron).length;
       const runs=state.runs, succ=runs.filter(r=>r.status==='success').length, fail=runs.filter(r=>r.status==='failed').length;
-      const rate=runs.length ? Math.round(100*succ/runs.length) : null;
+      // Rate over decided outcomes; queued/running/cancelled/skipped runs say nothing about health.
+      const rate=(succ+fail) ? Math.round(100*succ/(succ+fail)) : null;
       const rateColor = rate==null ? 'var(--faint)' : rate>=90 ? 'var(--ok)' : rate>=60 ? 'var(--warn)' : 'var(--err)';
       const pct=(a,b)=>b?(100*a/b):0;
       const lastFail = runs.find(r=>r.status==='failed');
@@ -1031,14 +1055,14 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         `<div class="card kpi"><div class="lbl">${icon('activity')}Recent runs</div>
           <div class="val">${fmtNum(runs.length)}</div>
           <div class="meter"><span style="width:${pct(succ,runs.length)}%;background:var(--ok)"></span><span style="width:${pct(fail,runs.length)}%;background:var(--err)"></span></div>
-          <div class="meta">${succ} succeeded · ${fail} failed</div></div>`,
+          <div class="meta">${succ} succeeded · ${fail} failed${queueMeta()}</div></div>`,
         `<div class="card kpi"><div class="lbl">${icon('gauge')}Success rate</div>
           <div class="val" style="color:${rateColor}">${rate==null?'—':rate+'<small>%</small>'}</div>
           <div class="meter"><span style="width:${rate||0}%;background:${rateColor}"></span></div>
-          <div class="meta">${lastFail ? 'Last failure '+timeCell(lastFail.started_at) : 'No failures recorded'}</div></div>`
+          <div class="meta">${lastFail ? 'Last failure '+timeCell(runTime(lastFail)) : 'No failures recorded'}</div></div>`
       ].join('');
 
-      $('ovAlerts').innerHTML = breakerNotice();
+      $('ovAlerts').innerHTML = storeNotice()+breakerNotice();
 
       renderRunsChart(runs);
 
@@ -1065,7 +1089,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         const jn = r.job_id ? (names[r.job_id] ? `<a href="#/jobs/${encodeURIComponent(r.job_id)}">${esc(names[r.job_id])}</a>` : `<span class="mono muted">${esc(r.job_id.slice(0,8))}</span>`)
                             : '<span class="muted">ad-hoc</span>';
         return `<tr><td>${statusBadge(r.status)}</td><td class="nowrap">${jn}</td><td><span class="badge plain ${esc(r.trigger||'unknown')}">${esc(r.trigger||'—')}</span></td>
-          <td class="nowrap muted">${timeCell(r.started_at)}</td><td class="r num muted">${fmtDur(r)}</td>
+          <td class="nowrap muted">${timeCell(runTime(r))}</td><td class="r num muted">${fmtDur(r)}</td>
           <td><div class="trunc muted" title="${esc(r.error||'')}">${esc(r.error||'')}</div></td></tr>`;
       }).join('') : `<tr><td colspan="6">${emptyState('activity','No runs yet','Run a job manually or wait for the scheduler to pick one up.')}</td></tr>`;
 
@@ -1079,6 +1103,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         : emptyState('clock','Nothing scheduled','Give an enabled job a cron schedule to see its next run here.');
     }
 
+    // " · 2 running · 3 queued of 64" from the /api/runs queue stats (empty when idle).
+    function queueMeta(){
+      const q=state.queue; if(!q || (!q.running && !q.queued)) return '';
+      return ` · <span title="Runner slots ${fmtNum(q.max_concurrent)}, queue capacity ${fmtNum(q.max_queued)}">${fmtNum(q.running)} running · ${fmtNum(q.queued)} queued</span>`;
+    }
+
     function emptyState(ic, title, body, action){
       return `<div class="empty"><div class="ic">${icon(ic)}</div><h3>${esc(title)}</h3><p>${esc(body)}</p>${action||''}</div>`;
     }
@@ -1089,7 +1119,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const days=[]; const today=new Date(); today.setUTCHours(0,0,0,0);
       for(let i=13;i>=0;--i){ const d=new Date(today); d.setUTCDate(d.getUTCDate()-i); days.push(d.toISOString().slice(0,10)); }
       const S=Object.fromEntries(days.map(d=>[d,0])), F=Object.fromEntries(days.map(d=>[d,0]));
-      runs.forEach(r=>{ const k=(r.started_at||'').slice(0,10); if(k in S){ if(r.status==='success') S[k]++; else if(r.status==='failed') F[k]++; } });
+      runs.forEach(r=>{ const k=(runTime(r)||'').slice(0,10); if(k in S){ if(r.status==='success') S[k]++; else if(r.status==='failed') F[k]++; } });
       const max=Math.max(1,...days.map(d=>S[d]+F[d]));
       const nice = max<=4 ? 4 : Math.ceil(max/4)*4;
       const W=host.clientWidth||600, H=host.clientHeight||240, L=30, R=4, T=8, B=24;
@@ -1110,7 +1140,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       });
       const total=days.reduce((a,d)=>a+S[d]+F[d],0);
       host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Runs per day for the last 14 days: ${total} total">${g}${bars}${hits}</svg><div class="ctip"></div>`+
-        (total?'':`<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center" class="muted">No runs in the last 14 days</div>`);
+        (total?'':`<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center" class="muted">No finished runs in the last 14 days</div>`);
       const tip=host.querySelector('.ctip');
       host.querySelectorAll('.hit').forEach(h=>{
         h.addEventListener('mouseenter',()=>{
@@ -1269,7 +1299,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     }
 
     // ================= Jobs =================
+    const runDot = (st) => st==='success' ? 'ok' : st==='failed' ? 'err' : st==='interrupted' ? 'warn'
+                         : isLive(st) ? 'live' : 'muted';
     function renderJobList(){
+      if($('jobsAlerts')) $('jobsAlerts').innerHTML=storeNotice();
       const q=state.jobQuery, last=lastRunByJob();
       const list=state.jobs.filter(j=>!q || (j.name+' '+(j.description||'')).toLowerCase().includes(q));
       const host=$('jobItems');
@@ -1279,11 +1312,11 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       host.innerHTML = list.map(j=>{
         const lr=last[j.id];
         const dot = !j.enabled ? '<span class="dot off" title="Disabled"></span>'
-                  : lr ? `<span class="dot ${lr.status==='success'?'ok':'err'}" title="Last run ${esc(lr.status)}"></span>` : '<span class="dot" title="Never run"></span>';
+                  : lr ? `<span class="dot ${runDot(lr.status)}" title="Last run ${esc(lr.status)}"></span>` : '<span class="dot" title="Never run"></span>';
         const active=state.currentJob&&state.currentJob.id===j.id;
         return `<button type="button" role="option" aria-selected="${active}" class="jitem ${active?'active':''}" data-job="${esc(j.id)}">
           <div class="l1">${dot}<span class="nm">${esc(j.name)}</span>${j.schedule_cron?`<span class="cron" title="Cron (UTC)">${esc(j.schedule_cron)}</span>`:''}</div>
-          <div class="l2"><span class="desc">${esc(j.description || (j.enabled?'':'Disabled'))}</span>${lr?`<span class="nowrap">${esc(fmtAgo(lr.started_at))}</span>`:''}</div></button>`;
+          <div class="l2"><span class="desc">${esc(j.description || (j.enabled?'':'Disabled'))}</span>${lr?`<span class="nowrap">${esc(fmtAgo(runTime(lr)))}</span>`:''}</div></button>`;
       }).join('');
     }
     $('jobSearch').addEventListener('input', e=>{ state.jobQuery=e.target.value.trim().toLowerCase(); renderJobList(); });
@@ -1337,7 +1370,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     function jobChips(def){
       if(!def || typeof def!=='object') return '';
       const chips=[];
-      if(ROLLBACK_LABELS[def.rollback]) chips.push(`<span class="tag" title="Completed steps are rolled back when a run fails">${icon('undo')}Rollback: ${esc(ROLLBACK_LABELS[def.rollback])}</span>`);
+      if(ROLLBACK_LABELS[def.rollback]) chips.push(`<span class="tag" title="Completed steps are rolled back when a run fails, times out or is cancelled">${icon('undo')}Rollback: ${esc(ROLLBACK_LABELS[def.rollback])}</span>`);
       if(def.circuit_breaker===true) chips.push(`<span class="tag" title="Steps fail fast while their command's circuit is open">${icon('shield')}Circuit breaker</span>`);
       if(Number(def.timeout_ms)>0) chips.push(`<span class="tag" title="Time limit for the whole run">${icon('clock')}Timeout ${esc(fmtMs(def.timeout_ms))}</span>`);
       return chips.length ? `<div class="chips">${chips.join('')}</div>` : '';
@@ -1364,7 +1397,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('jobFacts').innerHTML = `
         <div><div class="k">Schedule</div><div class="v">${j.schedule_cron?`<span class="mono">${esc(j.schedule_cron)}</span> <span class="muted">· ${esc(cronDescribe(j.schedule_cron))}</span>`:'<span class="muted">Manual only</span>'}</div></div>
         <div><div class="k">Next run</div><div class="v">${next}</div></div>
-        <div><div class="k">Last run</div><div class="v">${lr?`${statusBadge(lr.status)} <span class="muted">${timeCell(lr.started_at)}</span>`:'<span class="muted">Never</span>'}</div></div>
+        <div><div class="k">Last run</div><div class="v">${lr?`${statusBadge(lr.status)} <span class="muted">${timeCell(runTime(lr))}</span>`:'<span class="muted">Never</span>'}</div></div>
         <div><div class="k">Updated</div><div class="v">${j.updated_at?timeCell(j.updated_at):'—'}</div></div>`;
       $('runJob').onclick = (e)=>runJob(e.currentTarget, j.id);
       $('editJob').onclick = ()=>openEditor(j);
@@ -1417,18 +1450,41 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     function renderRunOutput(run){
       const el=$('runOutput'); if(!el) return;
+      el.dataset.run = run ? run.id : ''; el.dataset.status = run ? run.status : '';
       if(!run){ el.innerHTML=emptyState('play','No runs yet','Click “Run now” to execute this workflow and inspect each step’s output.'); return; }
       const steps=Array.isArray(run.result)?run.result:[];
       const head=`<div class="runhd">${statusBadge(run.status)}<span>Run <span class="mono">${esc(run.id.slice(0,8))}</span></span>
-        <span>·</span><span class="badge plain ${esc(run.trigger||'unknown')}">${esc(run.trigger||'—')}</span><span>·</span>${timeCell(run.started_at)}<span>·</span><span class="num">${fmtDur(run)}</span>${Array.isArray(run.result)?rollbackSummary(run.result):''}</div>`;
+        <span>·</span><span class="badge plain ${esc(run.trigger||'unknown')}">${esc(run.trigger||'—')}</span><span>·</span>${timeCell(runTime(run))}<span>·</span><span class="num rundur">${fmtDur(run)}</span>${Array.isArray(run.result)?rollbackSummary(run.result):''}</div>`;
+      if(isLive(run.status)){
+        const msg = run.status==='queued' ? 'Queued — waiting for a free runner.' : 'Running — step output appears when the run finishes.';
+        // A nested run executes inside its parent's run and is cancelled with it.
+        const action = run.trigger==='nested'
+          ? `<span class="muted">Runs inside its parent run; cancel the parent to stop it.</span>`
+          : `<button type="button" class="btn sm${cancelling.has(run.id)?' loading':''}" data-act="cancel-run" data-run="${esc(run.id)}"${cancelling.has(run.id)?' disabled':''}>${icon('x','ico')}${icon('loader','spin')}Cancel run</button>`;
+        el.innerHTML=head+`<div class="alert info mid" role="status">${icon('clock')}<span>${msg}</span>${action}</div>`;
+        return;
+      }
+      // Cancelled / skipped are outcomes, not errors; interrupted is a warning.
+      const errCls = run.status==='failed' ? 'err' : (run.status==='cancelled' || run.status==='skipped') ? 'info' : '';
+      const errIcon = run.status==='failed' ? 'alert' : 'info';
+      const runErr = run.error ? `<div class="alert ${errCls}">${icon(errIcon)}<span>${esc(run.error)}</span></div>` : '';
       if(!steps.length){
-        el.innerHTML=head+(run.error?`<div class="alert err">${icon('alert')}<span>${esc(run.error)}</span></div>`:'<div class="muted">No step output recorded for this run.</div>');
+        el.innerHTML=head+(runErr||'<div class="muted">No step output recorded for this run.</div>');
         return;
       }
       const rbFailed=failedRollbacks(steps);
       const rbAlert = rbFailed ? `<div class="alert err">${icon('undo')}<span>Rollback failed for ${rbFailed} step${rbFailed===1?'':'s'}. The changes they made may still be in place; check them before re-running.</span></div>` : '';
-      el.innerHTML=head+(run.error?`<div class="alert err">${icon('alert')}<span>${esc(run.error)}</span></div>`:'')+rbAlert+steps.map((s,i)=>{
+      const defSteps=(state.currentJob && state.currentJob.definition && state.currentJob.definition.steps) || [];
+      el.innerHTML=head+runErr+rbAlert+steps.map((s,i)=>{
         const rb=rollbackInfo(s.rollback);
+        // A step that never started (the run stopped earlier) has no command, error or output.
+        const notRun = !s.success && !s.error_message && !s.command && (s.output===null || s.output===undefined);
+        if(notRun){
+          const d=defSteps[i]||{};
+          return `<details class="outcard" id="out-step-${i}"><summary>${icon('chev','chev')}<span class="idx">#${i+1}</span>
+            <strong>${esc(d.name||d.command||'step')}</strong>${d.name?`<span class="mono muted">${esc(d.command||'')}</span>`:''}
+            <span class="sbadges"><span class="badge skipped">not run</span></span></summary><div class="muted">This step did not start: the run ended before it.</div></details>`;
+        }
         const ok=!!s.success, open = !ok || steps.length<=3 || (rb && s.rollback.status==='failed');
         const out=fmtOutput(s.output);
         // The badge carries the status; the line explains it (error / skip reason).
@@ -1440,14 +1496,106 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       }).join('');
     }
 
+    // "Run now" queues a run (202); the page then follows it until it finishes.
     async function runJob(btn, id){
       busy(btn,true);
       try { const r=await api('/api/jobs/'+encodeURIComponent(id)+'/run',{method:'POST'});
-        toast('Run '+(r.status==='success'?'succeeded':r.status), r.status==='success'?'ok':'err');
+        toast('Run queued','ok');
         state.selectedRunId=r.id; flow.applyRun(r); renderRunOutput(r);
-        await loadRuns(id); loadRunsData().then(()=>{ renderJobList(); renderOverview(); }).catch(()=>{});
-      } catch(e){ if(!isAuthErr(e)) toast('Run failed: '+e.message,'err'); }
+        await loadRuns(id);
+        loadRunsData().then(()=>{ renderJobList(); renderOverview(); }).catch(()=>{});
+      } catch(e){
+        if(isAuthErr(e)) return;
+        if(e.status===429){
+          const secs=e.retryAfter || (e.body && e.body.retry_after_seconds);
+          toast('The run queue is full'+(secs?'; try again in '+secs+' s':'; try again shortly'),'err');
+        } else toast('Could not queue the run: '+e.message,'err');
+      }
       finally { busy(btn,false); }
+    }
+
+    // Follow a job's live runs: while its page shows a queued/running run, poll
+    // the job's run list every second (one request covers every live run),
+    // update the output, history and flow chart in place, and announce each run
+    // that finishes. Paused while the tab is hidden; stops after 3 failures
+    // with a Retry alert.
+    let watchT=null, watchedJob=null, watchFails=0;
+    const cancelling = new Set();   // cancel requested here; announce how it ended
+    function watchJob(jobId){
+      if(watchedJob===jobId) return;
+      clearTimeout(watchT); watchedJob=jobId; watchFails=0;
+      const tick = async () => {
+        if(watchedJob!==jobId) return;
+        if(!state.currentJob || state.currentJob.id!==jobId){ watchedJob=null; return; }   // navigated away
+        if(document.hidden){ watchT=setTimeout(tick, 2000); return; }
+        let d;
+        try { d=await api('/api/jobs/'+encodeURIComponent(jobId)+'/runs?limit=20'); }
+        catch(e){
+          if(isAuthErr(e)){ watchedJob=null; return; }
+          if(++watchFails>=3){ watchedJob=null; state.watchErr=e.message||'request failed'; renderRunHistory(); return; }
+          watchT=setTimeout(tick, 3000); return;
+        }
+        if(watchedJob!==jobId || !state.currentJob || state.currentJob.id!==jobId) return;
+        watchFails=0;
+        const before=new Map(state.jobRuns.map(r=>[r.id, r.status]));
+        state.jobRuns=d.runs||[];
+        updateRunViews();
+        const ended=state.jobRuns.filter(r=>isLive(before.get(r.id)) && !isLive(r.status));
+        ended.forEach(r=>{
+          const mine=cancelling.delete(r.id);
+          if(r.status==='success') toast('Run succeeded','ok');
+          else if(r.status==='cancelled') toast('Run cancelled', mine?'ok':'err');
+          else toast('Run '+r.status+(r.error?': '+r.error:''),'err');
+        });
+        if(ended.length){
+          renderJobHeader();
+          loadRunsData().then(()=>{ renderJobList(); renderOverview(); renderNavCounts(); }).catch(()=>{});
+        }
+        if(state.jobRuns.some(r=>isLive(r.status))) watchT=setTimeout(tick, 1000);
+        else watchedJob=null;
+      };
+      watchT=setTimeout(tick, 1000);
+    }
+    function watchIfLive(){
+      if(state.currentJob && state.jobRuns.some(r=>isLive(r.status))) watchJob(state.currentJob.id);
+    }
+    // Re-render after a poll without destroying what the user is working with:
+    // a live run that is still in the same state only gets its elapsed time.
+    function updateRunViews(){
+      const sel=state.jobRuns.find(r=>r.id===state.selectedRunId);
+      const el=$('runOutput');
+      if(sel && el){
+        if(el.dataset.run===sel.id && el.dataset.status===sel.status && isLive(sel.status)){
+          const d=el.querySelector('.rundur'); if(d) d.textContent=fmtDur(sel);
+        } else { flow.applyRun(sel); renderRunOutput(sel); }
+      }
+      renderRunHistory();
+    }
+
+    async function cancelRun(btn, runId){
+      const ok=await confirmDialog('Cancel this run?',
+        'A queued run is removed and never starts. A running run stops at its next cancellation point; if the workflow has rollback enabled, the steps it already completed are rolled back.',
+        'Cancel run', {cancelLabel:'Keep run'});
+      if(!ok) return;
+      cancelling.add(runId);
+      // The button may have been re-rendered while the dialog was open.
+      const live=$('runOutput') && $('runOutput').querySelector('button[data-act="cancel-run"][data-run="'+CSS.escape(runId)+'"]');
+      busy(live||btn,true);
+      try { const r=await api('/api/runs/'+encodeURIComponent(runId)+'/cancel',{method:'POST'});
+        if(!isLive(r.status)){ cancelling.delete(runId); toast('Run cancelled','ok'); }
+        else toast('Cancelling run…','ok');
+        const i=state.jobRuns.findIndex(x=>x.id===runId); if(i>=0) state.jobRuns[i]=r;
+        if(state.selectedRunId===runId){ flow.applyRun(r); renderRunOutput(r); }
+        renderRunHistory();
+        watchIfLive();
+        if(!isLive(r.status)) loadRunsData().then(()=>{ renderJobList(); renderOverview(); renderNavCounts(); }).catch(()=>{});
+      } catch(e){
+        cancelling.delete(runId);
+        if(isAuthErr(e)) return;
+        toast('Cancel failed: '+e.message,'err');
+        if(e.status===409 && state.currentJob) loadRuns(state.currentJob.id);   // it finished meanwhile
+        else if(state.selectedRunId===runId){ const r=state.jobRuns.find(x=>x.id===runId); if(r) renderRunOutput(r); }
+      }
     }
     async function delJob(j){
       const ok=await confirmDialog('Delete '+j.name+'?', 'This permanently deletes the job and its schedule. Run history may be lost. This cannot be undone.', 'Delete job');
@@ -1466,22 +1614,35 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           state.selectedRunId=runs[0].id; flow.applyRun(runs[0]); renderRunOutput(runs[0]);
         } else if(!runs.length) renderRunOutput(null);
         else { const r=runs.find(x=>x.id===state.selectedRunId); flow.applyRun(r); renderRunOutput(r); }
+        state.watchErr=null;
         renderJobHeader();
-        $('runsCount').textContent = runs.length ? (runs.length>=20?'latest 20':runs.length+' run'+(runs.length===1?'':'s')) : '';
-        $('runs').innerHTML = runs.length ? `<div class="card" style="box-shadow:none"><div class="table-wrap"><table class="tbl">
-          <thead><tr><th>Status</th><th>Run</th><th>Trigger</th><th>Started</th><th class="r">Duration</th></tr></thead>
-          <tbody>${runs.map(r=>`<tr class="click runrow${r.id===state.selectedRunId?' sel':''}" data-run="${esc(r.id)}" tabindex="0">
-            <td>${statusBadge(r.status)}</td><td class="mono muted">${esc(r.id.slice(0,8))}</td>
-            <td><span class="badge plain ${esc(r.trigger||'unknown')}">${esc(r.trigger||'—')}</span></td>
-            <td class="nowrap">${timeCell(r.started_at)}</td><td class="r num muted">${fmtDur(r)}</td></tr>`).join('')}
-          </tbody></table></div></div>` : '<div class="muted">No runs recorded yet.</div>';
+        renderRunHistory();
+        watchIfLive();
       } catch(e){ if(!isAuthErr(e) && $('runs')) $('runs').innerHTML=`<div class="alert err">${icon('alert')}<span>Failed to load runs: ${esc(e.message)}</span></div>`; }
+    }
+    function renderRunHistory(){
+      const runs=state.jobRuns, host=$('runs'); if(!host) return;
+      // Keep keyboard focus on the same row across re-renders.
+      const fr=document.activeElement && document.activeElement.closest ? document.activeElement.closest('.runrow') : null;
+      const focusId = fr && host.contains(fr) ? fr.dataset.run : null;
+      $('runsCount').textContent = runs.length ? (runs.length>=20?'latest 20':runs.length+' run'+(runs.length===1?'':'s')) : '';
+      const err = state.watchErr ? `<div class="alert err mid" role="alert">${icon('alert')}<span>Live updates stopped: ${esc(state.watchErr)}</span>
+        <button type="button" class="btn sm" data-act="retry-watch">Retry</button></div>` : '';
+      host.innerHTML = err + (runs.length ? `<div class="card" style="box-shadow:none"><div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Status</th><th>Run</th><th class="hide-sm">Trigger</th><th title="Start time (queue time while queued)">When</th><th class="r">Duration</th></tr></thead>
+        <tbody>${runs.map(r=>`<tr class="click runrow${r.id===state.selectedRunId?' sel':''}" data-run="${esc(r.id)}" tabindex="0">
+          <td>${statusBadge(r.status)}</td><td class="mono muted">${esc(r.id.slice(0,8))}</td>
+          <td class="hide-sm"><span class="badge plain ${esc(r.trigger||'unknown')}">${esc(r.trigger||'—')}</span></td>
+          <td class="nowrap">${timeCell(runTime(r))}</td><td class="r num muted">${fmtDur(r)}</td></tr>`).join('')}
+        </tbody></table></div></div>` : '<div class="muted">No runs recorded yet.</div>');
+      if(focusId){ const t=host.querySelector('.runrow[data-run="'+CSS.escape(focusId)+'"]'); if(t) t.focus(); }
     }
     function showRun(id){
       const r=state.jobRuns.find(x=>x.id===id); if(!r) return;
       state.selectedRunId=id;
       $$('.runrow').forEach(tr=>tr.classList.toggle('sel', tr.dataset.run===id));
       flow.applyRun(r); renderRunOutput(r);
+      watchIfLive();
       $('runOutput').scrollIntoView({behavior:'smooth', block:'nearest'});
     }
 
@@ -1492,6 +1653,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const pa=ev.target.closest('button[data-pa]'); if(pa){ ev.stopPropagation(); pluginAct(pa, pa.dataset.name, pa.dataset.pa); return; }
       const br=ev.target.closest('button[data-br]'); if(br){ resetBreaker(br, br.dataset.br); return; }
       const rb=ev.target.closest('button[data-act="retry-breakers"]'); if(rb){ retryBreakers(rb); return; }
+      const cr=ev.target.closest('button[data-act="cancel-run"]'); if(cr){ cancelRun(cr, cr.dataset.run); return; }
+      const rw=ev.target.closest('button[data-act="retry-watch"]'); if(rw){ state.watchErr=null; if(state.currentJob) loadRuns(state.currentJob.id); return; }
       if(ev.target.closest('a')) return;
       const nj=ev.target.closest('[data-act="new"]'); if(nj){ openEditor(null); return; }
       const pr=ev.target.closest('tr[data-plugin]'); if(pr){ openPluginDrawer(pr.dataset.plugin); return; }

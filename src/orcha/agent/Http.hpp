@@ -24,12 +24,14 @@ namespace Orcha::Agent {
     namespace status {
         inline constexpr int OK = 200;
         inline constexpr int Created = 201;
+        inline constexpr int Accepted = 202;
         inline constexpr int BadRequest = 400;
         inline constexpr int Unauthorized = 401;
         inline constexpr int NotFound = 404;
         inline constexpr int MethodNotAllowed = 405;
         inline constexpr int Conflict = 409;
         inline constexpr int UnsupportedMediaType = 415;
+        inline constexpr int TooManyRequests = 429;
         inline constexpr int InternalError = 500;
         inline constexpr int ServiceUnavailable = 503;
     } // namespace status
@@ -84,6 +86,9 @@ namespace Orcha::Agent {
         int status = status::OK;
         std::string content_type = "text/plain; charset=utf-8";
         std::string body;
+        /// Extra response headers (e.g. Location, Retry-After). Server and
+        /// Content-Type are set by the server and must not be repeated here.
+        std::vector<std::pair<std::string, std::string>> headers;
 
         HttpResponse() = default;
         HttpResponse(int code, std::string ct, std::string b)
@@ -95,6 +100,16 @@ namespace Orcha::Agent {
         }
         static HttpResponse html(int code, std::string body) {
             return HttpResponse(code, "text/html; charset=utf-8", std::move(body));
+        }
+
+        /// Add a header; returns the response for chaining.
+        HttpResponse& with_header(std::string name, std::string value) & {
+            headers.emplace_back(std::move(name), std::move(value));
+            return *this;
+        }
+        HttpResponse&& with_header(std::string name, std::string value) && {
+            headers.emplace_back(std::move(name), std::move(value));
+            return std::move(*this);
         }
     };
 

@@ -18,6 +18,7 @@
 #include "../core/CircuitBreaker.hpp"
 #include "../core/CommandRegistry.hpp"
 #include "../jobs/JobService.hpp"
+#include "../jobs/RunQueue.hpp"
 #include "../jobs/SqliteJobStore.hpp"
 #include "../workflow/WorkflowEngine.hpp"
 
@@ -242,7 +243,9 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_rollback_on_timeout\n";
     }
 
-    inline void test_rollback_skipped_when_cancelled() {
+    // Server shutdown (EngineOptions::cancel) skips rollback: the process is
+    // going away and compensations could not finish anyway.
+    inline void test_rollback_skipped_on_shutdown() {
         using namespace resilience;
         Fixture fx;
         std::stop_source shutdown;
@@ -260,9 +263,33 @@ namespace Orcha::Tests {
         auto result = running.get();
 
         ORCHA_ASSERT_EQ(rollback_status(result.step_results[0]), std::string("skipped"));
-        ORCHA_ASSERT_EQ(result.step_results[0].rollback->message, std::string("run cancelled"));
+        ORCHA_ASSERT_EQ(result.step_results[0].rollback->message, std::string("server shutting down"));
         ORCHA_ASSERT(fx.log->get().empty());
-        std::cout << "[PASS] test_rollback_skipped_when_cancelled\n";
+        std::cout << "[PASS] test_rollback_skipped_on_shutdown\n";
+    }
+
+    // A user cancel (the run's own stop token, as RunQueue installs it) rolls
+    // back the completed steps like any other failure.
+    inline void test_rollback_on_user_cancel() {
+        using namespace resilience;
+        Fixture fx;
+        std::stop_source user_cancel;
+        auto engine = fx.engine();
+
+        auto running = std::async(std::launch::async, [&] {
+            Workflow::ExecutionContext::Scope scope({{}, user_cancel.get_token()});
+            return run(engine, Json{{"rollback", "reverse"},
+                                    {"steps", Json::array({step("undoable", {{"id", "A"}}),
+                                                           step("wait", {{"ms", 10000}})})}});
+        });
+        std::this_thread::sleep_for(100ms);
+        user_cancel.request_stop();
+        auto result = running.get();
+
+        ORCHA_ASSERT(!result.success);
+        ORCHA_ASSERT_EQ(rollback_status(result.step_results[0]), std::string("rolled_back"));
+        ORCHA_ASSERT(fx.log->get() == (std::vector<std::string>{"A"}));
+        std::cout << "[PASS] test_rollback_on_user_cancel\n";
     }
 
     inline void test_rollback_follows_completion_order() {
@@ -297,18 +324,20 @@ namespace Orcha::Tests {
 
         Fixture fx;
         auto engine = std::make_shared<Workflow::WorkflowEngine>(fx.registry);
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(store, [engine] { return engine; });
+        auto runs = std::make_shared<Jobs::RunQueue>(service, Jobs::RunQueue::Options{1, 8});
 
-        // POST /workflow -> 400, nothing executed.
-        Agent::Routes::WorkflowRoute route(engine);
+        // POST /workflow -> 400, nothing queued or executed.
+        Agent::Routes::WorkflowRoute route(runs);
         auto resp = route.handle(json_request("POST", "/workflow",
             Json{{"rollback", "sideways"}, {"steps", Json::array({step("flaky", {{"n", 1}})})}}));
         ORCHA_ASSERT_EQ(resp.status, Agent::status::BadRequest);
         ORCHA_ASSERT_EQ(fx.flaky->calls.load(), 0);
+        ORCHA_ASSERT(store->list_runs(std::nullopt, 10).empty());
 
         // Saving a job validates the definition too.
-        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
-        auto service = std::make_shared<Jobs::JobService>(store, [engine] { return engine; });
-        Agent::Routes::JobRoute jobs(service);
+        Agent::Routes::JobRoute jobs(service, runs);
         auto created = jobs.handle(json_request("POST", "/api/jobs",
             Json{{"name", "bad"}, {"definition", {{"circuit_breaker", 1}, {"steps", Json::array()}}}}));
         ORCHA_ASSERT_EQ(created.status, Agent::status::BadRequest);
@@ -461,7 +490,8 @@ workflow:
         test_no_rollback_unless_configured();
         test_rollback_reverse_halts_best_effort_continues();
         test_rollback_on_timeout();
-        test_rollback_skipped_when_cancelled();
+        test_rollback_skipped_on_shutdown();
+        test_rollback_on_user_cancel();
         test_rollback_follows_completion_order();
         test_invalid_resilience_settings_rejected();
         test_circuit_breaker_opens_across_runs();

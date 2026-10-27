@@ -43,6 +43,7 @@
 #include "jobs/JobService.hpp"
 #include "jobs/RunJobCommand.hpp"
 #include "jobs/JobScheduler.hpp"
+#include "jobs/RunQueue.hpp"
 
 // Utils
 #include "utils/Logger.hpp"
@@ -100,7 +101,7 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     Workflow::EngineOptions engine_options;
     engine_options.default_step_timeout = std::chrono::milliseconds(
         std::max<int64_t>(0, config.get_int("workflow.default_timeout_ms", 0)));
-    engine_options.cancel = std::move(run_cancel);
+    engine_options.cancel = run_cancel;
 
     // Circuit breakers are per command and shared by every engine, so their
     // state persists across runs; workflows opt in with "circuit_breaker": true.
@@ -123,24 +124,41 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
     services.register_factory<Workflow::IWorkflowEngine>(
         std::function<std::shared_ptr<Workflow::IWorkflowEngine>()>(engine_factory));
 
-    // Jobs store + service (Phase 2). A bad DB path must not crash startup;
-    // if the store cannot open, the jobs feature is simply unavailable.
+    // Jobs store. Every run is recorded, so the server always needs one: if
+    // the configured database cannot be opened, fall back to an in-memory
+    // store (jobs and run history then do not survive a restart).
     auto jobs_db = config.get_string("jobs.db_path", "./orcha-jobs.db");
+    std::shared_ptr<Jobs::SqliteJobStore> job_store;
     try {
-        auto job_store = std::make_shared<Jobs::SqliteJobStore>(jobs_db, logger_ptr);
-        services.register_singleton<Jobs::IJobStore>(job_store);
-        auto job_service = std::make_shared<Jobs::JobService>(
-            job_store, engine_factory, logger_ptr);
-        services.register_singleton<Jobs::JobService>(job_service);
-
-        // Register the built-in run_job command so workflows can invoke other
-        // jobs as sub-workflows. Holds a weak_ptr to JobService (no ref cycle).
-        if (!registry->register_command(
-                std::make_shared<Jobs::RunJobCommand>(job_service))) {
-            logger.warn("Could not register the 'run_job' command");
-        }
+        job_store = std::make_shared<Jobs::SqliteJobStore>(jobs_db, logger_ptr);
     } catch (const std::exception& ex) {
-        logger.error(std::string("Job store unavailable (jobs disabled): ") + ex.what());
+        logger.error(std::string("Job store unavailable: ") + ex.what() +
+                     "; using an in-memory store - jobs and run history will not persist");
+        job_store = std::make_shared<Jobs::SqliteJobStore>(":memory:", logger_ptr);
+    }
+    job_store->set_max_runs(static_cast<size_t>(
+        std::max<int64_t>(0, config.get_int("jobs.max_runs", 10000))));
+    services.register_singleton<Jobs::IJobStore>(job_store);
+    auto job_service = std::make_shared<Jobs::JobService>(
+        job_store, engine_factory, logger_ptr, run_cancel);
+    services.register_singleton<Jobs::JobService>(job_service);
+
+    // Every top-level run (API, dashboard, scheduler) is admitted through the
+    // bounded run queue and executed by its own runner threads.
+    Jobs::RunQueue::Options queue_options;
+    queue_options.max_concurrent = static_cast<size_t>(
+        std::max<int64_t>(1, config.get_int("workflow.max_concurrent_runs", 4)));
+    queue_options.max_queued = static_cast<size_t>(
+        std::max<int64_t>(0, config.get_int("workflow.max_queued_runs", 64)));
+    services.register_singleton<Jobs::RunQueue>(
+        std::make_shared<Jobs::RunQueue>(job_service, queue_options, logger_ptr));
+
+    // Register the built-in run_job command so workflows can invoke other
+    // jobs as sub-workflows (inline, in the parent's runner slot). Holds a
+    // weak_ptr to JobService (no ref cycle).
+    if (!registry->register_command(
+            std::make_shared<Jobs::RunJobCommand>(job_service))) {
+        logger.warn("Could not register the 'run_job' command");
     }
 }
 
@@ -251,16 +269,16 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     auto admin_config = Config::AdminConfig::from_config(config);
     auto logger = services.get<Utils::ILogger>();
     auto registry = services.get<Core::ICommandRegistry>();
-    auto engine = services.get<Workflow::IWorkflowEngine>();
+    auto runs = services.get<Jobs::RunQueue>();
     auto plugins = services.get<Core::PluginManager>();
     auto discovery = services.get<Core::IPluginDiscovery>();
-    auto job_service = services.try_get<Jobs::JobService>(); // may be null if store failed
+    auto job_service = services.get<Jobs::JobService>();
     auto denylist = services.try_get<Core::IPluginDenylist>();
     auto circuit_breakers = services.try_get<Core::CircuitBreakerRegistry>();
 
     // Create agent with injected dependencies (including the admin dashboard).
     Agent::CommandAgent agent(
-        registry, engine, logger,
+        registry, runs, logger,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
@@ -274,13 +292,23 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         return 1;
     }
 
+    // Runs a previous server left queued/running can never finish now. Done
+    // only once this server owns the port (a second instance that failed to
+    // bind must not touch the live one's runs), and never to this process's
+    // own runs.
+    if (const auto n = job_service->store()->mark_interrupted_runs(
+            "Interrupted: the server stopped before the run finished"); n > 0) {
+        logger->warn("Marked " + std::to_string(n) +
+                     " unfinished run(s) from a previous server as interrupted");
+    }
+
     // Cron scheduler (Phase 3): fire enabled jobs whose schedule_cron is due.
     std::unique_ptr<Jobs::JobScheduler> scheduler;
     const bool scheduler_enabled = config.get_bool("jobs.scheduler_enabled", true);
     const auto scheduler_tick =
         std::chrono::seconds(config.get_int("jobs.scheduler_tick_seconds", 30));
-    if (job_service && scheduler_enabled) {
-        scheduler = std::make_unique<Jobs::JobScheduler>(job_service, logger, scheduler_tick);
+    if (scheduler_enabled) {
+        scheduler = std::make_unique<Jobs::JobScheduler>(job_service, runs, logger, scheduler_tick);
         scheduler->start();
     }
 
@@ -290,7 +318,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
               << ":" << server_config.port << "/\n";
     std::cout << "[Orcha] Available endpoints:\n";
     std::cout << "  GET  /          - Health check\n";
-    std::cout << "  POST /workflow  - Execute workflow"
+    std::cout << "  POST /workflow  - Submit a workflow run (202; poll /workflow/runs/{id})"
               << (!server_config.api_token.empty() ? " (Bearer token)"
                   : server_config.is_loopback() ? " (local clients only)"
                   : " (DISABLED: set server.api_token)") << "\n";
@@ -301,9 +329,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
                   << (admin_config.auth_required ? " (Basic auth)" : "") << "\n";
         std::cout << "  *    /api/plugins - Plugin admin API\n";
         std::cout << "  *    /api/circuit-breakers - Circuit breaker state/reset\n";
-        if (job_service) {
-            std::cout << "  *    /api/jobs    - Jobs admin API\n";
-        }
+        std::cout << "  *    /api/jobs, /api/runs - Jobs and run history admin API\n";
     } else {
         std::cout << "  (admin dashboard disabled - see logs)\n";
     }
@@ -347,10 +373,13 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     logger->info("Shutdown requested (" + shutdown_reason + ")");
 
     logger->info("Shutting down Orcha...");
-    // Cancel in-flight workflow runs first so the scheduler and the HTTP
-    // worker pool are not left waiting for long-running steps.
-    run_cancel.request_stop();
+    // Stop submitting; cancel every run (engines then skip rollback); stop the
+    // run queue (queued runs are cancelled, runners joined); then drain the
+    // HTTP server. Cancelling before runs->stop() makes the runs see a
+    // shutdown, not a user cancel, so they are not rolled back.
     if (scheduler) scheduler->stop();
+    run_cancel.request_stop();
+    runs->stop();
     agent.stop();
 
     std::cout << "[Orcha] Shutdown complete.\n";

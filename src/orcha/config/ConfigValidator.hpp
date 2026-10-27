@@ -144,7 +144,7 @@ namespace Orcha::Config {
             }
 
             // Server host validation
-            if (auto host = config.get_string("server.host")) {
+            if (const auto host = config.get_string("server.host")) {
                 if (host->empty()) {
                     result.add_error("server.host",
                         "Server host cannot be empty",
@@ -161,7 +161,7 @@ namespace Orcha::Config {
             }
 
             // Worker threads validation
-            if (auto workers = config.get_int("server.worker_threads")) {
+            if (const auto workers = config.get_int("server.worker_threads")) {
                 if (*workers < 1) {
                     result.add_error("server.worker_threads",
                         "Worker threads must be at least 1",
@@ -247,6 +247,29 @@ namespace Orcha::Config {
                     result.add_warning("workflow.default_timeout_ms",
                         "Very short timeout (" + std::to_string(*timeout) + "ms) may cause frequent failures");
                 }
+            }
+
+            // Run queue (every top-level run is admitted through it)
+            if (auto v = config.get_int("workflow.max_concurrent_runs")) {
+                if (*v < 1) {
+                    result.add_error("workflow.max_concurrent_runs", "Must be at least 1");
+                } else if (*v > 256) {
+                    result.add_warning("workflow.max_concurrent_runs",
+                        "Each concurrent run uses its own thread (" + std::to_string(*v) + " configured)",
+                        "Runs mostly wait on child processes and network; a few dozen is usually plenty");
+                }
+            }
+            if (auto v = config.get_int("jobs.max_runs"); v && *v < 0) {
+                result.add_error("jobs.max_runs", "Cannot be negative",
+                                 "Use 0 to keep every run");
+            }
+            if (auto v = config.get_int("workflow.max_queued_runs"); v && *v < 0) {
+                result.add_error("workflow.max_queued_runs", "Cannot be negative",
+                                 "Use 0 to reject runs whenever every runner is busy");
+            }
+            if (auto v = config.get_int("server.max_wait_ms"); v && *v < 0) {
+                result.add_error("server.max_wait_ms", "Cannot be negative",
+                                 "Use 0 to never wait (POST /workflow always answers 202)");
             }
 
             // Circuit breaker thresholds (workflows opt in with "circuit_breaker": true)

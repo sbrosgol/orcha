@@ -16,9 +16,11 @@ namespace Orcha::Jobs {
     }
 
     JobScheduler::JobScheduler(std::shared_ptr<JobService> service,
+                               std::shared_ptr<RunQueue> runs,
                                std::shared_ptr<Utils::ILogger> logger,
                                std::chrono::seconds tick)
         : service_(std::move(service))
+        , runs_(std::move(runs))
         , logger_(std::move(logger))
         , tick_(tick.count() > 0 ? tick : std::chrono::seconds(30)) {}
 
@@ -111,9 +113,36 @@ namespace Orcha::Jobs {
                 last_fired_[job.id] = key;
             }
 
-            if (logger_) logger_->info("Scheduler firing job '" + job.name + "' (" + key + ")");
-            (void)service_->run_job(job.id, "schedule");
-            ++fired;
+            auto submitted = runs_->submit(job.id, "schedule", job.definition, job.name);
+            if (submitted.is_ok()) {
+                if (logger_) logger_->info("Scheduler queued job '" + job.name + "' (" + key + ")");
+                ++fired;
+                continue;
+            }
+
+            // Rejected: record it so the missed run is visible in the history
+            // instead of silently lost.
+            RunRecord skipped;
+            skipped.job_id = job.id;
+            skipped.trigger = "schedule";
+            skipped.status = run_status::Skipped;
+            skipped.finished_at = now_iso_utc();
+            switch (submitted.error()) {
+                case RunQueue::SubmitError::QueueFull:
+                    skipped.error = "Skipped: the run queue was full";
+                    break;
+                case RunQueue::SubmitError::ShuttingDown:
+                    skipped.error = "Skipped: the server was shutting down";
+                    break;
+                case RunQueue::SubmitError::StoreError:
+                    // Recording the skip will most likely fail too; log loudly.
+                    skipped.error = "Skipped: the run could not be stored";
+                    if (logger_) logger_->error("Scheduler could not store a run of job '" +
+                                                job.name + "'");
+                    break;
+            }
+            (void)service_->store()->insert_run(skipped);
+            if (logger_) logger_->warn("Scheduler skipped job '" + job.name + "': " + skipped.error);
         }
         return fired;
     }

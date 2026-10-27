@@ -4,14 +4,16 @@
 // Workflow execution is synchronous per thread, but engines hand steps to other
 // threads (`parallel: true` steps, DAG levels). State that must follow the
 // logical run rather than the OS thread -- the stack of job ids used by
-// `run_job` for cycle/depth detection, and the run's cancellation token --
-// lives here. Engines capture() it
+// `run_job` for cycle/depth detection, the run's cancellation token, and the
+// deadline a nested run inherits from the step that started it -- lives here. Engines capture() it
 // before spawning a task and the task installs it with a Scope, so a sub-job
 // started on a worker thread still sees its ancestors.
 //
 
 #pragma once
 
+#include <chrono>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -22,9 +24,13 @@ namespace Orcha::Workflow {
     class ExecutionContext {
     public:
         /// Snapshot of the calling thread's context, for handing to another thread.
+        using Clock = std::chrono::steady_clock;
+
         struct Snapshot {
             std::vector<std::string> job_stack;
             std::stop_token stop;   ///< Cancellation of the enclosing run, if any.
+            /// Deadline of the step that started this (nested) run, if any.
+            std::optional<Clock::time_point> deadline;
         };
 
         [[nodiscard]] static Snapshot capture() { return current(); }
@@ -33,6 +39,27 @@ namespace Orcha::Workflow {
         [[nodiscard]] static const std::stop_token& stop_token() {
             return current().stop;
         }
+
+        /// Deadline inherited from the calling step (nested run_job), if any.
+        [[nodiscard]] static std::optional<Clock::time_point> deadline() {
+            return current().deadline;
+        }
+
+        /**
+         * @brief RAII: set the deadline a nested run inherits (the calling
+         *        step's), restoring the previous one after.
+         */
+        class DeadlineScope {
+        public:
+            explicit DeadlineScope(std::optional<Clock::time_point> deadline)
+                : saved_(std::exchange(current().deadline, deadline)) {}
+            ~DeadlineScope() { current().deadline = saved_; }
+            DeadlineScope(const DeadlineScope&) = delete;
+            DeadlineScope& operator=(const DeadlineScope&) = delete;
+
+        private:
+            std::optional<Clock::time_point> saved_;
+        };
 
         /**
          * @brief RAII: make @p stop the run's cancellation token on this thread

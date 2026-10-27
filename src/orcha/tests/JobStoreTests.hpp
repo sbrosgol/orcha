@@ -15,6 +15,7 @@
 #include "TestFixtures.hpp"   // ORCHA_ASSERT (throws on failure, NDEBUG-proof)
 #include "../jobs/SqliteJobStore.hpp"
 #include "../jobs/JobService.hpp"
+#include "../jobs/RunQueue.hpp"
 #include "../jobs/RunJobCommand.hpp"
 #include "../jobs/JobScheduler.hpp"
 #include "../agent/routes/JobRoute.hpp"
@@ -195,7 +196,8 @@ namespace Orcha::Tests {
         noon.schedule_cron = "0 12 * * *"; noon.definition = def;
         ORCHA_ASSERT(store->create_job(noon));
 
-        Jobs::JobScheduler sched(service, nullptr, std::chrono::seconds(30));
+        auto runs_queue = std::make_shared<Jobs::RunQueue>(service, Jobs::RunQueue::Options{1, 64});
+        Jobs::JobScheduler sched(service, runs_queue, nullptr, std::chrono::seconds(30));
 
         auto utc = [](int y,int mo,int d,int h,int mi){
             std::tm t{}; t.tm_year=y-1900; t.tm_mon=mo-1; t.tm_mday=d; t.tm_hour=h; t.tm_min=mi;

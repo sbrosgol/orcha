@@ -29,6 +29,10 @@ namespace Orcha::Jobs {
          */
         explicit SqliteJobStore(const std::string& db_path,
                                 std::shared_ptr<Utils::ILogger> logger = nullptr);
+
+        /// Keep at most @p max finished runs (0 = unlimited); pruned
+        /// periodically on insert.
+        void set_max_runs(size_t max);
         ~SqliteJobStore() override;
 
         SqliteJobStore(const SqliteJobStore&) = delete;
@@ -45,16 +49,29 @@ namespace Orcha::Jobs {
 
         // IJobStore - runs
         [[nodiscard]] bool insert_run(RunRecord& run) override;
+        [[nodiscard]] bool update_run(const RunRecord& run) override;
+        size_t mark_interrupted_runs(const std::string& reason) override;
+        size_t prune_runs(size_t keep) override;
+        [[nodiscard]] bool persistent() const override { return persistent_; }
         [[nodiscard]] std::vector<RunRecord> list_runs(
             const std::optional<std::string>& job_id, size_t limit) const override;
         [[nodiscard]] std::optional<RunRecord> get_run(const std::string& id) const override;
 
     private:
         void init_schema();
+        void migrate_schema();
+
+        size_t prune_runs_locked(size_t keep);
 
         sqlite3* db_ = nullptr;
         std::shared_ptr<Utils::ILogger> logger_;
         mutable std::mutex mutex_;
+        /// Identifies this process's runs (runs.owner), so startup recovery
+        /// never touches runs another live process is executing.
+        std::string owner_;
+        bool persistent_ = true;
+        size_t max_runs_ = 0;
+        size_t inserts_since_prune_ = 0;
     };
 
 } // namespace Orcha::Jobs

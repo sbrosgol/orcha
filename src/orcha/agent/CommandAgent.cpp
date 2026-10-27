@@ -20,7 +20,7 @@ namespace Orcha::Agent {
 
     CommandAgent::CommandAgent(
         std::shared_ptr<Core::ICommandRegistry> registry,
-        std::shared_ptr<Workflow::IWorkflowEngine> engine,
+        std::shared_ptr<Jobs::RunQueue> runs,
         std::shared_ptr<Utils::ILogger> logger,
         std::shared_ptr<Core::PluginManager> plugins,
         std::shared_ptr<Core::IPluginDiscovery> discovery,
@@ -32,7 +32,7 @@ namespace Orcha::Agent {
         Config::ServerConfig server,
         std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers)
         : registry_(std::move(registry))
-        , engine_(std::move(engine))
+        , runs_(std::move(runs))
         , logger_(std::move(logger))
         , plugins_(std::move(plugins))
         , discovery_(std::move(discovery))
@@ -68,11 +68,16 @@ namespace Orcha::Agent {
 
         // Health check
         router_.register_handler(
-            std::make_shared<Routes::HealthRoute>(logger_));
+            std::make_shared<Routes::HealthRoute>(
+                logger_, !jobs_ || jobs_->store()->persistent()));
 
-        // Workflow execution (records each ad-hoc run when a job service is present)
+        // Workflow execution API: runs are queued and recorded by the run queue
         router_.register_handler(
-            std::make_shared<Routes::WorkflowRoute>(engine_, logger_, jobs_));
+            std::make_shared<Routes::WorkflowRoute>(runs_, logger_, Routes::WorkflowWaitOptions{
+                std::chrono::milliseconds(server_config_.max_wait_ms),
+                // Leave at least one HTTP worker free for status polls and admin
+                // (with a single worker, nobody may wait).
+                server_config_.worker_threads > 1 ? server_config_.worker_threads - 1 : 0}));
 
         // Swagger and commands
         router_.register_handler(
@@ -117,7 +122,7 @@ namespace Orcha::Agent {
 
         // Jobs API (CRUD + run history). Gated by the same Basic-auth middleware.
         if (jobs_) {
-            router_.register_handler(std::make_shared<Routes::JobRoute>(jobs_, logger_));
+            router_.register_handler(std::make_shared<Routes::JobRoute>(jobs_, runs_, logger_));
         }
         if (circuit_breakers_) {
             router_.register_handler(

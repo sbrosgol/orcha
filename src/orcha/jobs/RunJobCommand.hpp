@@ -49,6 +49,14 @@ namespace Orcha::Jobs {
         }
 
         Orcha::Json execute(const Orcha::Json& params) override {
+            return execute_with_control(params, {});
+        }
+
+        // The sub-job runs inline in this step, so it inherits the step's
+        // deadline (and, through the ExecutionContext, its cancellation).
+        Orcha::Json execute_with_control(const Orcha::Json& params,
+                                         const Core::ExecutionControl& control) override {
+            Workflow::ExecutionContext::DeadlineScope inherit(control.deadline());
             auto svc = service_.lock();
             if (!svc) {
                 throw std::runtime_error("run_job: job service is unavailable");

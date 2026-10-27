@@ -3,12 +3,15 @@
 //
 // Ticks on a background thread; on each tick it evaluates every enabled job
 // that has a schedule_cron and fires those whose expression matches the current
-// UTC minute (de-duplicated so a job fires at most once per minute).
+// UTC minute (de-duplicated so a job fires at most once per minute). Firing
+// submits the run to the RunQueue, so a long job never delays the scheduler or
+// other jobs; a run the queue rejects is recorded as "skipped".
 //
 
 #pragma once
 
 #include "JobService.hpp"
+#include "RunQueue.hpp"
 #include "../utils/ILogger.hpp"
 
 #include <atomic>
@@ -28,6 +31,7 @@ namespace Orcha::Jobs {
     class JobScheduler {
     public:
         JobScheduler(std::shared_ptr<JobService> service,
+                     std::shared_ptr<RunQueue> runs,
                      std::shared_ptr<Utils::ILogger> logger,
                      std::chrono::seconds tick = std::chrono::seconds(30));
         ~JobScheduler();
@@ -43,7 +47,7 @@ namespace Orcha::Jobs {
 
         /**
          * @brief Evaluate all jobs against @p now_utc and fire those that are due.
-         * @return Number of jobs fired this evaluation.
+         * @return Number of runs submitted (not counting skipped ones).
          *
          * Public for testability; also called by the background thread each tick.
          * A job fires at most once per (job, minute) via internal de-duplication.
@@ -54,6 +58,7 @@ namespace Orcha::Jobs {
         void loop(std::stop_token stop);
 
         std::shared_ptr<JobService> service_;
+        std::shared_ptr<RunQueue> runs_;
         std::shared_ptr<Utils::ILogger> logger_;
         std::chrono::seconds tick_;
 

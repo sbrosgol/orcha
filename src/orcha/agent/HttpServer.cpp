@@ -211,6 +211,9 @@ namespace Orcha::Agent {
             response_.version(version);
             response_.set(http::field::server, "Orcha");
             response_.set(http::field::content_type, hres.content_type);
+            for (const auto& [name, value] : hres.headers) {
+                response_.set(name, value);
+            }
             response_.keep_alive(false);
             response_.body() = std::move(hres.body);
             response_.prepare_payload();
