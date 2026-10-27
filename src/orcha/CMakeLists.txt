@@ -175,7 +175,7 @@ add_executable(test_new_features
 )
 # jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp;
 # agent brings the HTTP server (Boost.Beast) for the shutdown tests.
-target_link_libraries(test_new_features PRIVATE jobs config agent)
+target_link_libraries(test_new_features PRIVATE agent config)   # agent brings jobs
 
 # Test-only plugin used by the registry lifetime regression test (a command that
 # is still executing when it is unregistered).

@@ -46,7 +46,7 @@ namespace Orcha::Agent::Routes {
 
     /**
      * @class WorkflowRoute
-     * @brief Handles the workflow execution API (POST /workflow, /workflow/runs/*).
+     * @brief Handles the workflow execution API (POST /workflow, /workflow/runs/{id}[/cancel]).
      */
     class WorkflowRoute : public IRouteHandler {
     public:
