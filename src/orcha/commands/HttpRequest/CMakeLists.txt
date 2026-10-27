@@ -10,4 +10,4 @@ find_package(Threads REQUIRED)
 add_library(HttpRequest SHARED HttpRequest.cpp)
 target_include_directories(HttpRequest PRIVATE ${CMAKE_SOURCE_DIR}/core)
 target_link_libraries(HttpRequest PRIVATE
-        Boost::system Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)

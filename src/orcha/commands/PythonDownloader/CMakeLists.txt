@@ -10,4 +10,4 @@ find_package(Threads REQUIRED)
 add_library(PythonDownloader SHARED PythonDownloader.cpp)
 target_include_directories(PythonDownloader PRIVATE ${CMAKE_SOURCE_DIR}/core)
 target_link_libraries(PythonDownloader PRIVATE
-        Boost::system Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)

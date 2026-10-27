@@ -18,4 +18,4 @@ add_library(PowerShellDownloader SHARED PowerShellDownloader.cpp)
 target_include_directories(PowerShellDownloader PRIVATE ${CMAKE_SOURCE_DIR}/core ${CMAKE_SOURCE_DIR}/utils)
 
 target_link_libraries(PowerShellDownloader PRIVATE
-        Boost::system Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        Boost::url OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
