@@ -144,7 +144,7 @@ namespace Orcha::Config {
             }
 
             // Server host validation
-            if (auto host = config.get_string("server.host")) {
+            if (const auto host = config.get_string("server.host")) {
                 if (host->empty()) {
                     result.add_error("server.host",
                         "Server host cannot be empty",
@@ -161,7 +161,7 @@ namespace Orcha::Config {
             }
 
             // Worker threads validation
-            if (auto workers = config.get_int("server.worker_threads")) {
+            if (const auto workers = config.get_int("server.worker_threads")) {
                 if (*workers < 1) {
                     result.add_error("server.worker_threads",
                         "Worker threads must be at least 1",
