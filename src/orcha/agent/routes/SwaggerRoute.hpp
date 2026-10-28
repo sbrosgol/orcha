@@ -1289,14 +1289,15 @@ namespace Orcha::Agent::Routes {
             op["description"] =
                 "Installs into a new <plugins.upload.directory>/<name>-<id> directory and loads it. An uploaded "
                 "plugin with the same name is replaced; a bundled one is overridden (its files are not touched). "
-                "If the new version fails to load, the previous one is restored (rolled_back: true in the 422 body).";
+                "If the new version fails to load, the previous one is restored (rolled_back: true in the 422 body). "
+                "Installing an older version than the installed one needs the body {\"allow_downgrade\": true}.";
             op["tags"] = tag("Plugins");
             op["security"] = basic_auth_security();
             op["responses"] = {{"200", simple_response("{name, version, previous_version}")},
                                {"400", error_response("Staged files no longer match their signature")},
                                {"403", error_response("Plugin uploads are disabled, or the signing key is no longer allowed this plugin")},
                                {"404", error_response("No such upload")},
-                               {"409", error_response("Another plugin change is in progress, or a previous install did not finish (restart to roll it back)")},
+                               {"409", error_response("A downgrade that was not confirmed (\"requires\": \"allow_downgrade\"), another plugin change in progress, or an unfinished previous install")},
                                {"422", error_response("The plugin did not load (rolled_back says whether the previous version was restored)")},
                                {"500", error_response("The files could not be installed")}};
             return value{{"post", op}};

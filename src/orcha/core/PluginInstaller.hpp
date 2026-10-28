@@ -82,6 +82,9 @@ namespace Orcha::Core {
         PluginUploadErrorKind kind;
         std::string message;
         bool rolled_back = false;   ///< LoadFailed: the previous state is back in place
+        /// Set when the request may go ahead once confirmed: the install
+        /// option to send (today only "allow_downgrade").
+        std::string requires_confirmation;
     };
 
     /// The files of one upload, as sent.
@@ -149,8 +152,12 @@ namespace Orcha::Core {
         [[nodiscard]] Result<StagedPlugin, PluginUploadError> stage(const PluginUploadRequest& request);
         [[nodiscard]] std::vector<StagedPlugin> list() const;
         [[nodiscard]] Result<void, PluginUploadError> discard(const std::string& id, const std::string& user);
+        /// Installing an older version than the one installed (a downgrade)
+        /// is refused unless @p allow_downgrade: a deliberate rollback, never
+        /// an accident or a blindly replayed old upload.
         [[nodiscard]] Result<InstalledPlugin, PluginUploadError> install(const std::string& id,
-                                                                         const std::string& user);
+                                                                         const std::string& user,
+                                                                         bool allow_downgrade = false);
 
         /// Undo installs a previous process did not commit. Call at server
         /// start, before plugins are loaded; skipped if another process holds

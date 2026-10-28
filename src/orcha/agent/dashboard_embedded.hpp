@@ -173,7 +173,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .shell { display:grid; grid-template-columns:232px 1fr; min-height:100vh; }
     .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:4px;
                border-right:1px solid var(--line); background:var(--panel); padding:14px 12px; }
-    .brand { display:flex; align-items:center; gap:10px; padding:4px 8px 16px; }
+    .brand { display:flex; align-items:center; gap:10px; padding:6px 8px; margin:-2px 0 10px; border-radius:var(--radius-sm);
+             color:inherit; text-decoration:none; transition:background .12s; }
+    .brand:hover { background:var(--hover); text-decoration:none; }
     .logo { width:30px; height:30px; border-radius:8px; background:linear-gradient(135deg,#14b8a6,#0f766e);
             display:flex; align-items:center; justify-content:center; color:#fff; flex:none; box-shadow:var(--shadow-sm); }
     .logo svg { width:16px; height:16px; }
@@ -216,6 +218,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .page-hd h1 { margin:0; font-size:22px; font-weight:650; letter-spacing:-.015em; }
     .page-hd p { margin:4px 0 0; color:var(--muted); }
     .page-hd .sp { flex:1; }
+    /* Several header controls: centred on one line with each other (switch,
+       buttons), the group aligned with the title block like a single button. */
+    .page-hd .hd-actions { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
     .view { display:none; } .view.active { display:block; animation:fade .18s ease-out; }
     @keyframes fade { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
 
@@ -454,6 +459,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     pre.snippet { margin:0; padding:10px 12px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font:12px/1.5 var(--mono); overflow:auto; }
     .upfiles .size { color:var(--faint); font-size:12px; flex:none; }
     #upFt { flex-wrap:wrap; }
+    .confirm-row { display:flex; gap:8px; align-items:flex-start; margin:0 0 12px; font-size:13px; cursor:pointer; }
+    .confirm-row input { margin-top:2px; }
     .ok-text { color:var(--ok); display:inline-flex; align-items:center; gap:4px; vertical-align:bottom; }
     .hash { font:12px/1.5 var(--mono); word-break:break-all; color:var(--fg-2); }
 
@@ -599,8 +606,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
   <!-- ===================== App ===================== -->
   <div class="shell">
     <aside class="sidebar" aria-label="Primary">
-      <div class="brand"><div class="logo"><svg><use href="#i-logo"/></svg></div>
-        <div><div class="nm">Orcha</div><div class="sub">Admin console</div></div></div>
+      <a class="brand" id="brandLink" href="#/overview" aria-label="Orcha admin console: go to Overview" title="Go to Overview"><div class="logo"><svg><use href="#i-logo"/></svg></div>
+        <div><div class="nm">Orcha</div><div class="sub">Admin console</div></div></a>
       <div class="navlbl">Workspace</div>
       <nav class="nav">
         <a href="#/overview" data-nav="overview"><svg class="i"><use href="#i-home"/></svg>Overview</a>
@@ -660,9 +667,11 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         <section class="view" id="view-plugins" aria-labelledby="h-plugins">
           <div class="page-hd"><div><h1 id="h-plugins">Plugins</h1><p id="pluginsSub">Command plugins discovered in the plugin directory.</p></div>
             <span class="sp"></span>
-            <label class="switch" title="Automatically load, reload and unload plugins as files change on disk">
-              <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label>
-            <button class="btn" id="uploadPluginBtn"><svg class="i"><use href="#i-upload"/></svg>Upload plugin</button></div>
+            <div class="hd-actions">
+              <label class="switch" title="Automatically load, reload and unload plugins as files change on disk">
+                <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label>
+              <button class="btn" id="uploadPluginBtn"><svg class="i"><use href="#i-upload"/></svg>Upload plugin</button>
+            </div></div>
           <div id="stagedUploads"></div>
           <div class="card">
             <div class="toolbar">
@@ -1037,6 +1046,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('crumbs').innerHTML=html;
     }
     $('menuBtn').addEventListener('click', ()=>document.body.classList.toggle('nav-open'));
+    // Already on Overview: the hash does not change, so route() would not run.
+    $('brandLink').addEventListener('click', ()=>{
+      if(state.view==='overview'){ document.body.classList.remove('nav-open'); window.scrollTo({top:0}); }
+    });
     document.addEventListener('click', e => {
       if(document.body.classList.contains('nav-open') && !e.target.closest('.sidebar,#menuBtn')) document.body.classList.remove('nav-open');
     });
@@ -1389,12 +1402,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="k">Manifest</div><div class="v">${s.has_manifest?`${esc(String(s.parameters))} parameter${s.parameters===1?'':'s'} declared`:'None: the job editor will show raw JSON parameters'}</div>
             <div class="k">Uploaded</div><div class="v">${esc(s.uploaded_by)} · ${timeCell(s.uploaded_at)}</div>
           </div>
-          ${s.change==='downgrade'?`<div class="alert">${icon('warn')}<span>${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.</span></div>`:''}
+          ${s.change==='downgrade'?`<div class="alert">${icon('warn')}<span>${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.</span></div>
+          <label class="confirm-row"><input type="checkbox" id="upConfirm" /> Install ${esc(upVersion(s))} even though ${esc(s.replaces_version)} is installed</label>`:''}
           ${s.replaces_bundled&&replacing?`<div class="alert info">${icon('info')}<span>This overrides the bundled ${esc(s.replaces_version)}. The bundled files are not changed.</span></div>`:''}
           <div class="alert flush">${icon('warn')}<span>Installing loads this library into the Orcha server: its code runs with the server’s permissions. Install only plugins you trust.${replacing?` If ${esc(upVersion(s))} fails to load, ${esc(s.replaces_version)} is restored.`:''}</span></div>`;
         ft.innerHTML = `<button class="btn danger" id="upDiscard" aria-label="Discard upload">${icon('trash','ico')}${icon('loader','spin')}<span class="sr-sm">Discard</span></button><span class="sp"></span>
           <button class="btn" data-close>Keep for later</button>
-          <button class="btn primary" id="upInstall">${icon('loader','spin')}<span>${esc(upAction(s))}${s.install_crashed_at?' anyway':''}</span></button>`;
+          <button class="btn primary" id="upInstall" ${s.change==='downgrade'?'disabled':''}>${icon('loader','spin')}<span>${esc(upAction(s))}${s.install_crashed_at?' anyway':''}</span></button>`;
       } else if(up.statusErr){
         $('upTitle').textContent='Upload plugin';
         body.innerHTML = `<div class="alert err flush" role="alert">${icon('alert')}<span>Could not check whether this server accepts plugin uploads: ${esc(up.statusErr)}</span></div>`;
@@ -1472,7 +1486,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const s=up.staged; if(!s || btn.disabled) return;
       busy(btn,true); up.err='';
       try {
-        const r=await api('/api/plugins/_uploads/'+encodeURIComponent(s.id)+'/install', {method:'POST'});
+        const confirmed = !!($('upConfirm') && $('upConfirm').checked);
+        const r=await api('/api/plugins/_uploads/'+encodeURIComponent(s.id)+'/install', {method:'POST', json:{allow_downgrade:confirmed}});
         closeOverlay($('upload'));
         toast(r.previous_version!=null ? `${r.name}: ${r.previous_version} → ${r.version||'unversioned'}` : `Installed ${r.name} ${r.version||''}`.trim(), 'ok');
         manifests=null;
@@ -1480,8 +1495,14 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         renderPlugins(); renderStagedUploads(); renderNavCounts(); renderOverview();
       } catch(e){
         if(isAuthErr(e)) return;
-        upFail('Install failed: '+e.message);
         await Promise.allSettled([loadPluginsData(), loadUploadsData()]); renderPlugins(); renderStagedUploads();
+        // It became a downgrade since it was staged: show it as one (with the checkbox).
+        if(e.body && e.body.requires==='allow_downgrade' && $('upload').classList.contains('show')){
+          const fresh=((state.uploads&&state.uploads.uploads)||[]).find(x=>x.id===s.id);
+          if(fresh) up.staged=fresh;
+          up.err=e.message; renderUpload('#upConfirm'); return;
+        }
+        upFail('Install failed: '+e.message);
       } finally { const b=$('upInstall'); if(b) busy(b,false); }
     }
     async function discardStaged(id, btn){
@@ -1519,6 +1540,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       if(t.closest('#upSend')){ sendUpload(); return; }
       if(t.closest('#upRetry')){ up.statusErr=''; renderUpload(); refreshUploadStatus(); return; }
       const inst=t.closest('#upInstall'); if(inst){ installStaged(inst); return; }
+      if(t.closest('#upConfirm')){ $('upInstall').disabled = !$('upConfirm').checked; return; }
       const dis=t.closest('#upDiscard'); if(dis && up.staged){ discardStaged(up.staged.id, dis); }
     });
     $('upFile').addEventListener('change', e=>{ addUploadFiles(e.target.files); e.target.value=''; });
