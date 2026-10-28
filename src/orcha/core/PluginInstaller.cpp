@@ -535,7 +535,8 @@ namespace Orcha::Core {
     }
 
     Result<InstalledPlugin, PluginUploadError> PluginInstaller::install(const std::string& id,
-                                                                        const std::string& user) {
+                                                                        const std::string& user,
+                                                                        bool allow_downgrade) {
         if (!enabled()) return InstallResult::Err(err(Kind::Disabled, disabled_reason_));
         std::unique_lock lock(*lifecycle_, kLockWait);
         if (!lock.owns_lock()) return InstallResult::Err(err(Kind::Conflict, kBusy));
@@ -583,6 +584,20 @@ namespace Orcha::Core {
         // overridden, its files left alone.
         const auto& plugin_dir = options_.upload_directory;
         const auto existing = find_existing(staged->name);
+        // Against what is installed now, not at upload: a staged upload can
+        // have become a downgrade since.
+        const bool downgrade = existing && version_change(existing->meta.version, staged->version) == "downgrade";
+        if (downgrade && !allow_downgrade) {
+            if (logger_) {
+                logger_->warn("Plugin install refused: " + staged->name + " " + staged->version +
+                              " is older than the installed " + existing->meta.version +
+                              " and the downgrade was not confirmed (by " + user + ")");
+            }
+            auto e = err(Kind::Conflict, staged->version + " is older than the installed " + existing->meta.version +
+                                         "; confirm the downgrade to install it");
+            e.requires_confirmation = "allow_downgrade";
+            return InstallResult::Err(std::move(e));
+        }
         const bool was_loaded = existing && existing->loaded;
         const bool overrides_bundled = existing && !existing->uploaded;
         const auto old_lib = existing ? existing->meta.library_path : fs::path{};
@@ -725,7 +740,8 @@ namespace Orcha::Core {
             logger_->warn("Plugin installed: " + staged->name + " " + staged->version + " (sha256 " +
                           staged->sha256 + ", key " + staged->signer + ")" +
                           (existing ? (overrides_bundled ? " overriding the bundled " : " replacing ") +
-                                      existing->meta.version : std::string()) + " by " + user);
+                                      existing->meta.version : std::string()) +
+                          (downgrade ? " (confirmed downgrade)" : "") + " by " + user);
         }
         InstalledPlugin out{staged->name, staged->version, std::nullopt, overrides_bundled};
         if (existing) out.previous_version = existing->meta.version;

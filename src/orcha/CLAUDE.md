@@ -72,6 +72,8 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   Each trusted key has a name scope (`plugins` globs; none = any) and may
   override a bundled plugin only with `override_bundled: true`; both are
   checked at stage and again at install (`PluginInstaller::check_allowed`).
+  Installing an older version than the installed one is refused (409,
+  `requires: allow_downgrade`) unless the install request confirms it.
   Install/stage/discard and `PluginAdminRoute` enable/disable/reload share the
   installer's lifecycle `timed_mutex`. The signed message must stay identical in
   `PluginPackage::signing_message` and `scripts/orcha-plugin-sign.sh` (golden

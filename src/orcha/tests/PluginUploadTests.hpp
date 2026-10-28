@@ -665,6 +665,61 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_plugin_upload_key_scopes\n";
     }
 
+    inline void test_plugin_downgrade_needs_confirmation() {
+        using namespace upload_tests;
+        Env env;
+        const auto stage = [&](const std::string& version) {
+            auto r = env.installer->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", version)));
+            if (r.is_err()) throw std::runtime_error(r.error().message);
+            return r.value();
+        };
+        env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "1.0.0")));
+        const auto later = stage("1.5.0");                       // an upgrade when staged
+        env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.0.0")));
+
+        // Older than what is installed now: refused until confirmed, nothing changes.
+        auto refused = env.installer->install(later.id, "tester");
+        ORCHA_ASSERT(refused.is_err() && refused.error().kind == K::Conflict);
+        ORCHA_ASSERT(refused.error().requires_confirmation == "allow_downgrade");
+        ORCHA_ASSERT(refused.error().message == "1.5.0 is older than the installed 2.0.0; confirm the downgrade to install it");
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "2.0.0");
+        ORCHA_ASSERT(env.installer->list().size() == 1);
+        ORCHA_ASSERT(logged(*env.logger, "downgrade was not confirmed") == 1);
+
+        // Confirmed: installed, and audited as a confirmed downgrade.
+        auto confirmed = env.installer->install(later.id, "tester", /*allow_downgrade=*/true);
+        ORCHA_ASSERT(confirmed.is_ok() && confirmed.value().previous_version == "2.0.0");
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.5.0");
+        ORCHA_ASSERT(logged(*env.logger, "(confirmed downgrade)") == 1);
+
+        // Upgrades, reinstalls and unversioned uploads need no confirmation; the flag changes nothing for them.
+        ORCHA_ASSERT(env.installer->install(stage("1.6.0").id, "tester", true).is_ok());
+        ORCHA_ASSERT(env.installer->install(stage("1.6.0").id, "tester").is_ok());
+        auto unversioned = env.installer->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), std::nullopt));
+        ORCHA_ASSERT(unversioned.is_ok() && unversioned.value().change == "replace");
+
+        // Over HTTP: the 409 says what to confirm; the body must be well-formed.
+        Agent::Routes::PluginUploadRoute route(env.installer);
+        const auto post = [&](const std::string& path, const std::string& body) {
+            Agent::HttpRequest r;
+            r.method = "POST";
+            r.path = path;
+            r.body = body;
+            return route.handle(r);
+        };
+        const auto older = "/api/plugins/_uploads/" + stage("1.0.0").id + "/install";
+        auto conflict = post(older, "");
+        ORCHA_ASSERT_EQ(conflict.status, Agent::status::Conflict);
+        ORCHA_ASSERT(Json::parse(conflict.body)["requires"] == "allow_downgrade");
+        ORCHA_ASSERT_EQ(post(older, R"({"allow_downgrade":"yes"})").status, Agent::status::BadRequest);
+        ORCHA_ASSERT_EQ(post(older, "[true]").status, Agent::status::BadRequest);
+        ORCHA_ASSERT_EQ(post(older, R"({"allow_downgrade":false})").status, Agent::status::Conflict);
+        auto ok = post(older, R"({"allow_downgrade":true})");
+        ORCHA_ASSERT_EQ(ok.status, Agent::status::OK);
+        ORCHA_ASSERT(Json::parse(ok.body)["previous_version"] == "1.6.0");
+        std::cout << "[PASS] test_plugin_downgrade_needs_confirmation\n";
+    }
+
     // ========== HTTP ==========
 
     inline void test_plugin_upload_route() {
@@ -794,6 +849,7 @@ namespace Orcha::Tests {
         test_plugin_sources();
         test_plugin_upload_overrides_bundled();
         test_plugin_upload_key_scopes();
+        test_plugin_downgrade_needs_confirmation();
         test_plugin_upload_route();
 #endif
     }
