@@ -186,7 +186,7 @@ namespace Orcha::Jobs {
             if (logger_) logger_->info("Run " + run_id + " cancelled while queued");
             return CancelOutcome::Cancelled;
         }
-        auto run = get(run_id);
+        const auto run = get(run_id);
         if (!run) return CancelOutcome::NotFound;
         // Live but not ours: a nested run_job executing inside its parent's slot.
         return run_status::is_terminal(run->status) ? CancelOutcome::AlreadyFinished
