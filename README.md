@@ -204,9 +204,17 @@ breakers with `GET /api/circuit-breakers` and
 ## YAML Definitions
 
 Workflows and jobs are stored and executed as JSON. You can write them in
-YAML in these places (`POST /workflow` still takes JSON only):
+YAML in these places:
 
 - **CLI:** `orcha workflow.yaml` runs a YAML workflow.
+- **Workflow API:** `POST /workflow` accepts a YAML body sent with
+  `Content-Type: application/yaml` (or `application/x-yaml`, `text/yaml`):
+
+  ```bash
+  curl -X POST http://localhost:8080/workflow \
+       -H "Authorization: Bearer $ORCHA_SERVER_API_TOKEN" \
+       -H 'Content-Type: application/yaml' --data-binary @workflow.yaml
+  ```
 - **Admin job editor:** the *Workflow definition* field has **Visual builder**,
   **JSON** and **YAML** tabs, which stay in sync. The YAML tab checks the text
   as you type and points at the line and column of an error. **Import file**

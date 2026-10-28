@@ -59,7 +59,8 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 - **Placeholders** (`{{stepN.output.x}}`, `{{steps.name.output.x}}`) resolve in a
   single pass; never re-scan substituted text.
 - **Untrusted JSON** from HTTP goes through `parse_json_bounded()` (depth 64).
-  YAML bodies (YAML `Content-Type` on `/api/jobs`, `/api/definitions/convert`)
+  YAML bodies (YAML `Content-Type` on `/workflow`, `/api/jobs`,
+  `/api/definitions/convert`)
   go through `parse_request_body()` → `Utils::parse_yaml()` (depth 64, 100k
   values after alias expansion, one document).
 - **YAML ↔ JSON** lives only in `utils/YamlJson.cpp` (CLI, jobs API, convert
