@@ -18,6 +18,7 @@
 #include "ShutdownTests.hpp"
 #include "ResilienceTests.hpp"
 #include "RunQueueTests.hpp"
+#include "YamlTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -281,6 +282,10 @@ server:
 
         // Async runs
         run_run_queue_tests();
+
+        // YAML definitions
+        std::cout << "\n-- YAML definitions --\n";
+        run_yaml_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }
