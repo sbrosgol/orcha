@@ -131,11 +131,12 @@ namespace Orcha::Jobs {
             std::shared_ptr<Tracker> tracker;
         };
 
-        void runner(std::stop_token stop);
-        void complete(Tracker& tracker, RunRecord final);
+        void runner(const std::stop_token &stop);
+
+        static void complete(Tracker& tracker, RunRecord final);
         /// Persists a queued run as cancelled and completes its tracker.
         /// Called without mutex_ held (store I/O never runs under it).
-        void finish_cancelled(Entry& entry, const std::string& reason);
+        void finish_cancelled(Entry& entry, const std::string& reason) const;
 
         std::shared_ptr<JobService> service_;
         Options options_;

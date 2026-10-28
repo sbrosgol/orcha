@@ -448,6 +448,17 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
            border-bottom:2px solid transparent; margin-bottom:-1px; }
     .tab.active { color:var(--fg); border-bottom-color:var(--accent); }
     .tab:hover { color:var(--fg); }
+    .tab:disabled { cursor:progress; }
+    .tabs .tablist { display:flex; gap:2px; }
+    .tabs .sp { flex:1; }
+    .tabs > .btn { align-self:center; margin-bottom:3px; }
+    .field .hint.ok { color:var(--ok); }
+    #jYaml { white-space:pre; overflow-x:auto; }
+    .def-field { position:relative; }
+    .def-field .drop-hint { display:none; position:absolute; inset:0; z-index:2; align-items:flex-start; justify-content:center; gap:8px;
+                            padding:72px 16px 16px; text-align:center; border:2px dashed var(--accent); border-radius:var(--radius);
+                            background:color-mix(in srgb,var(--panel) 90%,var(--accent)); color:var(--accent); font-weight:600; font-size:13px; }
+    .def-field.dropping .drop-hint { display:flex; }
     .step-card { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; background:var(--panel); }
     .step-card .shd { display:flex; align-items:center; gap:8px; padding:8px 10px 8px 12px; border-bottom:1px solid var(--line); background:var(--panel-2); border-radius:8px 8px 0 0; }
     .step-card .shd .n { width:22px; height:22px; border-radius:6px; background:var(--accent-soft); color:var(--accent);
@@ -498,7 +509,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       .step-card .param .pname { padding-top:0; }
       .g-kpi { grid-template-columns:minmax(0,1fr); }
       .tbl .hide-sm { display:none; }
-      .tbl .sr-sm { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+      .tbl .sr-sm, .tabs .sr-sm { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
   </style>
@@ -538,6 +549,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></symbol>
       <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
       <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
     </defs>
   </svg>
@@ -711,13 +723,19 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <label class="switch"><input id="jBreaker" type="checkbox" /><span class="track"></span>Fail fast while a command’s circuit is open</label>
             <div class="hint">Thresholds are set server-wide under <code>workflow.circuit_breaker</code>.</div></div>
         </div>
-        <div class="field" style="margin-bottom:0"><span class="label">Workflow definition</span>
-          <div class="tabs" role="tablist">
-            <button class="tab active" type="button" role="tab" data-deftab="visual">Visual builder</button>
-            <button class="tab" type="button" role="tab" data-deftab="json">JSON</button>
+        <div class="field def-field" id="defField" style="margin-bottom:0"><span class="label">Workflow definition</span>
+          <div class="tabs">
+            <div class="tablist" role="tablist" aria-label="Definition editor">
+              <button class="tab active" type="button" role="tab" id="tabVisual" data-deftab="visual" aria-selected="true" aria-controls="defVisual">Visual builder</button>
+              <button class="tab" type="button" role="tab" id="tabJson" data-deftab="json" aria-selected="false" aria-controls="defJson" tabindex="-1">JSON</button>
+              <button class="tab" type="button" role="tab" id="tabYaml" data-deftab="yaml" aria-selected="false" aria-controls="defYaml" tabindex="-1">YAML</button>
+            </div>
+            <span class="sp"></span>
+            <button type="button" class="btn ghost sm" id="defImport" title="Import a .yaml, .yml or .json file — or drop one here" aria-label="Import file"><svg class="i"><use href="#i-upload"/></svg><span class="sr-sm">Import file</span></button>
+            <input type="file" id="defFile" accept=".yaml,.yml,.json,application/json,application/yaml,text/yaml" hidden />
           </div>
           <div id="defWarn" class="alert" style="display:none"><svg class="i"><use href="#i-warn"/></svg><span></span></div>
-          <div id="defVisual">
+          <div id="defVisual" role="tabpanel" aria-labelledby="tabVisual">
             <div id="defSteps"></div>
             <div class="builder-add">
               <select class="input" id="addStepCmd" aria-label="Command for new step"><option value="">Select a command…</option></select>
@@ -725,9 +743,14 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             </div>
             <div class="hint">Reference earlier outputs with <code>{{steps.NAME.output.field}}</code> or <code>{{stepN.output}}</code>.</div>
           </div>
-          <div id="defJson" style="display:none">
+          <div id="defJson" role="tabpanel" aria-labelledby="tabJson" style="display:none">
             <textarea class="input" id="jDef" spellcheck="false" aria-label="Workflow definition JSON"></textarea>
           </div>
+          <div id="defYaml" role="tabpanel" aria-labelledby="tabYaml" style="display:none">
+            <textarea class="input" id="jYaml" spellcheck="false" autocapitalize="off" wrap="off" aria-label="Workflow definition YAML" aria-describedby="yamlStatus"></textarea>
+            <div class="hint" id="yamlStatus" aria-live="polite"></div>
+          </div>
+          <div class="drop-hint" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg>Drop a .yaml, .yml or .json file to import it</div>
         </div>
       </div>
       <div class="ft"><span class="kbd-hint"><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd> to save</span><span class="sp"></span>
@@ -1752,23 +1775,44 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     function applySetting(def, key, value){
       if(value===undefined) delete def[key]; else def[key]=value;
     }
-    function onSettingChange(key, value){
-      if(editorTab==='visual'){ applySetting(editorDefExtra, key, value); visualToJson(); return; }
+    const keepSettingsControls = ()=>{ shownSettings={ rollback:$('jRollback').value, breaker:$('jBreaker').checked }; };
+    const undoSettingsControls = ()=>{ $('jRollback').value=shownSettings.rollback; $('jBreaker').checked=shownSettings.breaker; };
+    // Writes a setting into a definition object, keeping "steps" last.
+    function withSetting(def, key, value){
+      applySetting(def, key, value);
+      const steps=def.steps; delete def.steps;
+      return Object.assign(def, steps!==undefined?{steps}:{});
+    }
+    const isDefObject = d => !!d && typeof d==='object' && !Array.isArray(d);
+    async function onSettingChange(key, value){
+      if(editorTab==='visual'){ applySetting(editorDefExtra, key, value); visualToJson(); keepSettingsControls(); return; }
+      if(editorTab==='yaml'){
+        // Rewrites the YAML through the server (comments are not kept).
+        if(defBusy){ undoSettingsControls(); return; }
+        setDefBusy(true);
+        try {
+          const r=await yamlToDef();
+          if(!r.ok || !isDefObject(r.def)){ undoSettingsControls(); if(!r.auth) defWarn('Fix the YAML before changing this setting.'); return; }
+          await defToYaml(JSON.stringify(withSetting(r.def, key, value)));
+          defWarn(''); yamlStatus('', YAML_NOTE); keepSettingsControls();
+        } catch(e){ undoSettingsControls(); if(!isAuthErr(e)) defWarn('Could not update the YAML: '+e.message); }
+        finally { setDefBusy(false); }
+        return;
+      }
       let def;
       try { def=JSON.parse($('jDef').value); } catch(e){ def=null; }
-      if(!def || typeof def!=='object' || Array.isArray(def)){
+      if(!isDefObject(def)){
         // Undo just this control; the JSON text still holds the old value.
         defWarn('Fix the JSON before changing this setting.');
-        $('jRollback').value = shownSettings.rollback; $('jBreaker').checked = shownSettings.breaker;
+        undoSettingsControls();
         return;
       }
       defWarn('');
-      applySetting(def, key, value);
-      const steps=def.steps; delete def.steps;
-      $('jDef').value = JSON.stringify(Object.assign(def, steps!==undefined?{steps}:{}), null, 2);
+      $('jDef').value = JSON.stringify(withSetting(def, key, value), null, 2);
+      keepSettingsControls();
     }
-    $('jRollback').addEventListener('change', e=>{ onSettingChange('rollback', e.target.value==='none'?undefined:e.target.value); shownSettings.rollback=$('jRollback').value; });
-    $('jBreaker').addEventListener('change', e=>{ onSettingChange('circuit_breaker', e.target.checked?true:undefined); shownSettings.breaker=$('jBreaker').checked; });
+    $('jRollback').addEventListener('change', e=>onSettingChange('rollback', e.target.value==='none'?undefined:e.target.value));
+    $('jBreaker').addEventListener('change', e=>onSettingChange('circuit_breaker', e.target.checked?true:undefined));
     let defDeb=null;
     $('jDef').addEventListener('input', ()=>{ clearTimeout(defDeb); defDeb=setTimeout(()=>{
       try { setSettingsControls(JSON.parse($('jDef').value)); } catch(e){ /* keep controls while the JSON is mid-edit */ }
@@ -1931,19 +1975,222 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       editorTab = name;
       $('defVisual').style.display = (name==='visual') ? '' : 'none';
       $('defJson').style.display   = (name==='json')   ? '' : 'none';
-      $$('.tab[data-deftab]').forEach(t=>{ const on=t.dataset.deftab===name; t.classList.toggle('active',on); t.setAttribute('aria-selected',on); });
+      $('defYaml').style.display   = (name==='yaml')   ? '' : 'none';
+      $$('.tab[data-deftab]').forEach(t=>{ const on=t.dataset.deftab===name; t.classList.toggle('active',on); t.setAttribute('aria-selected',on); t.tabIndex = on ? 0 : -1; });
     }
-    function setDefTab(name){
-      if(name==='visual'){
-        const r = jsonToVisual();
-        if(!r.ok){ defWarn("Can't switch to the visual builder: "+r.err+" Fix the JSON or keep editing here."); return; }
-        defWarn(''); renderVisual();
-      } else {
-        visualToJson(); defWarn('');
+    // Tab switches, setting changes and imports may wait on the server; one at a time.
+    let defBusy=false;
+    function setDefBusy(on){
+      defBusy=on;
+      $$('.tab[data-deftab]').forEach(t=>{ t.disabled=on; });
+      $('defImport').disabled=on; $('jRollback').disabled=on; $('jBreaker').disabled=on;
+      // The server's reply replaces the text: no typing meanwhile.
+      $('jYaml').readOnly=on; $('jDef').readOnly=on;
+      $('modalSave').disabled = on || $('modalSave').classList.contains('loading');
+      $('defField').setAttribute('aria-busy', on);
+    }
+    // Brings the JSON text (#jDef) up to date from the tab being left.
+    async function leaveDefTab(){
+      if(editorTab==='visual'){ visualToJson(); return true; }
+      if(editorTab!=='yaml') return true;
+      const r=await yamlToDef();
+      if(!r.ok){
+        if(!r.auth){ defWarn("Fix the YAML to switch tabs."); yamlStatus('err', r.err); if(r.line) focusYamlAt(r.line, r.column); }
+        return false;
       }
-      showDefTab(name);
+      $('jDef').value = r.def==null ? '' : defJsonText(r.def);
+      return true;
+    }
+    async function setDefTab(name, opts){
+      if(defBusy || name===editorTab) return;
+      setDefBusy(true);
+      try {
+        if(!await leaveDefTab()) return;
+        if(name==='visual'){
+          const r = jsonToVisual();
+          if(!r.ok){ defWarn("Can't switch to the visual builder: "+r.err+" Fix the definition or keep editing it here."); return; }
+          renderVisual();
+        } else if(name==='yaml'){
+          const raw=$('jDef').value.trim();
+          if(raw){
+            try { JSON.parse(raw); } catch(e){ defWarn("Can't switch to YAML: the JSON is invalid ("+e.message+")."); return; }
+          }
+          try { await defToYaml(raw); }
+          catch(e){ if(!isAuthErr(e)) defWarn("Can't switch to YAML: "+e.message); return; }
+          yamlStatus('', YAML_NOTE);
+        }
+        defWarn('');
+        showDefTab(name);
+        if(!(opts && opts.auto)) store.set(localStorage, DEFTAB_KEY, name);
+      } finally { setDefBusy(false); }
     }
     $$('.tab[data-deftab]').forEach(t=> t.addEventListener('click', ()=>setDefTab(t.dataset.deftab)));
+    $('defField').querySelector('[role=tablist]').addEventListener('keydown', async e=>{
+      const tabs=$$('.tab[data-deftab]'), i=tabs.indexOf(document.activeElement);
+      if(i<0) return;
+      const next = e.key==='ArrowRight' ? (i+1)%tabs.length : e.key==='ArrowLeft' ? (i+tabs.length-1)%tabs.length
+                 : e.key==='Home' ? 0 : e.key==='End' ? tabs.length-1 : -1;
+      if(next<0) return;
+      e.preventDefault();
+      await setDefTab(tabs[next].dataset.deftab);
+      $$('.tab[data-deftab]').find(t=>t.classList.contains('active')).focus();
+    });
+
+    // YAML tab ---------------------------------------------------------------
+    // The server converts YAML (POST /api/definitions/convert), so the editor
+    // reads it exactly as the CLI and the jobs API do and needs no YAML parser.
+    // #jDef (JSON) stays the editor's common format; yamlSync remembers the
+    // last converted YAML text so unchanged YAML is not converted again.
+    const DEFTAB_KEY='orcha_deftab';
+    const YAML_NOTE='Comments and formatting are not kept: jobs are saved as JSON.';
+    let yamlSync={yaml:'', json:''};
+    let yamlSeq=0;
+    const defJsonText = def => JSON.stringify(def, null, 2);
+    const convertDef = (text, type) => api('/api/definitions/convert', {method:'POST', headers:{'Content-Type':type}, body:text});
+    function yamlStatus(kind, msg){
+      // A live region: only write when something changed, so it is announced once.
+      const el=$('yamlStatus'), cls='hint'+(kind?' '+kind:'');
+      if(el.className!==cls) el.className=cls;
+      if(el.textContent!==(msg||'')) el.textContent=msg||'';
+    }
+    function yamlErrText(e){
+      const b=e.body||{};
+      const msg=String(b.error||e.message||'').replace(/^Invalid YAML body: /,'').replace(/^line \d+, column \d+: /,'');
+      return b.line ? `Line ${b.line}, column ${b.column}: ${msg}` : msg;
+    }
+    // YAML text -> {ok, def} (def is null for empty text) or {ok:false, err, line?, column?, auth?}.
+    async function yamlToDef(){
+      const text=$('jYaml').value;
+      if(!text.trim()) return {ok:true, def:null};
+      if(text===yamlSync.yaml) return {ok:true, def:JSON.parse(yamlSync.json)};
+      try {
+        const r=await convertDef(text, 'application/yaml');
+        yamlSync={yaml:text, json:defJsonText(r.definition)};
+        return {ok:true, def:r.definition};
+      } catch(e){
+        if(isAuthErr(e)) return {ok:false, auth:true};
+        return {ok:false, err:yamlErrText(e), line:e.body&&e.body.line, column:e.body&&e.body.column};
+      }
+    }
+    // JSON text -> YAML tab (throws on a server error).
+    async function defToYaml(jsonText){
+      if(!jsonText.trim()){ $('jYaml').value=''; yamlSync={yaml:'', json:''}; return; }
+      const r=await convertDef(jsonText, 'application/json');
+      $('jYaml').value=r.yaml; yamlSync={yaml:r.yaml, json:defJsonText(r.definition)};
+    }
+    function focusYamlAt(line, column){
+      const ta=$('jYaml'), lines=ta.value.split('\n');
+      let off=0;
+      for(let i=0; i<Math.min(line-1, lines.length); i++) off+=lines[i].length+1;
+      off=Math.min(off+Math.max(0,(column||1)-1), ta.value.length);
+      ta.focus(); ta.setSelectionRange(off, off);
+      const lh=parseFloat(getComputedStyle(ta).lineHeight)||19;
+      ta.scrollTop=Math.max(0, (line-3)*lh);
+    }
+    // Live check while typing; replies to older text are dropped.
+    async function checkYaml(){
+      const seq=++yamlSeq;
+      const r=await yamlToDef();
+      if(seq!==yamlSeq || editorTab!=='yaml' || r.auth) return;
+      if(!r.ok){ yamlStatus('err', r.err); return; }
+      defWarn(''); modalError('');
+      if(r.def==null){ yamlStatus('', 'Empty definition. '+YAML_NOTE); return; }
+      yamlStatus('ok', 'Valid YAML. '+YAML_NOTE);
+      setSettingsControls(r.def);
+    }
+    let yamlDeb=null;
+    $('jYaml').addEventListener('input', ()=>{ clearTimeout(yamlDeb); yamlDeb=setTimeout(checkYaml, 350); });
+
+    // Import ----------------------------------------------------------------
+    // A file holds a workflow definition ({steps: [...]}) or a whole job
+    // ({name, schedule_cron, enabled, description, definition}).
+    const MAX_IMPORT_BYTES=512*1024;   // the server's YAML body limit (kMaxYamlBodyBytes)
+    function currentDefText(){
+      if(editorTab==='visual'){ visualToJson(); return $('jDef').value; }
+      if(editorTab==='yaml') return $('jYaml').value===yamlSync.yaml ? yamlSync.json : $('jYaml').value;
+      return $('jDef').value;
+    }
+    async function importDefFile(file){
+      if(!file) return;
+      if(defBusy){ toast('The editor is busy. Try again in a moment.','err'); return; }
+      if(file.size>MAX_IMPORT_BYTES){ toast(`${file.name} is too large to import (the limit is 512 KB).`,'err'); return; }
+      setDefBusy(true);
+      try {
+        const text=await file.text();
+        let fmt = /\.json$/i.test(file.name) ? 'json' : /\.ya?ml$/i.test(file.name) ? 'yaml' : null;
+        let data;
+        if(fmt!=='yaml'){
+          try { data=JSON.parse(text); fmt='json'; }
+          catch(e){ if(fmt==='json') throw new Error('it is not valid JSON ('+e.message+')'); fmt='yaml'; }
+        }
+        if(fmt==='yaml'){
+          try { data=(await convertDef(text, 'application/yaml')).definition; }
+          catch(e){ if(isAuthErr(e)) return; throw new Error(yamlErrText(e)); }
+        }
+        if(!isDefObject(data)) throw new Error('expected a workflow definition or a job.');
+        const isJob = isDefObject(data.definition) && !Array.isArray(data.steps);
+        const def = isJob ? data.definition : data;
+        if(!Array.isArray(def.steps)) throw new Error('no "steps" list found. Expected a workflow definition, or a job with a "definition".');
+
+        const current=currentDefText().trim();
+        const typed = ['jName','jDesc','jSchedule'].some(id=>$(id).value.trim());
+        const pristine = !current || (!editingId && current===DEFAULT_DEF);
+        if(!pristine || (isJob && (editingId || typed))){
+          const ok=await confirmDialog(isJob ? 'Replace this job with the file?' : 'Replace the current definition?',
+            isJob ? `The name, schedule, settings and steps in the editor will be replaced with the ones in ${file.name}. Nothing is saved until you save the job.`
+                  : `The steps in the editor will be replaced with the ones in ${file.name}. Nothing is saved until you save the job.`,
+            'Replace');
+          if(!ok) return;
+        }
+
+        if(isJob){
+          // Every job field comes from the file; missing ones get the API's
+          // defaults (no schedule = manual only, enabled). A missing name keeps
+          // the typed one, since a job needs a name to be saved.
+          if(typeof data.name==='string' && data.name.trim()){ $('jName').value=data.name.trim(); $('jName').classList.remove('invalid'); }
+          $('jDesc').value = typeof data.description==='string' ? data.description : '';
+          $('jSchedule').value = typeof data.schedule_cron==='string' ? data.schedule_cron : '';
+          $('jEnabled').checked = typeof data.enabled==='boolean' ? data.enabled : true;
+          syncPreset(); updateCronPreview();
+        }
+        const jsonText=defJsonText(def);
+        $('jDef').value=jsonText;
+        editorDefExtra={}; editorVisual=[];
+        setSettingsControls(def);
+        if(fmt==='yaml'){
+          // A bare definition keeps the file's own text (and comments) while editing.
+          if(isJob) await defToYaml(jsonText);
+          else { $('jYaml').value=text; yamlSync={yaml:text, json:jsonText}; }
+          yamlStatus('ok', 'Imported '+file.name+'. '+YAML_NOTE);
+          showDefTab('yaml');
+        } else {
+          showDefTab('json');
+        }
+        defWarn(''); modalError('');
+        toast(`Imported ${file.name}${isJob?' with its job settings':''}. Review it, then save.`, 'ok');
+      } catch(e){
+        if(!isAuthErr(e)) defWarn(`Couldn't import ${file.name}: ${e.message}`);
+      } finally {
+        setDefBusy(false);
+        $('defFile').value='';
+      }
+    }
+    $('defImport').addEventListener('click', ()=>$('defFile').click());
+    $('defFile').addEventListener('change', e=>importDefFile(e.target.files[0]));
+    const hasFiles = e => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes('Files');
+    let dragDepth=0;
+    $('defField').addEventListener('dragenter', e=>{ if(!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('defField').classList.add('dropping'); });
+    $('defField').addEventListener('dragover', e=>{ if(!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = defBusy ? 'none' : 'copy'; });
+    $('defField').addEventListener('dragleave', e=>{ if(!hasFiles(e)) return; if(--dragDepth<=0){ dragDepth=0; $('defField').classList.remove('dropping'); } });
+    $('defField').addEventListener('drop', e=>{
+      if(!hasFiles(e)) return;
+      e.preventDefault(); e.stopPropagation(); dragDepth=0; $('defField').classList.remove('dropping');
+      const files=e.dataTransfer.files;
+      if(files.length>1){ toast('Drop one file at a time.','err'); return; }
+      importDefFile(files[0]);
+    });
+    // A file dropped elsewhere in the editor must not navigate away from the page.
+    ['dragover','drop'].forEach(t=>$('modal').addEventListener(t, e=>{ if(hasFiles(e)) e.preventDefault(); }));
 
     // Cron helpers -----------------------------------------------------------
     // The backend scheduler evaluates cron in UTC (jobs/CronExpr.hpp), so the
@@ -2019,6 +2266,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       syncPreset();
       $('jEnabled').checked = job ? !!job.enabled : true;
       $('jDef').value  = job ? JSON.stringify(job.definition, null, 2) : DEFAULT_DEF;
+      $('jYaml').value = ''; yamlSync={yaml:'', json:''}; yamlSeq++; yamlStatus('', '');
       editorDefExtra = {}; editorVisual = [];
       setSettingsControls(job ? job.definition : null);
       // Until the definition is loaded into the builder below, a settings
@@ -2037,13 +2285,23 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       if(r.ok){ showDefTab('visual'); renderVisual(); }
       else { showDefTab('json'); defWarn("This definition can't be shown in the visual builder: "+r.err+" Edit the JSON directly."); }
       $('jRollback').disabled = false; $('jBreaker').disabled = false;
+      // Reopen in the text format the user last chose.
+      const pref=store.get(localStorage, DEFTAB_KEY);
+      if(pref==='yaml' || (pref==='json' && r.ok)) await setDefTab(pref, {auto:true});
     }
     async function saveJob(){
-      const btn=$('modalSave'); if(btn.disabled) return;
-      if(editorTab==='visual') visualToJson();
+      const btn=$('modalSave'); if(btn.disabled || defBusy) return;
       let def;
-      try { def=JSON.parse($('jDef').value); }
-      catch(e){ modalError('Definition is not valid JSON: '+e.message); showDefTab('json'); return; }
+      if(editorTab==='yaml'){
+        busy(btn,true); const r=await yamlToDef(); busy(btn,false);
+        if(!r.ok){ if(!r.auth){ modalError('Fix the YAML before saving.'); yamlStatus('err', r.err); if(r.line) focusYamlAt(r.line, r.column); } return; }
+        if(r.def==null){ modalError('The definition is empty. Add a "steps" list.'); $('jYaml').focus(); return; }
+        def=r.def;
+      } else {
+        if(editorTab==='visual') visualToJson();
+        try { def=JSON.parse($('jDef').value); }
+        catch(e){ modalError('Definition is not valid JSON: '+e.message); showDefTab('json'); return; }
+      }
       const payload={ name:$('jName').value.trim(), description:$('jDesc').value.trim(),
                       definition:def, enabled:$('jEnabled').checked };
       const sched=$('jSchedule').value.trim();

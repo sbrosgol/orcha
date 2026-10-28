@@ -252,12 +252,69 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_named_step_reference\n";
     }
 
+    // A mistyped field used to be skipped: {"enabled": "false"} created an
+    // enabled, scheduled job. Now it is a 400 naming the field.
+    inline void test_job_fields_are_strictly_typed() {
+        using Jobs::JobDefinition;
+        using Orcha::Json;
+        const auto rejects = [](const Json& body, const std::string& expected) {
+            try {
+                (void)JobDefinition::from_json(body);
+            } catch (const std::invalid_argument& ex) {
+                if (std::string(ex.what()) != expected) {
+                    throw std::runtime_error("got: " + std::string(ex.what()));
+                }
+                return true;
+            }
+            return false;
+        };
+        const Json steps = {{"steps", Json::array()}};
+        ORCHA_ASSERT(rejects({{"name", "a"}, {"enabled", "false"}, {"definition", steps}},
+                             "'enabled' must be true or false (got \"false\")"));
+        ORCHA_ASSERT(rejects({{"name", "a"}, {"enabled", 0}}, "'enabled' must be true or false (got 0)"));
+        ORCHA_ASSERT(rejects({{"name", 7}}, "'name' must be a string (got 7)"));
+        ORCHA_ASSERT(rejects({{"name", "a"}, {"description", Json::array()}},
+                             "'description' must be a string (got [])"));
+        ORCHA_ASSERT(rejects({{"name", "a"}, {"schedule_cron", 5}},
+                             "'schedule_cron' must be a cron string such as \"0 3 * * *\" (got 5)"));
+        ORCHA_ASSERT(rejects({{"name", "a"}, {"definition", "steps: []"}},
+                             "'definition' must be an object with a 'steps' array (got \"steps: []\")"));
+        ORCHA_ASSERT(rejects({{"name", std::string(100, 'x')}, {"enabled", std::string(100, 'y')}},
+                             "'enabled' must be true or false (got \"" + std::string(36, 'y') + "...)"));
+        ORCHA_ASSERT(rejects(Json::array(), "a job must be an object"));
+
+        // Absent fields keep the defaults; null optional strings are allowed.
+        auto ok = JobDefinition::from_json({{"name", "a"}, {"description", nullptr},
+                                            {"schedule_cron", nullptr}, {"definition", steps},
+                                            {"x_unknown", 1}});
+        ORCHA_ASSERT(ok.enabled && !ok.schedule_cron && ok.description.empty());
+
+        // Through the API: 400, and nothing is created.
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(
+            store, [] { return std::shared_ptr<Workflow::IWorkflowEngine>{}; });
+        auto runs = std::make_shared<Jobs::RunQueue>(service, Jobs::RunQueue::Options{1, 8});
+        Agent::Routes::JobRoute route(service, runs);
+        Agent::HttpRequest req;
+        req.method = "POST";
+        req.path = "/api/jobs";
+        req.headers.emplace_back("Content-Type", "application/json");
+        req.body = R"({"name":"nightly","enabled":"false","schedule_cron":"0 3 * * *","definition":{"steps":[]}})";
+        auto resp = route.handle(req);
+        ORCHA_ASSERT_EQ(resp.status, Agent::status::BadRequest);
+        ORCHA_ASSERT(Json::parse(resp.body)["error"] ==
+                     "Invalid job: 'enabled' must be true or false (got \"false\")");
+        ORCHA_ASSERT(!store->get_job_by_name("nightly").has_value());
+        std::cout << "[PASS] test_job_fields_are_strictly_typed\n";
+    }
+
     inline void run_job_store_tests() {
         std::cout << "\n-- Jobs (Phase 2) --\n";
         test_job_store_crud();
         test_job_store_name_unique();
         test_job_store_runs();
         test_job_route_can_handle();
+        test_job_fields_are_strictly_typed();
         test_run_job_linking();
         test_named_step_reference();
         test_scheduler_fires();

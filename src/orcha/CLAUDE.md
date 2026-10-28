@@ -32,6 +32,7 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 | HTTP server / routing / auth | `agent/HttpServer.*`, `agent/CommandAgent.*`, `agent/IRouteHandler.hpp`, `agent/AuthMiddleware.hpp`, `agent/routes/*` |
 | Admin dashboard | `agent/dashboard_embedded.hpp` (single raw-string page) — use the `admin-ui` skill |
 | Run queue (async runs) | `jobs/RunQueue.*` (admission, runners, cancel, wait), `agent/routes/RunResponses.hpp` (run resource, 202/429/409 replies) |
+| YAML definitions | `utils/YamlJson.*` (target `yaml_json`; convert + limits), `agent/HttpBody.hpp` (YAML/JSON bodies), `agent/routes/DefinitionRoute.hpp` (`POST /api/definitions/convert`) |
 | Jobs | `jobs/JobService.hpp` (`execute` persists a run's lifecycle), `jobs/SqliteJobStore.*`, `jobs/JobScheduler.*`, `jobs/RunJobCommand.hpp` |
 | Config | `config/YamlConfiguration.*`, `config/ServerConfig.hpp`, `config/AdminConfig.hpp`, `orcha.yaml.example` |
 | Composition root | `main.cpp` (`bootstrap_services`, `run_server_mode`) |
@@ -58,6 +59,16 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 - **Placeholders** (`{{stepN.output.x}}`, `{{steps.name.output.x}}`) resolve in a
   single pass; never re-scan substituted text.
 - **Untrusted JSON** from HTTP goes through `parse_json_bounded()` (depth 64).
+  YAML bodies (YAML `Content-Type` on `/api/jobs`, `/api/definitions/convert`)
+  go through `parse_request_body()` → `Utils::parse_yaml()` (depth 64, 100k
+  values after alias expansion, one document).
+- **YAML ↔ JSON** lives only in `utils/YamlJson.cpp` (CLI, jobs API, convert
+  endpoint; the dashboard calls the endpoint and has no YAML parser). Its header
+  must not include yaml-cpp (the agent layer builds without it); `parse_yaml`/
+  `json_to_yaml` are compiled for `Json` and `ordered_json` only. Plain
+  scalars follow the YAML 1.2 core schema, quoted ones are strings, and
+  `json_to_yaml()` must round-trip exactly (it verifies and falls back to
+  quoting). Definitions are stored as JSON; YAML comments are not kept.
 - **Auth**: `POST /workflow` needs `Authorization: Bearer <server.api_token>`
   (or admin Basic). With no token it is served only on a loopback bind, else 503.
   `/api/*` is admin Basic auth. `server.host` defaults to `127.0.0.1`
@@ -65,7 +76,9 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 - **Per-workflow settings**: `timeout_ms`, `"rollback": none|reverse|best_effort`,
   `"circuit_breaker": true`; per step `timeout_ms`, `parallel`, `name`. Invalid
   settings throw `std::invalid_argument` from `WorkflowDefinition::from_json`
-  (routes answer 400). The dashboard editor must preserve fields it does not edit.
+  (routes answer 400), as do mistyped job fields from `JobDefinition::from_json`
+  (never skip a present field of the wrong type). The dashboard editor must
+  preserve fields it does not edit.
 - **Runs are asynchronous**: every top-level run (`POST /workflow`, dashboard
   "Run now", scheduler) goes through the one bounded `RunQueue` (202 + `Location`;
   full → 429 + `Retry-After`; 503 only for "API disabled"/shutting down;

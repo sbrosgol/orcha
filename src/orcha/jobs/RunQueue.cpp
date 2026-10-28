@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 
 namespace Orcha::Jobs {
 
@@ -18,7 +19,7 @@ namespace Orcha::Jobs {
         options_.max_concurrent = std::max<size_t>(1, options_.max_concurrent);
         runners_.reserve(options_.max_concurrent);
         for (size_t i = 0; i < options_.max_concurrent; ++i) {
-            runners_.emplace_back([this](std::stop_token stop) { runner(stop); });
+            runners_.emplace_back([this](const std::stop_token &stop) { runner(stop); });
         }
     }
 
@@ -28,7 +29,7 @@ namespace Orcha::Jobs {
 
     Core::Result<RunRecord, RunQueue::SubmitError> RunQueue::submit(
         std::optional<std::string> job_id, std::string trigger,
-        Orcha::Json definition, std::string name) {
+        Json definition, std::string name) {
         using R = Core::Result<RunRecord, SubmitError>;
 
         {
@@ -70,7 +71,7 @@ namespace Orcha::Jobs {
         return R::Err(SubmitError::ShuttingDown);
     }
 
-    void RunQueue::runner(std::stop_token stop) {
+    void RunQueue::runner(const std::stop_token &stop) {
         for (;;) {
             Entry entry;
             {
@@ -127,7 +128,7 @@ namespace Orcha::Jobs {
         tracker.done_cv.notify_all();
     }
 
-    void RunQueue::finish_cancelled(Entry& entry, const std::string& reason) {
+    void RunQueue::finish_cancelled(Entry& entry, const std::string& reason) const {
         entry.run.status = run_status::Cancelled;
         entry.run.error = reason;
         entry.run.finished_at = now_iso_utc();
@@ -185,7 +186,7 @@ namespace Orcha::Jobs {
             if (logger_) logger_->info("Run " + run_id + " cancelled while queued");
             return CancelOutcome::Cancelled;
         }
-        auto run = get(run_id);
+        const auto run = get(run_id);
         if (!run) return CancelOutcome::NotFound;
         // Live but not ours: a nested run_job executing inside its parent's slot.
         return run_status::is_terminal(run->status) ? CancelOutcome::AlreadyFinished
@@ -218,7 +219,7 @@ namespace Orcha::Jobs {
             for (const auto& entry : cancelled) {
                 active_.erase(entry.run.id);
             }
-            for (auto& [id, tracker] : active_) {
+            for (const auto &tracker: active_ | std::views::values) {
                 tracker->stop.request_stop();   // running runs stop cooperatively
             }
         }

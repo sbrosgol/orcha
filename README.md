@@ -201,6 +201,60 @@ timeouts count — validation errors and cancellations do not. Inspect or reset
 breakers with `GET /api/circuit-breakers` and
 `POST /api/circuit-breakers/{command}/reset` (admin auth).
 
+## YAML Definitions
+
+Workflows and jobs are stored and executed as JSON. You can write them in
+YAML in these places (`POST /workflow` still takes JSON only):
+
+- **CLI:** `orcha workflow.yaml` runs a YAML workflow.
+- **Admin job editor:** the *Workflow definition* field has **Visual builder**,
+  **JSON** and **YAML** tabs, which stay in sync. The YAML tab checks the text
+  as you type and points at the line and column of an error. **Import file**
+  (or dropping a file on the field) loads a `.yaml`, `.yml` or `.json` file
+  holding either a definition (`steps: ...`) or a whole job (`name`,
+  `description`, `schedule_cron`, `enabled`, `definition`). Nothing is saved
+  until you save the job.
+- **Jobs API:** `POST /api/jobs` and `PUT /api/jobs/{id}` accept YAML bodies
+  sent with `Content-Type: application/yaml` (or `application/x-yaml`,
+  `text/yaml`). Job fields must have the right type in any body (see
+  below), so YAML `enabled: no` is rejected, because `no` is a string; write
+  `enabled: false`:
+
+  ```bash
+  curl -u admin:change-me -X POST http://localhost:8080/api/jobs \
+       -H 'Content-Type: application/yaml' --data-binary @nightly-job.yaml
+  ```
+- **Conversion:** `POST /api/definitions/convert` takes a definition as YAML or
+  JSON and returns both forms (`{"definition": ..., "yaml": "..."}`). Key order
+  is kept.
+
+YAML follows the 1.2 core schema. Quoted values are always strings (`'8080'`
+stays a string). Unquoted `true`/`false`, `null`/`~`, integers (including
+`0x`/`0o`) and decimal numbers are typed. Words such as `yes`/`on`, and
+`.inf`/`.nan`, stay strings. Anchors, aliases and merge keys
+(`<<: *defaults`) work, and keys a mapping sets itself win over merged ones.
+Duplicate keys are an error. Each input must hold exactly one document of at
+most 512 KB (larger request bodies get `413`), with at most 64 levels of
+nesting and 100,000 values after aliases expand. Comments and formatting are
+not kept, because the definition is stored as JSON.
+
+> **Compatibility:** before this change, the CLI also typed *quoted* scalars, so
+> `port: "8080"` became the number 8080. Unquoted `True`/`FALSE` were strings
+> (now booleans), `0x1F` was the float 31.0 (now the integer 31), and a
+> duplicate key silently kept its last value (now an error). Quote a value
+> exactly when it must stay a string.
+
+### Job field types
+
+`POST /api/jobs` and `PUT /api/jobs/{id}` reject a field with the wrong type
+with `400`, for example `Invalid job: 'enabled' must be true or false (got
+"false")`. `name` must be a string, `description` a string or null,
+`enabled` a boolean, `schedule_cron` a string or null, and `definition` an
+object. Unknown fields are ignored.
+
+> **Behaviour change:** a mistyped field used to be skipped silently, so
+> `"enabled": "false"` created an *enabled* job that the scheduler ran.
+
 ## API Documentation (Swagger / OpenAPI)
 
 Once Orcha is running, the agent serves an interactive API explorer and a
