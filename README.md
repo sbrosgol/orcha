@@ -263,6 +263,84 @@ object. Unknown fields are ignored.
 > **Behaviour change:** a mistyped field used to be skipped silently, so
 > `"enabled": "false"` created an *enabled* job that the scheduler ran.
 
+## Uploading Plugins
+
+Admins can upload a command plugin from the dashboard (**Plugins → Upload
+plugin**) instead of copying it into the plugin directory. An installed plugin
+runs its code inside the Orcha server with the server's permissions, so
+uploads are **off by default** and must be **signed**:
+
+1. **Create a signing key** once, on a machine you trust (needs OpenSSL 3):
+
+   ```bash
+   src/orcha/scripts/orcha-plugin-sign.sh keygen orcha-plugins.pem
+   # prints the public key, e.g. g6lxoFAKtt9aRy3gzH3iWnARD/txkgswH9mAk0CuR4w=
+   ```
+
+2. **Trust it on the server** and turn uploads on (`orcha.yaml`, or
+   `ORCHA_PLUGINS_UPLOAD_ENABLED=true` / `ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS=<key>,<key>`):
+
+   ```yaml
+   plugins:
+     upload:
+       enabled: true
+       public_keys: ["g6lxoFAKtt9aRy3gzH3iWnARD/txkgswH9mAk0CuR4w="]
+       max_bytes: 33554432   # 32 MB
+   ```
+
+   Uploads also require `admin.auth_required: true`. If anything is missing,
+   the dashboard's upload dialog says what.
+
+3. **Sign each build** of the plugin. The signature covers the library's
+   **file name**, its bytes and its `manifest.json`, so renaming the library
+   or swapping the manifest invalidates it. The manifest (or, without one, the
+   file name) names the plugin, so the signature decides which plugin an
+   upload becomes:
+
+   ```bash
+   src/orcha/scripts/orcha-plugin-sign.sh sign orcha-plugins.pem libmy_plugin.so manifest.json
+   # writes libmy_plugin.so.sig
+   ```
+
+4. **Upload** the library (under the name it was signed with), its `.sig` and
+   (optionally) `manifest.json`. The server checks the size, that the file is a
+   shared library for this platform and CPU, the manifest, and the signature,
+   all without loading the file, and keeps the upload in
+   `<plugins.directory>/.orcha-uploads`. Then **review** it (version, whether
+   it is an upgrade, downgrade or new plugin, SHA-256, signing key) and
+   **install** it.
+
+Each install goes to a new directory, `<plugins.directory>/<name>-<id>`.
+Installing a plugin whose name already exists **replaces** it: only its
+library, manifest and provenance file are moved aside (other files in its
+directory stay). Workflows already running keep using the old version. If
+the new version fails to load (for example it was built against another
+plugin ABI), the previous one is restored and reloaded. If the server dies
+while installing (a plugin can crash it while loading), the previous version
+is put back on the next server start, before plugins are loaded, and the
+upload is marked as having crashed the server. Installing also clears a
+previous **Disable**.
+
+Every upload, refusal, install, failure and discard is logged at WARN level
+with the admin user, the SHA-256 and the key id. Installed plugins keep a
+`.orcha-provenance-<name>.json` file (who uploaded and installed it, when,
+which key, SHA-256), shown in the plugin's details.
+
+The API is `GET|POST /api/plugins/_uploads`, `POST /api/plugins/_uploads/{id}/install`
+and `DELETE /api/plugins/_uploads/{id}` (see `/swagger`).
+
+**What signing does not cover:** the signature is checked at upload. Anyone
+who can write to `plugins.directory` directly (or run a workflow that does,
+e.g. with `shell_exec`) can still add a plugin, and every trusted key can
+replace every plugin, bundled ones included.
+
+> **Docker:** uploaded plugins live in the container's plugin directory
+> (`/app/commands`), together with `.orcha-uploads` (staged uploads and the
+> install journal that makes installs crash-safe). Mount `/app/commands` on a
+> volume to keep them when the container is recreated. A named volume starts
+> with the image's bundled plugins but then keeps them: after upgrading the
+> image, bundled plugins are not updated on that volume.
+
 ## API Documentation (Swagger / OpenAPI)
 
 Once Orcha is running, the agent serves an interactive API explorer and a
