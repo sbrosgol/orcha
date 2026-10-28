@@ -1255,7 +1255,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ? `<button class="btn sm" data-pa="reload" data-name="${n}" title="Reload library from disk">${icon('refresh','ico')}${icon('loader','spin')}Reload</button>
              <button class="btn sm danger" data-pa="disable" data-name="${n}" title="Unload and keep disabled across restarts">${icon('power','ico')}${icon('loader','spin')}Disable</button>`
           : `<button class="btn sm" data-pa="enable" data-name="${n}">${icon('power','ico')}${icon('loader','spin')}Enable</button>`;
-        return `<tr class="click" data-plugin="${n}"><td><div class="pname">${n}</div><div class="pdesc">${esc(p.description||'')}</div></td>
+        const src = p.source==='uploaded' ? ` <span class="tag" title="${p.overrides?'Uploaded; overrides the bundled '+esc(p.overrides.version):'Uploaded from the dashboard'}">uploaded</span>` : '';
+        return `<tr class="click" data-plugin="${n}"><td><div class="pname">${n}${src}</div><div class="pdesc">${esc(p.description||'')}</div></td>
           <td class="mono nowrap">${esc(p.version||'—')}</td><td>${statusBadge(p.status)}</td><td>${deps}</td><td>${tags}</td>
           <td><div class="acts">${acts}</div></td></tr>`;
       }).join('');
@@ -1294,6 +1295,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('drBody').innerHTML = `<div class="kv">
           <div class="k">Version</div><div class="v mono">${esc(p.version||'—')}</div>
           <div class="k">Author</div><div class="v">${esc(p.author||'—')}</div>
+          <div class="k">Source</div><div class="v">${p.source==='uploaded'?'Uploaded'+(p.overrides?` <span class="muted">· overrides the bundled ${esc(p.overrides.version)}</span>`:''):'Bundled'}</div>
           <div class="k">Library</div><div class="v mono wrap-any">${esc(p.library_path||'—')}</div>
           ${p.provenance?`<div class="k">Installed from</div><div class="v">upload by ${esc(p.provenance.uploaded_by||'?')}, installed by ${esc(p.provenance.installed_by||'?')} ${timeCell(p.provenance.installed_at)} · key <code>${esc(p.provenance.signer||'?')}</code><div class="hash">${esc(p.provenance.sha256||'')}</div></div>`:''}
           <div class="k">Dependencies</div><div class="v">${(p.dependencies||[]).map(x=>`<span class="tag mono">${esc(x)}</span>`).join('')||'—'}</div>
@@ -1321,10 +1323,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     const upExt = () => (state.uploads && state.uploads.platform && state.uploads.platform.extension) || '.so';
     const upVersion = s => s.version || 'unversioned';
     // What installing it does, relative to the installed version.
-    const upChange = s => ({
+    const upChange = s => (({
       new:'New plugin', upgrade:`Upgrade from ${s.replaces_version}`, downgrade:`Downgrade from ${s.replaces_version}`,
       reinstall:`Reinstall of ${s.replaces_version}`, replace:`Replaces ${s.replaces_version||'the installed version'}`
-    })[s.change] || 'New plugin';
+    })[s.change] || 'New plugin') + (s.replaces_bundled && s.change!=='new' ? ' (bundled)' : '');
     const upAction = s => ({ upgrade:'Upgrade to '+upVersion(s), downgrade:'Downgrade to '+upVersion(s), reinstall:'Reinstall', replace:'Replace' })[s.change] || 'Install';
 
     function renderStagedUploads(focusAfter){
@@ -1388,6 +1390,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="k">Uploaded</div><div class="v">${esc(s.uploaded_by)} · ${timeCell(s.uploaded_at)}</div>
           </div>
           ${s.change==='downgrade'?`<div class="alert">${icon('warn')}<span>${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.</span></div>`:''}
+          ${s.replaces_bundled&&replacing?`<div class="alert info">${icon('info')}<span>This overrides the bundled ${esc(s.replaces_version)}. The bundled files are not changed.</span></div>`:''}
           <div class="alert flush">${icon('warn')}<span>Installing loads this library into the Orcha server: its code runs with the server’s permissions. Install only plugins you trust.${replacing?` If ${esc(upVersion(s))} fails to load, ${esc(s.replaces_version)} is restored.`:''}</span></div>`;
         ft.innerHTML = `<button class="btn danger" id="upDiscard" aria-label="Discard upload">${icon('trash','ico')}${icon('loader','spin')}<span class="sr-sm">Discard</span></button><span class="sp"></span>
           <button class="btn" data-close>Keep for later</button>

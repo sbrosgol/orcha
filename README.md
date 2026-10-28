@@ -285,7 +285,8 @@ uploads are **off by default** and must be **signed**:
      upload:
        enabled: true
        public_keys: ["g6lxoFAKtt9aRy3gzH3iWnARD/txkgswH9mAk0CuR4w="]
-       max_bytes: 33554432   # 32 MB
+       max_bytes: 33554432               # 32 MB
+       directory: "./uploaded-plugins"   # installed uploads; keep it persistent
    ```
 
    Uploads also require `admin.auth_required: true`. If anything is missing,
@@ -306,14 +307,22 @@ uploads are **off by default** and must be **signed**:
    (optionally) `manifest.json`. The server checks the size, that the file is a
    shared library for this platform and CPU, the manifest, and the signature,
    all without loading the file, and keeps the upload in
-   `<plugins.directory>/.orcha-uploads`. Then **review** it (version, whether
-   it is an upgrade, downgrade or new plugin, SHA-256, signing key) and
-   **install** it.
+   `<plugins.upload.directory>/.orcha-uploads`. Then **review** it (version,
+   whether it is an upgrade, downgrade or new plugin, SHA-256, signing key)
+   and **install** it.
 
-Each install goes to a new directory, `<plugins.directory>/<name>-<id>`.
-Installing a plugin whose name already exists **replaces** it: only its
-library, manifest and provenance file are moved aside (other files in its
-directory stay). Workflows already running keep using the old version. If
+Uploaded plugins live in `plugins.upload.directory`, apart from the bundled
+plugins in `plugins.directory`, and both are loaded at start. Each install goes
+to a new directory, `<plugins.upload.directory>/<name>-<id>`. Installing a
+plugin whose name already exists replaces it:
+
+- an **uploaded** plugin is replaced: only its library, manifest and
+  provenance file are moved aside (other files in its directory stay);
+- a **bundled** plugin is **overridden**: the upload loads instead of it, now
+  and after restarts, and the bundled files are never modified (so
+  `plugins.directory` can be read-only).
+
+Workflows already running keep using the old version. If
 the new version fails to load (for example it was built against another
 plugin ABI), the previous one is restored and reloaded. If the server dies
 while installing (a plugin can crash it while loading), the previous version
@@ -334,12 +343,12 @@ who can write to `plugins.directory` directly (or run a workflow that does,
 e.g. with `shell_exec`) can still add a plugin, and every trusted key can
 replace every plugin, bundled ones included.
 
-> **Docker:** uploaded plugins live in the container's plugin directory
-> (`/app/commands`), together with `.orcha-uploads` (staged uploads and the
-> install journal that makes installs crash-safe). Mount `/app/commands` on a
-> volume to keep them when the container is recreated. A named volume starts
-> with the image's bundled plugins but then keeps them: after upgrading the
-> image, bundled plugins are not updated on that volume.
+> **Docker:** the image sets `plugins.upload.directory` to `/app/data/plugins`,
+> on the `orcha-data` volume, so uploaded plugins (and the staging area and
+> install journal that make installs crash-safe) survive the container being
+> recreated. Bundled plugins stay in the image (`/app/commands`) and update
+> with it; an uploaded plugin keeps overriding a bundled one of the same name
+> across image upgrades. Do not put `/app/commands` on a volume.
 
 ## API Documentation (Swagger / OpenAPI)
 

@@ -41,6 +41,7 @@ add_library(core STATIC
         core/PluginManager.cpp
         core/PluginManager.hpp
         core/PluginDenylist.hpp
+        core/PluginSources.hpp
 )
 
 add_library(logger STATIC

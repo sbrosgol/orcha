@@ -1287,9 +1287,9 @@ namespace Orcha::Agent::Routes {
             value op = value::object();
             op["summary"] = "Install a staged plugin";
             op["description"] =
-                "Installs into a new <plugins>/<name>-<id> directory and loads it, replacing a plugin with the "
-                "same name. If the new version fails to load, the previous one is restored (rolled_back: true "
-                "in the 422 body).";
+                "Installs into a new <plugins.upload.directory>/<name>-<id> directory and loads it. An uploaded "
+                "plugin with the same name is replaced; a bundled one is overridden (its files are not touched). "
+                "If the new version fails to load, the previous one is restored (rolled_back: true in the 422 body).";
             op["tags"] = tag("Plugins");
             op["security"] = basic_auth_security();
             op["responses"] = {{"200", simple_response("{name, version, previous_version}")},

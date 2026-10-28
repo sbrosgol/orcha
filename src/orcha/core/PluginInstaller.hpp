@@ -10,18 +10,23 @@
 //    signature decides which plugin an upload becomes;
 //  * staged: stage() checks everything that can be checked without running
 //    the library (size, ELF/Mach-O format and arch, manifest, name,
-//    signature) and stores the files in <plugins.directory>/.orcha-uploads,
+//    signature) and stores the files in <upload directory>/.orcha-uploads,
 //    a hidden directory discovery skips. Nothing is loaded.
 //  * installed on request: install() puts the files in a new directory,
-//    <plugins>/<name>-<install id>, and loads them. A fresh path means dlopen
-//    maps the new library even while a running workflow (or a library that
-//    cannot be unloaded) keeps the old image. A plugin with the same name is
-//    replaced: only its library, manifest and provenance are moved aside; if
-//    the new one fails to load, they are moved back and reloaded.
+//    <upload directory>/<name>-<install id>, and loads them. A fresh path
+//    means dlopen maps the new library even while a running workflow (or a
+//    library that cannot be unloaded) keeps the old image.
+//    - Replacing an uploaded plugin moves only its library, manifest and
+//      provenance aside; if the new one fails to load, they are moved back
+//      and reloaded.
+//    - Replacing a bundled plugin (plugins.directory) overrides it: its files
+//      are never touched (that directory may be read-only, e.g. part of a
+//      Docker image), and a failed install just reloads it. PluginSources
+//      decides which copy loads at start.
 //
-// Crash safety. Staging, backups and the journal live on the plugin
-// directory's filesystem, so every move is an atomic rename and they survive
-// with the plugins (e.g. on a Docker volume). install() fsyncs a journal
+// Crash safety. Staging, backups and the journal live in the upload
+// directory, so every move is an atomic rename and they survive with the
+// uploaded plugins (e.g. on a Docker volume). install() fsyncs a journal
 // before touching the plugin directory and removes it as the commit point;
 // the plugin is also on the denylist while it loads, so even without a
 // journal a plugin that crashed the server is not loaded again at start.
@@ -38,6 +43,7 @@
 #include "Json.hpp"
 #include "PluginDenylist.hpp"
 #include "PluginManager.hpp"
+#include "PluginSources.hpp"
 #include "Result.hpp"
 #include "../utils/ILogger.hpp"
 
@@ -53,7 +59,8 @@ namespace Orcha::Core {
 
     struct PluginUploadOptions {
         bool enabled = false;
-        std::filesystem::path plugin_directory;
+        std::filesystem::path upload_directory;    ///< plugins.upload.directory: installs + staging
+        std::filesystem::path bundled_directory;   ///< plugins.directory: read, never written
         std::vector<std::string> public_keys;   ///< base64 raw 32-byte Ed25519 keys
         std::uint64_t max_bytes = 32ull * 1024 * 1024;
         std::size_t max_staged = 20;
@@ -98,6 +105,7 @@ namespace Orcha::Core {
 
         // Relative to what is installed now (set by list()/stage()).
         std::optional<std::string> replaces_version;
+        bool replaces_bundled = false;   ///< installing it overrides a bundled plugin
         std::string change = "new";  ///< new | upgrade | downgrade | reinstall | replace
 
         [[nodiscard]] Json to_json() const;
@@ -108,6 +116,7 @@ namespace Orcha::Core {
         std::string name;
         std::string version;
         std::optional<std::string> previous_version;
+        bool overrides_bundled = false;
     };
 
     class PluginInstaller {
@@ -143,6 +152,9 @@ namespace Orcha::Core {
         /// that load or unload plugins (PluginAdminRoute).
         [[nodiscard]] std::shared_ptr<std::timed_mutex> lifecycle_mutex() const { return lifecycle_; }
 
+        /// Where uploaded plugins are installed (plugins.upload.directory).
+        [[nodiscard]] const std::filesystem::path& upload_directory() const { return options_.upload_directory; }
+
         /// Where an uploaded plugin came from (written next to it on install),
         /// or nullopt for plugins that were not uploaded.
         [[nodiscard]] static std::optional<Json> provenance(const PluginMetadata& meta);
@@ -155,12 +167,13 @@ namespace Orcha::Core {
         struct Existing {
             PluginMetadata meta;
             bool loaded = false;
+            bool uploaded = false;   ///< lives in the upload directory (else bundled)
         };
 
         [[nodiscard]] std::filesystem::path staging_dir() const;
         [[nodiscard]] std::filesystem::path upload_dir(const std::string& id) const;
         [[nodiscard]] std::optional<Existing> find_existing(const std::string& name) const;
-        [[nodiscard]] std::vector<PluginMetadata> scan() const;   ///< discovery, never throws
+        [[nodiscard]] PluginSources sources() const { return {options_.bundled_directory, options_.upload_directory}; }
         [[nodiscard]] std::optional<std::string> verify_signature(const std::string& filename,
                                                                   const std::string& library_sha256,
                                                                   const std::optional<std::string>& manifest,

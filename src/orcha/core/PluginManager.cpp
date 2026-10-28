@@ -143,19 +143,36 @@ namespace Orcha::Core {
     PluginManager::LoadResult PluginManager::load_plugins_from_directory(
         const std::filesystem::path& directory,
         bool strict_dependencies) {
+        return load_plugin_list(discovery_->scan_plugins(directory), directory.string(), strict_dependencies);
+    }
 
+    PluginManager::LoadResult PluginManager::load_plugins(const PluginSources& sources,
+                                                          bool strict_dependencies) {
+        std::vector<PluginMetadata> plugins;
+        for (auto& entry : sources.scan(*discovery_)) {
+            if (entry.overrides) {
+                logger_->info("Uploaded plugin " + entry.meta.name + " " + entry.meta.version +
+                              " overrides the bundled " + entry.overrides->version);
+            }
+            plugins.push_back(std::move(entry.meta));
+        }
+        std::string where = sources.bundled.string();
+        if (!sources.uploaded.empty()) where += " and " + sources.uploaded.string();
+        return load_plugin_list(std::move(plugins), where, strict_dependencies);
+    }
+
+    PluginManager::LoadResult PluginManager::load_plugin_list(std::vector<PluginMetadata> plugins,
+                                                              const std::string& where,
+                                                              bool strict_dependencies) {
         LoadResult result;
 
-        // Scan for all plugins
-        auto plugins = discovery_->scan_plugins(directory);
-
         if (plugins.empty()) {
-            logger_->info("No plugins found in directory: " + directory.string());
+            logger_->info("No plugins found in " + where);
             return result;
         }
 
         logger_->info("Discovered " + std::to_string(plugins.size()) +
-                     " plugin(s) in " + directory.string());
+                     " plugin(s) in " + where);
 
         // Skip plugins on the persistent denylist (disabled via the admin API).
         if (denylist_) {

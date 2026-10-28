@@ -104,7 +104,8 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
         const auto upload = Config::PluginUploadConfig::from_config(config);
         Core::PluginUploadOptions options;
         options.enabled = upload.enabled;
-        options.plugin_directory = Config::PluginConfig::from_config(config).directory;
+        options.bundled_directory = Config::PluginConfig::from_config(config).directory;
+        options.upload_directory = upload.directory;
         options.public_keys = upload.public_keys;
         options.max_bytes = static_cast<std::uint64_t>(std::max<int64_t>(1, upload.max_bytes));
         options.admin_auth_required = Config::AdminConfig::from_config(config).auth_required;
@@ -202,8 +203,16 @@ size_t load_plugins(Orcha::Core::ServiceLocator& services,
         installer->recover_interrupted();
     }
 
-    // Load plugins with dependency resolution
-    auto result = plugin_manager->load_plugins_from_directory(plugin_config.directory);
+    // Load bundled and uploaded plugins (an upload overrides a bundled plugin
+    // of the same name), with dependency resolution across both.
+    Core::PluginSources sources{plugin_config.directory,
+                                Config::PluginUploadConfig::from_config(config).directory};
+    if (sources.overlapping()) {
+        logger->error("plugins.upload.directory and plugins.directory must not be inside each other; "
+                      "loading only " + plugin_config.directory);
+        sources.uploaded.clear();
+    }
+    auto result = plugin_manager->load_plugins(sources);
 
     // Handle dependency errors
     if (result.has_dependency_error()) {

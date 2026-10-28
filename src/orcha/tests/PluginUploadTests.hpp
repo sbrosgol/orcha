@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "../agent/routes/PluginAdminRoute.hpp"
 #include "../agent/routes/PluginUploadRoute.hpp"
 #include "../config/ConfigValidator.hpp"
 #include "../config/PluginUploadConfig.hpp"
@@ -103,10 +104,11 @@ namespace Orcha::Tests {
             std::string public_;
         };
 
-        /// A plugin directory, a real manager and an installer.
+        /// A bundled and an upload directory, a real manager and an installer.
         struct Env {
             fs::path root;
-            fs::path plugins;
+            fs::path bundled;   ///< plugins.directory
+            fs::path plugins;   ///< plugins.upload.directory (where installs go)
             fs::path staging;
             TestKey key;
             std::shared_ptr<Mocks::MockLogger> logger = std::make_shared<Mocks::MockLogger>();
@@ -119,8 +121,10 @@ namespace Orcha::Tests {
             Env() {
                 std::random_device rd;
                 root = fs::temp_directory_path() / ("orcha-upload-test-" + std::to_string(rd()));
-                plugins = root / "plugins";
+                bundled = root / "bundled";
+                plugins = root / "uploads";
                 staging = plugins / Core::PluginInstaller::kStagingDirName;
+                fs::create_directories(bundled);
                 fs::create_directories(plugins);
                 manager = std::make_shared<Core::PluginManager>(registry, discovery, logger);
                 denylist = std::make_shared<Core::FilePluginDenylist>(root / "denylist.txt");
@@ -135,7 +139,8 @@ namespace Orcha::Tests {
             [[nodiscard]] Core::PluginUploadOptions options() const {
                 Core::PluginUploadOptions o;
                 o.enabled = true;
-                o.plugin_directory = plugins;
+                o.upload_directory = plugins;
+                o.bundled_directory = bundled;
                 o.public_keys = {key.public_base64()};
                 return o;
             }
@@ -291,7 +296,9 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(reason([](auto& o) { o.admin_auth_required = false; }).find("admin.auth_required") != std::string::npos);
         ORCHA_ASSERT(reason([](auto& o) { o.public_keys.clear(); }).find("No signing keys") == 0);
         ORCHA_ASSERT(reason([](auto& o) { o.public_keys = {"not-a-key"}; }).find("public_keys[0]") != std::string::npos);
-        ORCHA_ASSERT(reason([](auto& o) { o.plugin_directory.clear(); }).find("plugins.directory") != std::string::npos);
+        ORCHA_ASSERT(reason([](auto& o) { o.upload_directory.clear(); }).find("plugins.upload.directory") != std::string::npos);
+        ORCHA_ASSERT(reason([&](auto& o) { o.upload_directory = env.bundled / "uploads"; }).find("inside each other") != std::string::npos);
+        ORCHA_ASSERT(reason([&](auto& o) { o.bundled_directory = env.plugins / "x"; }).find("inside each other") != std::string::npos);
 
         auto off = env.make([&] { auto o = env.options(); o.enabled = false; return o; }());
         auto staged = off->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), std::nullopt));
@@ -503,9 +510,100 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(marked.size() == 1 && marked.front().install_crashed_at.has_value());
         // The bad journal is left alone (and blocks installs until someone looks).
         ORCHA_ASSERT(read_file(env.root / "precious" / "data.bin") == "keep" && fs::exists(evil / "install.json"));
-        ORCHA_ASSERT(logged(*env.logger, "outside plugins.directory") >= 1);
+        ORCHA_ASSERT(logged(*env.logger, "outside plugins.upload.directory") >= 1);
         ORCHA_ASSERT(!fs::exists(env.staging / ".tmp-eeee"));
         std::cout << "[PASS] test_plugin_install_recovers_after_crash\n";
+    }
+
+    inline void test_plugin_sources() {
+        using namespace upload_tests;
+        Env env;
+        write_file(env.bundled / "a" / "manifest.json", manifest("alpha", "1.0.0"));
+        write_file(env.bundled / "a" / lib_name("alpha"), "x");
+        write_file(env.bundled / "b" / "manifest.json", manifest("beta", "1.0.0"));
+        write_file(env.bundled / "b" / lib_name("beta"), "x");
+        write_file(env.plugins / "beta-1" / "manifest.json", manifest("beta", "2.0.0"));
+        write_file(env.plugins / "beta-1" / lib_name("beta"), "x");
+        write_file(env.plugins / "gamma-1" / "manifest.json", manifest("gamma", "0.1.0"));
+        write_file(env.plugins / "gamma-1" / lib_name("gamma"), "x");
+        write_file(env.staging / "staged" / lib_name("hidden"), "x");   // staging is never a plugin
+
+        const Core::PluginSources src{env.bundled, env.plugins};
+        const auto entries = src.scan(*env.discovery);
+        ORCHA_ASSERT(entries.size() == 3);
+        const auto find = [&](const std::string& n) {
+            return *std::ranges::find_if(entries, [&](const auto& e) { return e.meta.name == n; });
+        };
+        ORCHA_ASSERT(!find("alpha").uploaded && !find("alpha").overrides);
+        ORCHA_ASSERT(find("beta").uploaded && find("beta").meta.version == "2.0.0");
+        ORCHA_ASSERT(find("beta").overrides && find("beta").overrides->version == "1.0.0");
+        ORCHA_ASSERT(find("gamma").uploaded && !find("gamma").overrides);
+        ORCHA_ASSERT(src.is_uploaded(find("beta").meta) && !src.is_uploaded(find("alpha").meta));
+
+        ORCHA_ASSERT(!src.overlapping());
+        ORCHA_ASSERT((Core::PluginSources{env.root, env.plugins}.overlapping()));
+        ORCHA_ASSERT((Core::PluginSources{env.plugins / "x", env.plugins}.overlapping()));
+        ORCHA_ASSERT(!(Core::PluginSources{env.bundled, {}}.overlapping()));
+        ORCHA_ASSERT((Core::PluginSources{env.bundled, env.root / "missing"}.scan(*env.discovery).size() == 2));
+        std::cout << "[PASS] test_plugin_sources\n";
+    }
+
+    inline void test_plugin_upload_overrides_bundled() {
+        using namespace upload_tests;
+        Env env;
+        // A bundled plugin, loaded the way the server starts.
+        const auto bundled_dir = env.bundled / "SlowTest";
+        fs::create_directories(bundled_dir);
+        fs::copy_file(ORCHA_TEST_SLOW_PLUGIN_PATH, bundled_dir / lib_name("slowtest"));
+        write_file(bundled_dir / "manifest.json", manifest("slowtest", "1.0.0"));
+        const auto bundled_lib = read_file(bundled_dir / lib_name("slowtest"));
+        const Core::PluginSources sources{env.bundled, env.plugins};
+        ORCHA_ASSERT(env.manager->load_plugins(sources).loaded_count == 1);
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.0.0");
+
+        const auto bundled_untouched = [&] {
+            return fs::exists(bundled_dir / "manifest.json") && read_file(bundled_dir / lib_name("slowtest")) == bundled_lib &&
+                   std::distance(fs::directory_iterator(bundled_dir), fs::directory_iterator{}) == 2;
+        };
+
+        // A failing override reloads the bundled version; nothing is left in uploads.
+        auto bad = env.installer->stage(env.upload(ORCHA_TEST_LEGACY_PLUGIN_PATH, lib_name("slowtest_legacy"),
+                                                   manifest("slowtest", "2.0.0")));
+        ORCHA_ASSERT(bad.is_ok() && bad.value().replaces_bundled && bad.value().change == "upgrade");
+        auto failed = env.installer->install(bad.value().id, "tester");
+        ORCHA_ASSERT(failed.is_err() && failed.error().kind == K::LoadFailed && failed.error().rolled_back);
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.0.0");
+        ORCHA_ASSERT(bundled_untouched() && env.install_dirs("slowtest").empty());
+        ORCHA_ASSERT(env.installer->discard(bad.value().id, "t").is_ok());
+
+        // A good one overrides it: loaded from the upload directory, bundled files untouched.
+        auto up = env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.0.0")));
+        ORCHA_ASSERT(up.overrides_bundled && up.previous_version == "1.0.0");
+        const auto now = env.manager->get_plugin_metadata("slowtest");
+        ORCHA_ASSERT(now->version == "2.0.0" && sources.is_uploaded(*now));
+        ORCHA_ASSERT(bundled_untouched());
+
+        // The admin API says so.
+        Agent::Routes::PluginAdminRoute admin(env.manager, env.discovery, env.registry, env.bundled.string(),
+                                              std::chrono::milliseconds(5000), env.logger, env.denylist,
+                                              nullptr, env.plugins);
+        Agent::HttpRequest list;
+        list.method = "GET";
+        list.path = "/api/plugins";
+        const auto listed = Json::parse(admin.handle(list).body);
+        const auto it = std::ranges::find_if(listed["plugins"], [](const Json& p) { return p["name"] == "slowtest"; });
+        ORCHA_ASSERT(it != listed["plugins"].end());
+        ORCHA_ASSERT((*it)["source"] == "uploaded" && (*it)["overrides"]["version"] == "1.0.0" && (*it)["version"] == "2.0.0");
+
+        // After a restart the upload still wins.
+        for (const auto& p : env.manager->get_all_plugins()) (void)env.manager->unload_plugin(p.name);
+        auto registry = std::make_shared<Core::CommandRegistry>(env.logger);
+        Core::PluginManager restarted(registry, env.discovery, env.logger);
+        ORCHA_ASSERT(restarted.load_plugins(sources).loaded_count == 1);
+        ORCHA_ASSERT(restarted.get_plugin_metadata("slowtest")->version == "2.0.0");
+        ORCHA_ASSERT(logged(*env.logger, "overrides the bundled 1.0.0") >= 1);
+        for (const auto& p : restarted.get_all_plugins()) (void)restarted.unload_plugin(p.name);
+        std::cout << "[PASS] test_plugin_upload_overrides_bundled\n";
     }
 
     // ========== HTTP ==========
@@ -582,6 +680,9 @@ namespace Orcha::Tests {
         // Defaults: off, nothing to warn about.
         auto defaults = Config::PluginUploadConfig::from_config(load("plugins:\n  directory: commands\n"));
         ORCHA_ASSERT(!defaults.enabled && defaults.public_keys.empty() && defaults.max_bytes == 32ll * 1024 * 1024);
+        ORCHA_ASSERT(defaults.directory == "./uploaded-plugins");
+        auto nested = Config::ConfigValidator{}.validate(load("plugins:\n  directory: commands\n  upload:\n    directory: commands/up\n"));
+        ORCHA_ASSERT(!nested.valid && has(nested.get_error_messages(), "plugins.upload.directory"));
         ORCHA_ASSERT(Config::ConfigValidator{}.validate(load("plugins:\n  directory: commands\n")).issues.empty());
 
         // Keys as a YAML list or as one comma/space separated string (the env form).
@@ -612,6 +713,8 @@ namespace Orcha::Tests {
         test_plugin_upload_install_upgrade_and_rollback();
         test_plugin_upload_refuses_unsafe_installs();
         test_plugin_install_recovers_after_crash();
+        test_plugin_sources();
+        test_plugin_upload_overrides_bundled();
         test_plugin_upload_route();
 #endif
     }

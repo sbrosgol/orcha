@@ -119,6 +119,9 @@ USER orcha
 # Inside a container the server must listen on all interfaces; the published
 # port is the boundary. POST /workflow still requires ORCHA_SERVER_API_TOKEN.
 ENV ORCHA_SERVER_HOST=0.0.0.0
+# Uploaded plugins on the data volume; bundled plugins stay in the image
+# (/app/commands) and update with it.
+ENV ORCHA_PLUGINS_UPLOAD_DIRECTORY=/app/data/plugins
 
 # HTTP API (matches server.port in orcha.yaml).
 EXPOSE 8070

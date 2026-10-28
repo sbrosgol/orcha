@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "../core/PluginSources.hpp"
 #include "IConfiguration.hpp"
 #include <vector>
 #include <string>
@@ -203,6 +204,17 @@ namespace Orcha::Config {
         }
 
         static void validate_plugin_upload_config(const IConfiguration& config, ValidationResult& result) {
+            // Uploaded plugins live apart from the bundled ones; nested
+            // directories would make discovery see plugins twice.
+            const std::filesystem::path bundled = config.get_string("plugins.directory", "./commands");
+            const std::filesystem::path uploaded = config.get_string("plugins.upload.directory", "./uploaded-plugins");
+            if (uploaded.empty()) {
+                result.add_error("plugins.upload.directory", "Cannot be empty");
+            } else if (Core::PluginSources{bundled, uploaded}.overlapping()) {
+                result.add_error("plugins.upload.directory",
+                    "Must not be inside plugins.directory, or contain it",
+                    "Use a separate, persistent directory such as ./uploaded-plugins");
+            }
             const auto max_bytes = config.get_int("plugins.upload.max_bytes", 32ll * 1024 * 1024);
             if (max_bytes <= 0) {
                 result.add_error("plugins.upload.max_bytes", "Must be greater than 0");

@@ -126,7 +126,8 @@ namespace Orcha::Agent {
         }
         router_.register_handler(std::make_shared<Routes::PluginAdminRoute>(
             plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_, denylist_,
-            plugin_installer_ ? plugin_installer_->lifecycle_mutex() : nullptr));
+            plugin_installer_ ? plugin_installer_->lifecycle_mutex() : nullptr,
+            plugin_installer_ ? plugin_installer_->upload_directory() : std::filesystem::path{}));
         router_.register_handler(std::make_shared<Routes::DashboardRoute>(logger_));
         // JSON <-> YAML for the job editor's YAML tab (stateless).
         router_.register_handler(std::make_shared<Routes::DefinitionRoute>());

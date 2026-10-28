@@ -9,6 +9,7 @@
 #include "ICommandRegistry.hpp"
 #include "DependencyResolver.hpp"
 #include "PluginDenylist.hpp"
+#include "PluginSources.hpp"
 #include "../utils/ILogger.hpp"
 #include <memory>
 #include <functional>
@@ -91,6 +92,13 @@ namespace Orcha::Core {
             bool strict_dependencies = false);
 
         /**
+         * @brief Load the bundled and uploaded plugins (an uploaded plugin
+         *        overrides a bundled one with the same name), with dependency
+         *        ordering across both directories.
+         */
+        LoadResult load_plugins(const PluginSources& sources, bool strict_dependencies = false);
+
+        /**
          * @brief Scan and load all plugins (legacy overload for backward compatibility).
          * @param directory Plugin directory path.
          * @return Number of plugins loaded.
@@ -170,6 +178,8 @@ namespace Orcha::Core {
         void on_plugin_error(std::function<void(const std::string&, const std::string&)> callback);
 
     private:
+        LoadResult load_plugin_list(std::vector<PluginMetadata> plugins, const std::string& where,
+                                    bool strict_dependencies);
         void watch_thread_func(std::stop_token stop);
         void notify_loaded(const std::string& name);
         void notify_unloaded(const std::string& name);
