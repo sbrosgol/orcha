@@ -46,7 +46,7 @@ namespace Orcha::Core {
         [[nodiscard]] size_t command_count() const override;
 
         // IMutableCommandRegistry interface
-        [[nodiscard]] bool load_command_library(const std::string& path) override;
+        [[nodiscard]] Result<void, std::string> try_load_command_library(const std::string& path) override;
         [[nodiscard]] bool register_command(std::shared_ptr<ICommand> command) override;
         [[nodiscard]] bool unregister_command(const std::string& name) override;
 

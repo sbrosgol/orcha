@@ -26,7 +26,15 @@ namespace Orcha::Core {
 
         const std::string ext = get_library_extension();
 
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
+        for (auto it = std::filesystem::recursive_directory_iterator(directory);
+             it != std::filesystem::recursive_directory_iterator(); ++it) {
+            const auto& entry = *it;
+            // Hidden directories are not plugins: .orcha-uploads holds staged
+            // uploads and install backups (PluginInstaller).
+            if (entry.is_directory() && entry.path().filename().string().starts_with('.')) {
+                it.disable_recursion_pending();
+                continue;
+            }
             // Check for manifest.json first
             if (entry.path().filename() == "manifest.json") {
                 if (auto meta = load_manifest(entry.path())) {
@@ -222,11 +230,17 @@ namespace Orcha::Core {
     }
 
     bool PluginManager::load_plugin(const std::filesystem::path& library_path) {
+        return try_load_plugin(library_path).is_ok();
+    }
+
+    Result<void, std::string> PluginManager::try_load_plugin(const std::filesystem::path& library_path) {
+        using R = Result<void, std::string>;
         // Get metadata
         auto meta_opt = discovery_->get_plugin_info(library_path);
         if (!meta_opt) {
-            notify_error("unknown", "Could not get plugin metadata for " + library_path.string());
-            return false;
+            const std::string reason = "Could not get plugin metadata for " + library_path.string();
+            notify_error("unknown", reason);
+            return R::Err(reason);
         }
 
         auto& meta = *meta_opt;
@@ -236,7 +250,7 @@ namespace Orcha::Core {
             std::lock_guard lock(mutex_);
             if (loaded_plugins_.contains(meta.name)) {
                 logger_->warn("Plugin '" + meta.name + "' is already loaded");
-                return false;
+                return R::Err("Plugin '" + meta.name + "' is already loaded");
             }
         }
 
@@ -249,9 +263,9 @@ namespace Orcha::Core {
         }
 
         // Load through registry
-        if (!registry_->load_command_library(library_path.string())) {
+        if (auto loaded = registry_->try_load_command_library(library_path.string()); loaded.is_err()) {
             notify_error(meta.name, "Failed to load library: " + library_path.string());
-            return false;
+            return R::Err(loaded.error());
         }
 
         std::vector<std::string> new_commands;
@@ -275,7 +289,7 @@ namespace Orcha::Core {
         logger_->info("Loaded plugin: " + meta.name + " v" + meta.version);
         notify_loaded(meta.name);
 
-        return true;
+        return R::Ok();
     }
 
     bool PluginManager::unload_plugin(const std::string& name) {

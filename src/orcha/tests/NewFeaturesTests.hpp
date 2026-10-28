@@ -19,6 +19,7 @@
 #include "ResilienceTests.hpp"
 #include "RunQueueTests.hpp"
 #include "YamlTests.hpp"
+#include "PluginUploadTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -286,6 +287,8 @@ server:
         // YAML definitions
         std::cout << "\n-- YAML definitions --\n";
         run_yaml_tests();
+
+        run_plugin_upload_tests();
 
         std::cout << "\n=== All New Features Tests Passed ===\n";
     }

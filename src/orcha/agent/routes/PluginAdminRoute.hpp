@@ -17,10 +17,12 @@
 #include "../../core/IPluginDiscovery.hpp"
 #include "../../core/ICommandRegistry.hpp"
 #include "../../core/PluginDenylist.hpp"
+#include "../../core/PluginInstaller.hpp"
 #include "../../utils/ILogger.hpp"
 
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 
@@ -38,14 +40,16 @@ namespace Orcha::Agent::Routes {
                          std::string plugin_directory,
                          std::chrono::milliseconds watch_interval,
                          std::shared_ptr<Utils::ILogger> logger = nullptr,
-                         std::shared_ptr<Core::IPluginDenylist> denylist = nullptr)
+                         std::shared_ptr<Core::IPluginDenylist> denylist = nullptr,
+                         std::shared_ptr<std::timed_mutex> lifecycle_mutex = nullptr)
             : manager_(std::move(manager))
             , discovery_(std::move(discovery))
             , registry_(std::move(registry))
             , directory_(std::move(plugin_directory))
             , watch_interval_(watch_interval)
             , logger_(std::move(logger))
-            , denylist_(std::move(denylist)) {}
+            , denylist_(std::move(denylist))
+            , lifecycle_(std::move(lifecycle_mutex)) {}
 
         [[nodiscard]] bool can_handle(
             const std::string& method,
@@ -199,6 +203,9 @@ namespace Orcha::Agent::Routes {
         }
 
         HttpResponse perform_action(const std::string& name, const std::string& action) {
+            // Not while a plugin upload is being installed (PluginInstaller).
+            std::unique_lock<std::timed_mutex> lifecycle;
+            if (lifecycle_) lifecycle = std::unique_lock(*lifecycle_);
             bool ok = false;
             std::string message;
 
@@ -259,7 +266,8 @@ namespace Orcha::Agent::Routes {
                 deps[i] = meta.dependencies[i];
             }
             obj["dependencies"] = deps;
-
+            // Set for plugins installed from an upload: who, when, which key.
+            if (auto origin = Core::PluginInstaller::provenance(meta)) obj["provenance"] = *origin;
             return obj;
         }
 
@@ -270,6 +278,7 @@ namespace Orcha::Agent::Routes {
         std::chrono::milliseconds watch_interval_;
         std::shared_ptr<Utils::ILogger> logger_;
         std::shared_ptr<Core::IPluginDenylist> denylist_;
+        std::shared_ptr<std::timed_mutex> lifecycle_;
     };
 
 } // namespace Orcha::Agent::Routes

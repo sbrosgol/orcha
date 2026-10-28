@@ -106,6 +106,13 @@ namespace Orcha::Core {
         bool load_plugin(const std::filesystem::path& library_path);
 
         /**
+         * @brief load_plugin() that says why loading failed (no metadata,
+         *        already loaded, or the registry's reason: dlopen error, ABI
+         *        mismatch, ...).
+         */
+        [[nodiscard]] Result<void, std::string> try_load_plugin(const std::filesystem::path& library_path);
+
+        /**
          * @brief Unload a plugin by name.
          * @param name Plugin name.
          * @return True if unloading succeeded.

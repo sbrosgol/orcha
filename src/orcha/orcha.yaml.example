@@ -26,6 +26,14 @@ plugins:
   auto_reload: false
   scan_interval_ms: 5000
   denylist_path: "./orcha-disabled-plugins.txt"   # plugins disabled via the admin UI
+  # Uploading plugins from the admin dashboard (Plugins > Upload plugin).
+  # An installed plugin runs code inside this server, so uploads are off unless
+  # enabled here, need admin.auth_required, and must be signed with one of these
+  # Ed25519 keys (scripts/orcha-plugin-sign.sh keygen prints one).
+  upload:
+    enabled: false
+    public_keys: []                       # ["<base64 key>", ...]; env: comma-separated
+    max_bytes: 33554432                   # largest library accepted (32 MB)
 
 # Admin dashboard (/admin) and admin API (/api/plugins).
 admin:
