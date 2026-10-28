@@ -15,6 +15,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -85,22 +86,46 @@ namespace Orcha::Jobs {
         /**
          * @brief Build from request JSON (id/timestamps are assigned by the store).
          */
+        /**
+         * @brief Read a job from an API body. Absent fields keep their defaults
+         *        (enabled, no schedule); `description` and `schedule_cron` may
+         *        also be null. Unknown fields are ignored.
+         * @throws std::invalid_argument if a field has the wrong type. A
+         *         mistyped field used to be skipped, so `"enabled": "false"`
+         *         (or YAML `enabled: no`) left the job enabled and scheduled.
+         */
         static JobDefinition from_json(const Json& j) {
+            if (!j.is_object()) throw std::invalid_argument("a job must be an object");
+            const auto field = [&](const char* key, const char* expected, auto&& ok) -> const Json* {
+                if (!j.contains(key)) return nullptr;
+                const Json& v = j.at(key);
+                if (!ok(v)) {
+                    auto got = v.dump(-1, ' ', false, Json::error_handler_t::replace);
+                    if (got.size() > 40) got = got.substr(0, 37) + "...";
+                    throw std::invalid_argument(std::string("'") + key + "' must be " + expected +
+                                                " (got " + got + ")");
+                }
+                return v.is_null() ? nullptr : &v;
+            };
+            const auto string = [](const Json& v) { return v.is_string(); };
+            const auto string_or_null = [](const Json& v) { return v.is_string() || v.is_null(); };
+
             JobDefinition d;
-            if (j.contains("name")) {
-                d.name = j.at("name").get<std::string>();
+            if (const auto* v = field("name", "a string", string)) d.name = v->get<std::string>();
+            if (const auto* v = field("description", "a string", string_or_null)) {
+                d.description = v->get<std::string>();
             }
-            if (j.contains("description") && j.at("description").is_string()) {
-                d.description = j.at("description").get<std::string>();
+            if (const auto* v = field("definition", "an object with a 'steps' array",
+                                      [](const Json& x) { return x.is_object(); })) {
+                d.definition = *v;
             }
-            if (j.contains("definition")) {
-                d.definition = j.at("definition");
+            if (const auto* v = field("enabled", "true or false",
+                                      [](const Json& x) { return x.is_boolean(); })) {
+                d.enabled = v->get<bool>();
             }
-            if (j.contains("enabled") && j.at("enabled").is_boolean()) {
-                d.enabled = j.at("enabled").get<bool>();
-            }
-            if (j.contains("schedule_cron") && j.at("schedule_cron").is_string()) {
-                d.schedule_cron = j.at("schedule_cron").get<std::string>();
+            if (const auto* v = field("schedule_cron", "a cron string such as \"0 3 * * *\"",
+                                      string_or_null)) {
+                d.schedule_cron = v->get<std::string>();
             }
             return d;
         }

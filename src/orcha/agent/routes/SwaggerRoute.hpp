@@ -1013,7 +1013,7 @@ namespace Orcha::Agent::Routes {
             post_op["requestBody"] = json_or_yaml_body("JobInput");
             value post_resp = value::object();
             post_resp["201"] = json_response("Created", "JobDefinition");
-            post_resp["400"] = error_response("Validation error");
+            post_resp["400"] = error_response("Validation error, including a field of the wrong type (e.g. \"enabled\": \"false\")");
             post_resp["401"] = error_response("Unauthorized");
             post_resp["409"] = error_response("Job name already exists");
             post_resp["413"] = error_response("YAML body larger than 512 KB");
@@ -1047,7 +1047,7 @@ namespace Orcha::Agent::Routes {
             put_op["requestBody"] = json_or_yaml_body("JobInput");
             value put_resp = value::object();
             put_resp["200"] = json_response("Updated", "JobDefinition");
-            put_resp["400"] = error_response("Validation error");
+            put_resp["400"] = error_response("Validation error, including a field of the wrong type (e.g. \"enabled\": \"false\")");
             put_resp["404"] = error_response("Not found");
             put_resp["409"] = error_response("Name conflict");
             put_resp["413"] = error_response("YAML body larger than 512 KB");
