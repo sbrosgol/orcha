@@ -879,13 +879,14 @@ namespace Orcha::Agent::Routes {
             value params = value::array();
             params[0] = prefer;
             op["parameters"] = params;
-            op["requestBody"] = json_body("WorkflowRequest");
+            op["requestBody"] = json_or_yaml_body("WorkflowRequest");
             value responses = value::object();
             responses["202"] = json_response("Run accepted (queued or still running); see Location", "RunRecord");
             responses["200"] = json_response("Finished run (only with Prefer: wait)", "RunRecord");
-            responses["400"] = error_response("Invalid JSON or workflow settings");
+            responses["400"] = error_response("Invalid JSON/YAML (YAML errors include line and column) or workflow settings");
             responses["401"] = error_response("Missing or wrong bearer token");
-            responses["415"] = error_response("Unsupported media type");
+            responses["413"] = error_response("YAML body larger than 512 KB");
+            responses["415"] = error_response("Not application/json or a YAML media type");
             responses["429"] = error_response("Run queue full; retry after Retry-After seconds");
             responses["503"] = error_response("API disabled (no token on a non-loopback bind) or shutting down");
             op["responses"] = responses;

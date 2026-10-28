@@ -706,6 +706,52 @@ namespace Orcha::Tests {
 #endif
     }
 
+    inline void test_workflow_route_accepts_yaml() {
+        using namespace runq;
+        Env env({2, 8});
+        Agent::Routes::WorkflowRoute route(env.runs, nullptr, {std::chrono::seconds(10), 1});
+        const auto raw = [](const std::string& content_type, std::string body,
+                            std::optional<std::string> prefer = std::nullopt) {
+            Agent::HttpRequest r;
+            r.method = "POST";
+            r.path = "/workflow";
+            r.body = std::move(body);
+            if (!content_type.empty()) r.headers.emplace_back("Content-Type", content_type);
+            if (prefer) r.headers.emplace_back("Prefer", *prefer);
+            return r;
+        };
+
+        // YAML runs like JSON (ms is a YAML integer, so the step gets a number).
+        auto yaml = route.handle(raw("application/yaml",
+            "# deploy\nsteps:\n  - name: one\n    command: work\n    params:\n      ms: 10\n", "wait=5"));
+        ORCHA_ASSERT_EQ(yaml.status, Agent::status::OK);
+        ORCHA_ASSERT(Json::parse(yaml.body)["status"] == "success");
+        ORCHA_ASSERT_EQ(route.handle(raw("text/yaml; charset=utf-8", "steps:\n  - command: work\n")).status,
+                        Agent::status::Accepted);
+
+        // Errors: position for YAML, settings validated as for JSON, size capped.
+        auto bad = route.handle(raw("application/yaml", "steps:\n  - [unclosed\n"));
+        ORCHA_ASSERT_EQ(bad.status, Agent::status::BadRequest);
+        auto err = Json::parse(bad.body);
+        ORCHA_ASSERT(err.contains("line") && err["error"].get<std::string>().rfind("Invalid YAML body: ", 0) == 0);
+        auto settings = route.handle(raw("application/yaml", "rollback: sideways\nsteps: []\n"));
+        ORCHA_ASSERT_EQ(settings.status, Agent::status::BadRequest);
+        ORCHA_ASSERT(Json::parse(settings.body)["error"].get<std::string>().rfind("Invalid workflow: ", 0) == 0);
+        ORCHA_ASSERT_EQ(route.handle(raw("application/yaml", std::string(Agent::kMaxYamlBodyBytes + 1, '#'))).status,
+                        Agent::status::PayloadTooLarge);
+
+        // JSON is unchanged; media types are matched case-insensitively.
+        ORCHA_ASSERT_EQ(route.handle(raw("Application/JSON", R"({"steps":[{"command":"work"}]})")).status,
+                        Agent::status::Accepted);
+        auto bad_json = route.handle(raw("application/json", "{"));
+        ORCHA_ASSERT(Json::parse(bad_json.body)["error"].get<std::string>().rfind("Invalid JSON body: ", 0) == 0);
+        auto other = route.handle(raw("text/plain", "steps: []"));
+        ORCHA_ASSERT_EQ(other.status, Agent::status::UnsupportedMediaType);
+        ORCHA_ASSERT(Json::parse(other.body)["error"] == "Send the workflow as application/json or application/yaml");
+        ORCHA_ASSERT_EQ(route.handle(raw("", R"({"steps":[]})")).status, Agent::status::UnsupportedMediaType);
+        std::cout << "[PASS] test_workflow_route_accepts_yaml\n";
+    }
+
     inline void run_run_queue_tests() {
         std::cout << "\n-- Async Runs (Run Queue) --\n";
         test_run_queue_lifecycle();
@@ -728,6 +774,7 @@ namespace Orcha::Tests {
         test_prefer_wait_parsing();
         test_workflow_route_async_and_wait();
         test_workflow_route_waiter_cap();
+        test_workflow_route_accepts_yaml();
         test_workflow_route_runs_endpoints();
         test_job_route_queues_runs();
         test_http_server_sends_custom_headers();
