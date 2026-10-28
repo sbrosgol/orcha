@@ -32,7 +32,7 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 | HTTP server / routing / auth | `agent/HttpServer.*`, `agent/CommandAgent.*`, `agent/IRouteHandler.hpp`, `agent/AuthMiddleware.hpp`, `agent/routes/*` |
 | Admin dashboard | `agent/dashboard_embedded.hpp` (single raw-string page) — use the `admin-ui` skill |
 | Run queue (async runs) | `jobs/RunQueue.*` (admission, runners, cancel, wait), `agent/routes/RunResponses.hpp` (run resource, 202/429/409 replies) |
-| YAML definitions | `utils/YamlJson.hpp` (convert + limits), `agent/HttpBody.hpp` (YAML/JSON bodies), `agent/routes/DefinitionRoute.hpp` (`POST /api/definitions/convert`) |
+| YAML definitions | `utils/YamlJson.*` (target `yaml_json`; convert + limits), `agent/HttpBody.hpp` (YAML/JSON bodies), `agent/routes/DefinitionRoute.hpp` (`POST /api/definitions/convert`) |
 | Jobs | `jobs/JobService.hpp` (`execute` persists a run's lifecycle), `jobs/SqliteJobStore.*`, `jobs/JobScheduler.*`, `jobs/RunJobCommand.hpp` |
 | Config | `config/YamlConfiguration.*`, `config/ServerConfig.hpp`, `config/AdminConfig.hpp`, `orcha.yaml.example` |
 | Composition root | `main.cpp` (`bootstrap_services`, `run_server_mode`) |
@@ -62,8 +62,10 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   YAML bodies (YAML `Content-Type` on `/api/jobs`, `/api/definitions/convert`)
   go through `parse_request_body()` → `Utils::parse_yaml()` (depth 64, 100k
   values after alias expansion, one document).
-- **YAML ↔ JSON** lives only in `utils/YamlJson.hpp` (CLI, jobs API, convert
-  endpoint; the dashboard calls the endpoint and has no YAML parser). Plain
+- **YAML ↔ JSON** lives only in `utils/YamlJson.cpp` (CLI, jobs API, convert
+  endpoint; the dashboard calls the endpoint and has no YAML parser). Its header
+  must not include yaml-cpp (the agent layer builds without it); `parse_yaml`/
+  `json_to_yaml` are compiled for `Json` and `ordered_json` only. Plain
   scalars follow the YAML 1.2 core schema, quoted ones are strings, and
   `json_to_yaml()` must round-trip exactly (it verifies and falls back to
   quoting). Definitions are stored as JSON; YAML comments are not kept.

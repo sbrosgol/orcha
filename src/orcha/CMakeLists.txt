@@ -61,12 +61,20 @@ target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_j
 add_library(utils INTERFACE)
 target_include_directories(utils INTERFACE ${CMAKE_SOURCE_DIR}/utils)
 
+# YAML <-> JSON for definitions. yaml-cpp stays PRIVATE: YamlJson.hpp does not
+# include it, so the HTTP layer (agent/HttpBody.hpp) builds without it.
+add_library(yaml_json STATIC
+        utils/YamlJson.cpp
+        utils/YamlJson.hpp
+)
+target_link_libraries(yaml_json PUBLIC nlohmann_json::nlohmann_json PRIVATE yaml-cpp::yaml-cpp)
+
 add_library(workflow STATIC
         workflow/WorkflowEngine.cpp
         workflow/WorkflowEngine.hpp
         workflow/IWorkflowEngine.hpp
 )
-target_link_libraries(workflow PUBLIC core utils yaml-cpp::yaml-cpp logger)
+target_link_libraries(workflow PUBLIC core utils logger PRIVATE yaml_json)
 
 # Jobs persistence (SQLite-backed job/run store + execution service)
 add_library(jobs STATIC
@@ -108,7 +116,7 @@ add_library(agent STATIC
 
 
 # Boost.Beast (header-only) powers the HTTP server; needs Boost::system + threads.
-target_link_libraries(agent PUBLIC core workflow jobs Boost::thread Boost::system logger)
+target_link_libraries(agent PUBLIC core workflow jobs yaml_json Boost::thread Boost::system logger)
 
 # Main executable
 add_executable(orcha
@@ -169,8 +177,8 @@ add_executable(test_dependency_resolver
 target_link_libraries(test_dependency_resolver PRIVATE core)
 
 # Test executable for new architecture features.
-# workflow brings core (+nlohmann_json, yaml-cpp, logger, utils) and config
-# brings nlohmann_json/yaml-cpp transitively, so only the direct deps are listed
+# workflow brings core (+nlohmann_json, logger, utils), agent brings yaml_json and
+# config brings yaml-cpp transitively, so only the direct deps are listed
 # here to avoid duplicate-library link warnings.
 add_executable(test_new_features
         tests/test_new_features_main.cpp

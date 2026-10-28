@@ -7,7 +7,6 @@
 #include "../core/Json.hpp"
 #include "ExecutionContext.hpp"
 #include "../utils/YamlJson.hpp"
-#include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <iterator>
 #include <regex>
