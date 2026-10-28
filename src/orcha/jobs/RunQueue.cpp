@@ -19,7 +19,7 @@ namespace Orcha::Jobs {
         options_.max_concurrent = std::max<size_t>(1, options_.max_concurrent);
         runners_.reserve(options_.max_concurrent);
         for (size_t i = 0; i < options_.max_concurrent; ++i) {
-            runners_.emplace_back([this](std::stop_token stop) { runner(stop); });
+            runners_.emplace_back([this](const std::stop_token &stop) { runner(stop); });
         }
     }
 
@@ -128,7 +128,7 @@ namespace Orcha::Jobs {
         tracker.done_cv.notify_all();
     }
 
-    void RunQueue::finish_cancelled(Entry& entry, const std::string& reason) {
+    void RunQueue::finish_cancelled(Entry& entry, const std::string& reason) const {
         entry.run.status = run_status::Cancelled;
         entry.run.error = reason;
         entry.run.finished_at = now_iso_utc();
