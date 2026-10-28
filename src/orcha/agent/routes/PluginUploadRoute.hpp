@@ -6,6 +6,8 @@
 //   GET    /api/plugins/_uploads               status + staged uploads
 //   POST   /api/plugins/_uploads               stage an upload -> 201
 //   POST   /api/plugins/_uploads/{id}/install  load it -> 200
+//          (body {"allow_downgrade": true} confirms installing an older version;
+//           without it a downgrade is a 409 with "requires": "allow_downgrade")
 //   DELETE /api/plugins/_uploads/{id}          discard it
 //
 // Upload body (JSON; files are base64):
@@ -58,7 +60,23 @@ namespace Orcha::Agent::Routes {
                 return reply_json(status::OK, out);
             }
             if (seg.size() == 5 && seg[4] == "install" && request.method == "POST") {
-                auto r = installer_->install(seg[3], user_of(request));
+                // Optional body: {"allow_downgrade": true} confirms installing an older version.
+                bool allow_downgrade = false;
+                if (!request.body.empty()) {
+                    try {
+                        const auto body = Orcha::parse_json_bounded(request.body, 4);
+                        if (!body.is_object()) throw std::invalid_argument("expected an object");
+                        if (body.contains("allow_downgrade")) {
+                            if (!body.at("allow_downgrade").is_boolean()) {
+                                throw std::invalid_argument("allow_downgrade must be true or false");
+                            }
+                            allow_downgrade = body.at("allow_downgrade").get<bool>();
+                        }
+                    } catch (const std::exception& ex) {
+                        return reply_error(status::BadRequest, std::string("Invalid install body: ") + ex.what());
+                    }
+                }
+                auto r = installer_->install(seg[3], user_of(request), allow_downgrade);
                 if (r.is_err()) return reply_upload_error(r.error());
                 Orcha::Json out = {{"success", true}, {"name", r.value().name}, {"version", r.value().version},
                                    {"previous_version", r.value().previous_version
@@ -156,6 +174,7 @@ namespace Orcha::Agent::Routes {
         static HttpResponse reply_upload_error(const Core::PluginUploadError& error) {
             Orcha::Json body = {{"error", error.message}};
             if (error.kind == Core::PluginUploadErrorKind::LoadFailed) body["rolled_back"] = error.rolled_back;
+            if (!error.requires_confirmation.empty()) body["requires"] = error.requires_confirmation;
             return reply_json(status_for(error.kind), body);
         }
 

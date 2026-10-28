@@ -338,7 +338,14 @@ plugin whose name already exists replaces it:
   and after restarts, and the bundled files are never modified (so
   `plugins.directory` can be read-only).
 
-Workflows already running keep using the old version. If
+Workflows already running keep using the old version.
+
+Installing an **older** version than the one installed (a downgrade) needs
+explicit confirmation: the dashboard asks you to tick "Install … even though …
+is installed", and the API answers `409` with `"requires": "allow_downgrade"`
+until the install request sends `{"allow_downgrade": true}`. This is checked
+against the version installed at install time, so an upload that was an
+upgrade when staged but has since been overtaken is caught too. If
 the new version fails to load (for example it was built against another
 plugin ABI), the previous one is restored and reloaded. If the server dies
 while installing (a plugin can crash it while loading), the previous version
