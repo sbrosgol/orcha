@@ -21,8 +21,9 @@ conventions and how to build, run, seed and screenshot the page.
    If the build or run fails, report that as the top finding and stop.
    Then run the states harness (`scripts/states.mjs`) for states real data can't produce
    (all rollback statuses, half-open breakers, API failures, HTML in names) and read its
-   PNGs too. For editor changes, drive the editor over CDP and verify the saved definition
-   through the API.
+   PNGs too. For job editor changes run `scripts/editor-yaml.mjs`; for plugin upload
+   changes run `scripts/upload-env.sh start` + `scripts/upload-flow.mjs` (see the skill).
+   Both drive the real UI and verify through the API; extend them for new behaviour.
 4. Stop the agent process you started.
 
 ## Checklist
@@ -31,7 +32,12 @@ conventions and how to build, run, seed and screenshot the page.
 - Fields used in JS exist in the API JSON (`plugins[].{name,version,description,author,tags,parameters,status,library_path,dependencies}`, `watching`, `directory`, `commands`; jobs `{id,name,description,definition,enabled,schedule_cron,created_at,updated_at}`; runs `{id,job_id,trigger,status,started_at,finished_at,result[],error}` with `result[]` = `{success,output,error_message,command,step,name?,rollback?{status,message?}}`; `circuit_breakers[].{command,state:closed|open|half_open,consecutive_failures,total_calls,failed_calls,rejected_calls,last_failure|null}`).
 - The job editor round-trips definitions without loss: fields it does not edit (workflow `timeout_ms`, step `parallel`/`timeout_ms`, unknown keys) survive a save from the visual tab, and the `rollback`/`circuit_breaker` controls stay consistent with the JSON tab (including while the JSON is invalid).
 - Every `api()` call handles errors with a toast or an inline `.alert`. 401 errors (`isAuthErr`) are not double-reported.
-- Buttons that trigger requests show a busy state and can't be double-submitted.
+- Buttons that trigger requests show a busy state and can't be double-submitted, also after a
+  re-render (keep the "sending" state in data, not only on the old button).
+- A request can finish after its dialog was closed (Esc, "Keep for later"): its error must
+  still surface (toast), not be written into a hidden dialog.
+- A status/list fetch that fails is shown as an error with Retry, not as "feature off" or
+  stale rows.
 - Cron preview is UTC-evaluated, matching `jobs/CronExpr.hpp`.
 - Listeners are not re-bound on every render (watch `window`/`document` listeners inside render paths).
 
@@ -55,6 +61,12 @@ conventions and how to build, run, seed and screenshot the page.
 **Accessibility**
 - Interactive elements are buttons or links, not bare divs. Icon-only buttons have `aria-label`.
 - Visible focus. Esc closes overlays. Focus moves into dialogs and returns afterwards.
+- Focus survives re-renders: a dialog whose content is rebuilt after an async fetch or an
+  action (innerHTML) must keep or restore focus inside it, and code that focuses "later"
+  (setTimeout) must look the target up at that time, not hold a reference to a node that a
+  re-render replaced. Check `document.activeElement` after each step, not just visually.
+- Focus returns to a sensible opener even when the opener was clicked with the mouse (some
+  browsers do not focus buttons on click) or was removed by a re-render.
 - Toggles, tabs and radios expose state (`aria-checked`, `aria-selected`, `aria-expanded`).
 
 ## Output

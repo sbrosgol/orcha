@@ -35,6 +35,20 @@ it), or "full review" (the whole codebase). For a diff, use `git diff dev...HEAD
    Docker/compose, persisted data (job definitions in SQLite). Who breaks, and
    is it called out?
 6. **Operability**: config validation, logging, observability, admin surface.
+7. **Loading code and trust** (plugin uploads, anything that `dlopen`s): a
+   signature or check must bind *every* input that decides the outcome (file
+   name, plugin name, version, scope); otherwise renaming or replaying signed
+   bytes changes what they become. Nothing may be decided by loading the code.
+   Never `dlopen` new code at a path an old image may still occupy (the loader
+   returns the old image); use a fresh path per install. Never write into
+   image-owned directories (bundled plugins); override them from a separate,
+   persistent directory.
+8. **Crash safety of multi-step file changes**: the journal/backup lives on the
+   same filesystem and volume as what it protects (renames only, no
+   copy+delete), is fsynced before the first change, has an explicit commit
+   point, and recovery runs once, at server start, under a cross-process lock
+   (never from the CLI). Recovery paths from a journal are validated before use.
+   A plugin that crashed the process must not be loaded again on restart.
 
 ## Method
 
