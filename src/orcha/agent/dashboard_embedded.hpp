@@ -216,6 +216,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .page-hd h1 { margin:0; font-size:22px; font-weight:650; letter-spacing:-.015em; }
     .page-hd p { margin:4px 0 0; color:var(--muted); }
     .page-hd .sp { flex:1; }
+    /* Several header controls: centred on one line with each other (switch,
+       buttons), the group aligned with the title block like a single button. */
+    .page-hd .hd-actions { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
     .view { display:none; } .view.active { display:block; animation:fade .18s ease-out; }
     @keyframes fade { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
 
@@ -662,9 +665,11 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         <section class="view" id="view-plugins" aria-labelledby="h-plugins">
           <div class="page-hd"><div><h1 id="h-plugins">Plugins</h1><p id="pluginsSub">Command plugins discovered in the plugin directory.</p></div>
             <span class="sp"></span>
-            <label class="switch" title="Automatically load, reload and unload plugins as files change on disk">
-              <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label>
-            <button class="btn" id="uploadPluginBtn"><svg class="i"><use href="#i-upload"/></svg>Upload plugin</button></div>
+            <div class="hd-actions">
+              <label class="switch" title="Automatically load, reload and unload plugins as files change on disk">
+                <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label>
+              <button class="btn" id="uploadPluginBtn"><svg class="i"><use href="#i-upload"/></svg>Upload plugin</button>
+            </div></div>
           <div id="stagedUploads"></div>
           <div class="card">
             <div class="toolbar">
