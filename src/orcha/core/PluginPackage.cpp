@@ -256,6 +256,19 @@ namespace Orcha::Core::PluginPackage {
         return true;
     }
 
+    bool name_matches(std::string_view pattern, std::string_view name) {
+        // Iterative with one backtrack point: linear-ish, no recursion.
+        std::size_t p = 0, n = 0, star = std::string_view::npos, mark = 0;
+        while (n < name.size()) {
+            if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == name[n])) { ++p; ++n; }
+            else if (p < pattern.size() && pattern[p] == '*') { star = p++; mark = n; }
+            else if (star != std::string_view::npos) { p = star + 1; n = ++mark; }
+            else return false;
+        }
+        while (p < pattern.size() && pattern[p] == '*') ++p;
+        return p == pattern.size();
+    }
+
     std::string plugin_name_from_filename(std::string_view filename) {
         // Same rule as PluginDiscoveryService::create_basic_metadata.
         std::string stem = std::filesystem::path(std::string(filename)).stem().string();

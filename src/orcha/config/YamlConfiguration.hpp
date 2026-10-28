@@ -59,6 +59,7 @@ namespace Orcha::Config {
         [[nodiscard]] std::optional<bool> get_bool(const std::string& key) const override;
         [[nodiscard]] std::optional<double> get_double(const std::string& key) const override;
         [[nodiscard]] std::vector<std::string> get_string_list(const std::string& key) const override;
+        [[nodiscard]] std::optional<Json> get_json(const std::string& key) const override;
         [[nodiscard]] std::unique_ptr<IConfiguration> get_section(const std::string& section) const override;
         [[nodiscard]] bool has_key(const std::string& key) const override;
         [[nodiscard]] std::vector<std::string> get_keys() const override;

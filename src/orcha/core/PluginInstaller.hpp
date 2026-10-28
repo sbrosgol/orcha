@@ -57,17 +57,25 @@
 
 namespace Orcha::Core {
 
+    /// A public key trusted to sign uploads, and what it may sign.
+    struct TrustedPluginKey {
+        std::string key;                    ///< base64 raw 32-byte Ed25519 key
+        std::vector<std::string> plugins;   ///< name globs it may sign; empty: any name
+        bool override_bundled = false;      ///< may replace a plugin that is also bundled
+    };
+
     struct PluginUploadOptions {
         bool enabled = false;
+        std::vector<std::string> config_errors;   ///< malformed key settings: uploads stay off
         std::filesystem::path upload_directory;    ///< plugins.upload.directory: installs + staging
         std::filesystem::path bundled_directory;   ///< plugins.directory: read, never written
-        std::vector<std::string> public_keys;   ///< base64 raw 32-byte Ed25519 keys
+        std::vector<TrustedPluginKey> public_keys;
         std::uint64_t max_bytes = 32ull * 1024 * 1024;
         std::size_t max_staged = 20;
         bool admin_auth_required = true;        ///< uploads need an authenticated admin
     };
 
-    enum class PluginUploadErrorKind { Disabled, Invalid, TooLarge, BadSignature, NotFound,
+    enum class PluginUploadErrorKind { Disabled, Invalid, TooLarge, BadSignature, NotAllowed, NotFound,
                                        Conflict, LoadFailed, Internal };
 
     struct PluginUploadError {
@@ -97,6 +105,7 @@ namespace Orcha::Core {
         std::string format;
         std::string arch;
         std::string signer;          ///< key id of the key that verified the signature
+        std::string allowed_by;      ///< the key's scope that permits this name ("any name", "acme-*")
         bool has_manifest = false;
         std::size_t parameters = 0;  ///< parameters declared in the manifest
         std::string uploaded_at;     ///< UTC ISO-8601
@@ -174,10 +183,21 @@ namespace Orcha::Core {
         [[nodiscard]] std::filesystem::path upload_dir(const std::string& id) const;
         [[nodiscard]] std::optional<Existing> find_existing(const std::string& name) const;
         [[nodiscard]] PluginSources sources() const { return {options_.bundled_directory, options_.upload_directory}; }
-        [[nodiscard]] std::optional<std::string> verify_signature(const std::string& filename,
-                                                                  const std::string& library_sha256,
-                                                                  const std::optional<std::string>& manifest,
-                                                                  const std::string& signature) const;
+        struct Key {
+            std::string raw;           ///< 32 bytes
+            std::string id;
+            TrustedPluginKey trust;
+        };
+        /// The trusted key that verifies the signature, if any.
+        [[nodiscard]] const Key* verify_signature(const std::string& filename,
+                                                  const std::string& library_sha256,
+                                                  const std::optional<std::string>& manifest,
+                                                  const std::string& signature) const;
+        /// Why @p key may not sign plugin @p name (scope, bundled override), or
+        /// nullopt plus the scope that allows it in @p allowed_by.
+        [[nodiscard]] std::optional<PluginUploadError> check_allowed(const Key& key, const std::string& name,
+                                                                     std::string* allowed_by = nullptr) const;
+        [[nodiscard]] bool is_bundled(const std::string& name) const;
         [[nodiscard]] std::optional<StagedPlugin> read_staged(const std::string& id) const;
         [[nodiscard]] std::vector<StagedPlugin> list_unlocked() const;
         [[nodiscard]] bool has_unfinished_install() const;
@@ -189,7 +209,7 @@ namespace Orcha::Core {
         std::shared_ptr<IPluginDenylist> denylist_;
         std::shared_ptr<Utils::ILogger> logger_;
         std::shared_ptr<std::timed_mutex> lifecycle_;
-        std::vector<std::string> keys_;   ///< decoded raw public keys
+        std::vector<Key> keys_;
         std::string disabled_reason_;
     };
 

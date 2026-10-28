@@ -4,6 +4,7 @@
 //
 
 #include "YamlConfiguration.hpp"
+#include "../utils/YamlJson.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <sstream>
@@ -171,6 +172,16 @@ namespace Orcha::Config {
             }
         }
         return std::nullopt;
+    }
+
+    std::optional<Json> YamlConfiguration::get_json(const std::string& key) const {
+        YAML::Node node = navigate_to_key(key);
+        if (!node || node.IsNull()) return std::nullopt;
+        // Through the one YAML->JSON converter, so config values are typed
+        // exactly like YAML definitions.
+        YAML::Emitter out;
+        out << node;
+        return Utils::parse_yaml(out.c_str());
     }
 
     std::vector<std::string> YamlConfiguration::get_string_list(const std::string& key) const {

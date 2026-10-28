@@ -292,6 +292,22 @@ uploads are **off by default** and must be **signed**:
    Uploads also require `admin.auth_required: true`. If anything is missing,
    the dashboard's upload dialog says what.
 
+   **Scoping keys.** A plain key may sign any plugin name but may not
+   override a bundled plugin. To limit a key to certain names, or to let it
+   override bundled plugins, list it as a mapping:
+
+   ```yaml
+       public_keys:
+         - "g6lx...R4w="                    # any name, no bundled overrides
+         - key: "Zk1p...9Qs="
+           plugins: ["acme-*", "billing"]   # only these names (* and ? globs)
+           override_bundled: true           # may replace bundled plugins
+   ```
+
+   Both rules are checked at upload and again at install, against the
+   configuration at that moment. A refused upload gets `403` naming the key and
+   what it may sign. (`ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS` sets plain keys only.)
+
 3. **Sign each build** of the plugin. The signature covers the library's
    **file name**, its bytes and its `manifest.json`, so renaming the library
    or swapping the manifest invalidates it. The manifest (or, without one, the
@@ -339,9 +355,8 @@ The API is `GET|POST /api/plugins/_uploads`, `POST /api/plugins/_uploads/{id}/in
 and `DELETE /api/plugins/_uploads/{id}` (see `/swagger`).
 
 **What signing does not cover:** the signature is checked at upload. Anyone
-who can write to `plugins.directory` directly (or run a workflow that does,
-e.g. with `shell_exec`) can still add a plugin, and every trusted key can
-replace every plugin, bundled ones included.
+who can write to the plugin directories directly (or run a workflow that does,
+e.g. with `shell_exec`) can still add a plugin.
 
 > **Docker:** the image sets `plugins.upload.directory` to `/app/data/plugins`,
 > on the `orcha-data` volume, so uploaded plugins (and the staging area and

@@ -141,7 +141,7 @@ namespace Orcha::Tests {
                 o.enabled = true;
                 o.upload_directory = plugins;
                 o.bundled_directory = bundled;
-                o.public_keys = {key.public_base64()};
+                o.public_keys = {{key.public_base64(), {}, false}};
                 return o;
             }
             [[nodiscard]] std::shared_ptr<Core::PluginInstaller> make(Core::PluginUploadOptions o) const {
@@ -244,6 +244,14 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(pkg::plugin_name_from_filename("libEchoCommand.dylib") == "EchoCommand");
         ORCHA_ASSERT(pkg::plugin_name_from_filename("tool.so") == "tool");
 
+        // Key-scope globs
+        ORCHA_ASSERT(pkg::name_matches("acme-*", "acme-billing") && pkg::name_matches("acme-*", "acme-"));
+        ORCHA_ASSERT(!pkg::name_matches("acme-*", "xacme-billing") && !pkg::name_matches("acme-*", "acme"));
+        ORCHA_ASSERT(pkg::name_matches("*", "anything") && pkg::name_matches("a?c", "abc") && !pkg::name_matches("a?c", "ac"));
+        ORCHA_ASSERT(pkg::name_matches("*-db-*", "pg-db-backup") && !pkg::name_matches("*-db-*", "pg-db"));
+        ORCHA_ASSERT(pkg::name_matches("billing", "billing") && !pkg::name_matches("billing", "billing2"));
+        ORCHA_ASSERT(!pkg::name_matches("a*a*a*a*a*b", std::string(40, 'a')));   // no blow-up
+
         // Version changes
         using I = Core::PluginInstaller;
         ORCHA_ASSERT(I::version_change("1.0.0", "1.1.0") == "upgrade");
@@ -295,7 +303,11 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(reason([](auto& o) { o.enabled = false; }).find("plugins.upload.enabled") != std::string::npos);
         ORCHA_ASSERT(reason([](auto& o) { o.admin_auth_required = false; }).find("admin.auth_required") != std::string::npos);
         ORCHA_ASSERT(reason([](auto& o) { o.public_keys.clear(); }).find("No signing keys") == 0);
-        ORCHA_ASSERT(reason([](auto& o) { o.public_keys = {"not-a-key"}; }).find("public_keys[0]") != std::string::npos);
+        ORCHA_ASSERT(reason([](auto& o) { o.public_keys = {{"not-a-key", {}, false}}; }).find("public_keys[0]") != std::string::npos);
+        ORCHA_ASSERT(reason([&](auto& o) { o.public_keys = {{env.key.public_base64(), {"bad/glob"}, false}}; })
+                         .find("not a name pattern") != std::string::npos);
+        ORCHA_ASSERT(reason([](auto& o) { o.config_errors = {"plugins.upload.public_keys[1] must be a key"}; })
+                         .find("public_keys[1]") != std::string::npos);
         ORCHA_ASSERT(reason([](auto& o) { o.upload_directory.clear(); }).find("plugins.upload.directory") != std::string::npos);
         ORCHA_ASSERT(reason([&](auto& o) { o.upload_directory = env.bundled / "uploads"; }).find("inside each other") != std::string::npos);
         ORCHA_ASSERT(reason([&](auto& o) { o.bundled_directory = env.plugins / "x"; }).find("inside each other") != std::string::npos);
@@ -559,6 +571,8 @@ namespace Orcha::Tests {
         const auto bundled_lib = read_file(bundled_dir / lib_name("slowtest"));
         const Core::PluginSources sources{env.bundled, env.plugins};
         ORCHA_ASSERT(env.manager->load_plugins(sources).loaded_count == 1);
+        // Overriding a bundled plugin needs a key that allows it.
+        env.installer = env.make([&] { auto o = env.options(); o.public_keys[0].override_bundled = true; return o; }());
         ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.0.0");
 
         const auto bundled_untouched = [&] {
@@ -604,6 +618,51 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(logged(*env.logger, "overrides the bundled 1.0.0") >= 1);
         for (const auto& p : restarted.get_all_plugins()) (void)restarted.unload_plugin(p.name);
         std::cout << "[PASS] test_plugin_upload_overrides_bundled\n";
+    }
+
+    inline void test_plugin_upload_key_scopes() {
+        using namespace upload_tests;
+        Env env;
+        const auto scoped = [&](std::vector<std::string> plugins, bool override_bundled) {
+            auto o = env.options();
+            o.public_keys = {{env.key.public_base64(), std::move(plugins), override_bundled}};
+            return env.make(o);
+        };
+        // Name scope: only acme-* names.
+        auto acme = scoped({"acme-*"}, false);
+        auto refused = acme->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("x"), manifest("slowtest", "1.0.0")));
+        ORCHA_ASSERT(refused.is_err() && refused.error().kind == K::NotAllowed);
+        ORCHA_ASSERT(refused.error().message == "Key " + env.key.id() + " may not sign plugin \"slowtest\" (it may sign: acme-*)");
+        auto ok = acme->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("x"), manifest("acme-slow", "1.0.0")));
+        ORCHA_ASSERT(ok.is_ok() && ok.value().allowed_by == "acme-*");
+        ORCHA_ASSERT(acme->status()["keys"][0]["plugins"] == Json::array({"acme-*"}));
+        ORCHA_ASSERT(acme->status()["keys"][0]["override_bundled"] == false);
+
+        // Bundled plugins need override_bundled, also when an upload already overrides them.
+        write_file(env.bundled / "Bundled" / "manifest.json", manifest("bundled-x", "1.0.0"));
+        fs::copy_file(ORCHA_TEST_SLOW_PLUGIN_PATH, env.bundled / "Bundled" / lib_name("bundled-x"));
+        auto plain = scoped({}, false);
+        auto no = plain->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("x"), manifest("bundled-x", "2.0.0")));
+        ORCHA_ASSERT(no.is_err() && no.error().kind == K::NotAllowed);
+        ORCHA_ASSERT(no.error().message.find("override_bundled: true") != std::string::npos);
+        auto mayoverride = scoped({"bundled-*"}, true);
+        auto yes = mayoverride->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("x"), manifest("bundled-x", "2.0.0")));
+        ORCHA_ASSERT(yes.is_ok() && yes.value().replaces_bundled);
+        ORCHA_ASSERT(yes.value().allowed_by == "bundled-*, may override bundled plugins");
+
+        // Checked again at install: tightening the config blocks staged uploads.
+        auto installed = plain->install(yes.value().id, "tester");
+        ORCHA_ASSERT(installed.is_err() && installed.error().kind == K::NotAllowed);
+        ORCHA_ASSERT(env.install_dirs("bundled-x").empty() && !env.manager->get_plugin_metadata("bundled-x"));
+        ORCHA_ASSERT(logged(*env.logger, "Plugin install refused") == 1);
+        ORCHA_ASSERT(logged(*env.logger, "Plugin upload refused: Key") >= 1);
+
+        // New names and uploaded ones need no flag (any-name key).
+        ORCHA_ASSERT(plain->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("x"), manifest("fresh", "1.0.0"))).is_ok());
+
+        // Over HTTP a scope refusal is 403.
+        ORCHA_ASSERT(Agent::Routes::PluginUploadRoute::status_for(K::NotAllowed) == Agent::status::Forbidden);
+        std::cout << "[PASS] test_plugin_upload_key_scopes\n";
     }
 
     // ========== HTTP ==========
@@ -685,11 +744,30 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(!nested.valid && has(nested.get_error_messages(), "plugins.upload.directory"));
         ORCHA_ASSERT(Config::ConfigValidator{}.validate(load("plugins:\n  directory: commands\n")).issues.empty());
 
-        // Keys as a YAML list or as one comma/space separated string (the env form).
-        auto listed = Config::PluginUploadConfig::from_config(load("plugins:\n  upload:\n    public_keys: [a, b]\n"));
-        ORCHA_ASSERT(listed.public_keys == std::vector<std::string>({"a", "b"}));
+        // Keys as a YAML list (plain or scoped) or one comma/space separated string (the env form).
+        const auto names = [](const Config::PluginUploadConfig& c) {
+            std::vector<std::string> out;
+            for (const auto& k : c.public_keys) out.push_back(k.key);
+            return out;
+        };
+        auto listed = Config::PluginUploadConfig::from_config(load(
+            "plugins:\n  upload:\n    public_keys:\n      - a\n"
+            "      - key: b\n        plugins: [\"acme-*\", billing]\n        override_bundled: true\n"));
+        ORCHA_ASSERT(listed.errors.empty() && names(listed) == std::vector<std::string>({"a", "b"}));
+        ORCHA_ASSERT(listed.public_keys[0].plugins.empty() && !listed.public_keys[0].override_bundled);
+        ORCHA_ASSERT(listed.public_keys[1].plugins == std::vector<std::string>({"acme-*", "billing"}));
+        ORCHA_ASSERT(listed.public_keys[1].override_bundled);
         auto joined = Config::PluginUploadConfig::from_config(load("plugins:\n  upload:\n    public_keys: \"a, b c\"\n"));
-        ORCHA_ASSERT(joined.public_keys == std::vector<std::string>({"a", "b", "c"}));
+        ORCHA_ASSERT(names(joined) == std::vector<std::string>({"a", "b", "c"}));
+        // Malformed entries are errors (uploads stay off), not guesses.
+        auto broken = Config::PluginUploadConfig::from_config(load(
+            "plugins:\n  upload:\n    public_keys:\n      - {plugins: [x]}\n      - {key: k, plugins: []}\n"
+            "      - {key: k, override_bundled: yes}\n      - {key: k, scope: x}\n"));
+        ORCHA_ASSERT(broken.errors.size() == 4);
+        ORCHA_ASSERT(has(broken.errors, "public_keys[0] must be a key") && has(broken.errors, "public_keys[1].plugins"));
+        ORCHA_ASSERT(has(broken.errors, "override_bundled must be true or false") && has(broken.errors, "unknown setting \"scope\""));
+        auto invalid = Config::ConfigValidator{}.validate(load("plugins:\n  upload:\n    enabled: true\n    public_keys:\n      - {plugins: [x]}\n"));
+        ORCHA_ASSERT(!invalid.valid && has(invalid.get_error_messages(), "public_keys[0]"));
 
         auto on = Config::ConfigValidator{}.validate(load("plugins:\n  upload:\n    enabled: true\nadmin:\n  auth_required: false\n"));
         ORCHA_ASSERT(on.valid);
@@ -715,6 +793,7 @@ namespace Orcha::Tests {
         test_plugin_install_recovers_after_crash();
         test_plugin_sources();
         test_plugin_upload_overrides_bundled();
+        test_plugin_upload_key_scopes();
         test_plugin_upload_route();
 #endif
     }

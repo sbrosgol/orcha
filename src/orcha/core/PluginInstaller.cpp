@@ -149,6 +149,7 @@ namespace Orcha::Core {
         j["format"] = format;
         j["arch"] = arch;
         j["signer"] = signer;
+        j["allowed_by"] = allowed_by;
         j["has_manifest"] = has_manifest;
         j["parameters"] = parameters;
         j["uploaded_at"] = uploaded_at;
@@ -172,6 +173,7 @@ namespace Orcha::Core {
         s.format = j.value("format", "");
         s.arch = j.value("arch", "");
         s.signer = j.value("signer", "");
+        s.allowed_by = j.value("allowed_by", "");
         s.has_manifest = j.value("has_manifest", false);
         s.parameters = j.value("parameters", std::size_t{0});
         s.uploaded_at = j.value("uploaded_at", "");
@@ -196,17 +198,29 @@ namespace Orcha::Core {
         , denylist_(std::move(denylist))
         , logger_(std::move(logger))
         , lifecycle_(lifecycle_mutex ? std::move(lifecycle_mutex) : std::make_shared<std::timed_mutex>()) {
-        for (std::size_t i = 0; i < options_.public_keys.size(); ++i) {
-            auto key = pkg::base64_decode(options_.public_keys[i]);
+        if (!options_.config_errors.empty()) disabled_reason_ = options_.config_errors.front() + ".";
+        for (std::size_t i = 0; i < options_.public_keys.size() && disabled_reason_.empty(); ++i) {
+            const auto& trust = options_.public_keys[i];
+            auto key = pkg::base64_decode(trust.key);
             if (!key || key->size() != 32) {
                 disabled_reason_ = "plugins.upload.public_keys[" + std::to_string(i) +
                                    "] is not a base64 Ed25519 public key (32 bytes).";
-                keys_.clear();
                 break;
             }
-            keys_.push_back(std::move(*key));
+            const auto bad_glob = std::ranges::find_if(trust.plugins, [](const std::string& g) {
+                return g.empty() || g.size() > 64 || !std::ranges::all_of(g, [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '*' || c == '?';
+                });
+            });
+            if (bad_glob != trust.plugins.end()) {
+                disabled_reason_ = "plugins.upload.public_keys[" + std::to_string(i) + "].plugins: \"" + *bad_glob +
+                                   "\" is not a name pattern (letters, digits, . _ - and the wildcards * ?).";
+                break;
+            }
+            keys_.push_back({*key, pkg::key_id(*key), trust});
         }
         if (!disabled_reason_.empty()) {
+            keys_.clear();   // a bad key setting already explains it
             // a bad key already explains it
         } else if (!options_.enabled) {
             disabled_reason_ = "Plugin uploads are off. Set plugins.upload.enabled: true to allow them.";
@@ -240,7 +254,11 @@ namespace Orcha::Core {
         j["platform"] = {{"format", host.format}, {"arch", host.arch},
                          {"extension", IPluginDiscovery::get_library_extension()}};
         Json keys = Json::array();
-        for (const auto& k : keys_) keys.push_back(pkg::key_id(k));
+        for (const auto& k : keys_) {
+            keys.push_back({{"id", k.id},
+                            {"plugins", k.trust.plugins.empty() ? Json(nullptr) : Json(k.trust.plugins)},
+                            {"override_bundled", k.trust.override_bundled}});
+        }
         j["keys"] = keys;
         return j;
     }
@@ -279,13 +297,41 @@ namespace Orcha::Core {
         }
     }
 
-    std::optional<std::string> PluginInstaller::verify_signature(
+    const PluginInstaller::Key* PluginInstaller::verify_signature(
         const std::string& filename, const std::string& library_sha256,
         const std::optional<std::string>& manifest, const std::string& signature) const {
         const auto message = pkg::signing_message(filename, library_sha256,
                                                   pkg::sha256_hex(manifest.value_or("")));
         for (const auto& key : keys_) {
-            if (pkg::verify_ed25519(key, signature, message)) return pkg::key_id(key);
+            if (pkg::verify_ed25519(key.raw, signature, message)) return &key;
+        }
+        return nullptr;
+    }
+
+    bool PluginInstaller::is_bundled(const std::string& name) const {
+        // The bundled directory alone: an upload overriding it does not hide it.
+        const PluginSources bundled_only{options_.bundled_directory, {}};
+        return std::ranges::any_of(bundled_only.scan(*discovery_),
+                                   [&](const auto& entry) { return entry.meta.name == name; });
+    }
+
+    std::optional<PluginUploadError> PluginInstaller::check_allowed(const Key& key, const std::string& name,
+                                                                    std::string* allowed_by) const {
+        const auto& scope = key.trust.plugins;
+        auto match = std::ranges::find_if(scope, [&](const std::string& g) { return pkg::name_matches(g, name); });
+        if (!scope.empty() && match == scope.end()) {
+            std::string list;
+            for (const auto& g : scope) list += (list.empty() ? "" : ", ") + g;
+            return err(Kind::NotAllowed, "Key " + key.id + " may not sign plugin \"" + name +
+                                         "\" (it may sign: " + list + ")");
+        }
+        if (!key.trust.override_bundled && is_bundled(name)) {
+            return err(Kind::NotAllowed, "\"" + name + "\" is a bundled plugin; overriding it needs a key with "
+                                         "override_bundled: true (key " + key.id + " does not allow it)");
+        }
+        if (allowed_by) {
+            *allowed_by = scope.empty() ? "any name" : *match;
+            if (key.trust.override_bundled) *allowed_by += ", may override bundled plugins";
         }
         return std::nullopt;
     }
@@ -375,12 +421,13 @@ namespace Orcha::Core {
         if (request.signature.size() != 64) {
             return refuse(err(Kind::BadSignature, "The signature must be a 64-byte Ed25519 signature"));
         }
-        auto signer = verify_signature(filename, sha, request.manifest, request.signature);
+        const auto* signer = verify_signature(filename, sha, request.manifest, request.signature);
         if (!signer) {
             return refuse(err(Kind::BadSignature,
                 "The signature does not match these files (the file name is signed too), "
                 "or was made with a key this server does not trust"));
         }
+        if (auto denied = check_allowed(*signer, staged.name, &staged.allowed_by)) return refuse(std::move(*denied));
         std::unique_lock lock(*lifecycle_, kLockWait);
         if (!lock.owns_lock()) return refuse(err(Kind::Conflict, kBusy));
         if (list_unlocked().size() >= options_.max_staged) {
@@ -394,7 +441,7 @@ namespace Orcha::Core {
         staged.sha256 = sha;
         staged.format = binary.format;
         staged.arch = binary.arch;
-        staged.signer = *signer;
+        staged.signer = signer->id;
         staged.uploaded_at = now_iso();
         staged.uploaded_by = request.user;
 
@@ -514,11 +561,17 @@ namespace Orcha::Core {
         } catch (const std::exception& ex) {
             return InstallResult::Err(err(Kind::Internal, ex.what()));
         }
-        if (pkg::sha256_hex(library) != staged->sha256 ||
-            !verify_signature(staged->library_filename, staged->sha256, manifest, signature) ||
-            !pkg::inspect_library(library).loadable_here) {
+        const auto* signer = pkg::sha256_hex(library) == staged->sha256
+            ? verify_signature(staged->library_filename, staged->sha256, manifest, signature) : nullptr;
+        if (!signer || !pkg::inspect_library(library).loadable_here) {
             return InstallResult::Err(err(Kind::Invalid,
-                "The staged files no longer match their signature; discard this upload and upload it again"));
+                "The staged files no longer match their signature, or its key is no longer trusted; "
+                "discard this upload and upload it again"));
+        }
+        // Checked again: the key's scope may have changed since upload.
+        if (auto denied = check_allowed(*signer, staged->name)) {
+            if (logger_) logger_->warn("Plugin install refused: " + denied->message + " (by " + user + ")");
+            return InstallResult::Err(std::move(*denied));
         }
 
         // Plan. Every install goes to a new directory, <uploads>/<name>-<id>:

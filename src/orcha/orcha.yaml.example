@@ -32,7 +32,11 @@ plugins:
   # Ed25519 keys (scripts/orcha-plugin-sign.sh keygen prints one).
   upload:
     enabled: false
-    public_keys: []                       # ["<base64 key>", ...]; env: comma-separated
+    # A key (any plugin name, no bundled overrides) or a scoped mapping:
+    #   - key: "<base64 key>"
+    #     plugins: ["acme-*"]        # names it may sign (* and ? globs)
+    #     override_bundled: true     # may replace bundled plugins
+    public_keys: []                       # env: comma-separated plain keys
     max_bytes: 33554432                   # largest library accepted (32 MB)
     # Installed uploads (and their staging area), apart from the bundled
     # plugins in plugins.directory; an upload overrides a bundled plugin of the
