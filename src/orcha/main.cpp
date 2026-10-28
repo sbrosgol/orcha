@@ -27,10 +27,12 @@
 #include "core/CommandRegistry.hpp"
 #include "core/PluginManager.hpp"
 #include "core/PluginDenylist.hpp"
+#include "core/PluginInstaller.hpp"
 #include "core/ServiceLocator.hpp"
 
 // Config
 #include "config/YamlConfiguration.hpp"
+#include "config/PluginUploadConfig.hpp"
 
 // Agent
 #include "agent/CommandAgent.hpp"
@@ -96,6 +98,21 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
         config.get_string("plugins.denylist_path", "./orcha-disabled-plugins.txt"));
     services.register_singleton<Core::IPluginDenylist>(denylist);
     plugin_manager->set_denylist(denylist);
+
+    // Plugin uploads from the dashboard: off unless configured (fail closed).
+    {
+        const auto upload = Config::PluginUploadConfig::from_config(config);
+        Core::PluginUploadOptions options;
+        options.enabled = upload.enabled;
+        options.bundled_directory = Config::PluginConfig::from_config(config).directory;
+        options.upload_directory = upload.directory;
+        for (const auto& k : upload.public_keys) options.public_keys.push_back({k.key, k.plugins, k.override_bundled});
+        options.config_errors = upload.errors;
+        options.max_bytes = static_cast<std::uint64_t>(std::max<int64_t>(1, upload.max_bytes));
+        options.admin_auth_required = Config::AdminConfig::from_config(config).auth_required;
+        services.register_singleton<Core::PluginInstaller>(std::make_shared<Core::PluginInstaller>(
+            std::move(options), plugin_manager, discovery, denylist, logger_ptr, nullptr));
+    }
 
     // Workflow Engine (factory - creates new instances)
     Workflow::EngineOptions engine_options;
@@ -166,7 +183,8 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
  * @brief Load plugins from the configured directory.
  */
 size_t load_plugins(Orcha::Core::ServiceLocator& services,
-                   const Orcha::Config::IConfiguration& config) {
+                   const Orcha::Config::IConfiguration& config,
+                   bool server_mode) {
     using namespace Orcha;
 
     auto plugin_config = Config::PluginConfig::from_config(config);
@@ -179,8 +197,23 @@ size_t load_plugins(Orcha::Core::ServiceLocator& services,
         fs::create_directories(plugin_config.directory);
     }
 
-    // Load plugins with dependency resolution
-    auto result = plugin_manager->load_plugins_from_directory(plugin_config.directory);
+    // Server start: undo a plugin install the previous server did not finish
+    // (e.g. the new plugin crashed it while loading) before anything is
+    // loaded. Not in CLI mode, which must never touch a live server's install.
+    if (auto installer = services.try_get<Core::PluginInstaller>(); installer && server_mode) {
+        installer->recover_interrupted();
+    }
+
+    // Load bundled and uploaded plugins (an upload overrides a bundled plugin
+    // of the same name), with dependency resolution across both.
+    Core::PluginSources sources{plugin_config.directory,
+                                Config::PluginUploadConfig::from_config(config).directory};
+    if (sources.overlapping()) {
+        logger->error("plugins.upload.directory and plugins.directory must not be inside each other; "
+                      "loading only " + plugin_config.directory);
+        sources.uploaded.clear();
+    }
+    auto result = plugin_manager->load_plugins(sources);
 
     // Handle dependency errors
     if (result.has_dependency_error()) {
@@ -275,6 +308,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     auto job_service = services.get<Jobs::JobService>();
     auto denylist = services.try_get<Core::IPluginDenylist>();
     auto circuit_breakers = services.try_get<Core::CircuitBreakerRegistry>();
+    auto plugin_installer = services.try_get<Core::PluginInstaller>();
 
     // Create agent with injected dependencies (including the admin dashboard).
     Agent::CommandAgent agent(
@@ -282,7 +316,7 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         plugins, discovery, admin_config,
         plugin_config.directory,
         std::chrono::milliseconds(plugin_config.scan_interval_ms),
-        job_service, denylist, server_config, circuit_breakers);
+        job_service, denylist, server_config, circuit_breakers, plugin_installer);
 
     try {
         agent.start();
@@ -411,7 +445,7 @@ auto main(int argc, char* argv[]) -> int {
     logger->info("Starting Orcha v" + std::string(Orcha::kVersion) + "...");
 
     // Load plugins
-    size_t plugin_count = load_plugins(services, *config);
+    size_t plugin_count = load_plugins(services, *config, /*server_mode=*/argc <= 1);
     logger->info("Loaded " + std::to_string(plugin_count) + " plugins");
 
     // CLI mode if workflow path provided

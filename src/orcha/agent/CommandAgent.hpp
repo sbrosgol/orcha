@@ -11,6 +11,7 @@
 #include "../core/PluginManager.hpp"
 #include "../core/IPluginDiscovery.hpp"
 #include "../core/PluginDenylist.hpp"
+#include "../core/PluginInstaller.hpp"
 #include "../core/CircuitBreaker.hpp"
 #include "../jobs/RunQueue.hpp"
 #include "../jobs/JobService.hpp"
@@ -64,7 +65,8 @@ namespace Orcha::Agent {
                     std::shared_ptr<Jobs::JobService> jobs = nullptr,
                     std::shared_ptr<Core::IPluginDenylist> denylist = nullptr,
                     Config::ServerConfig server = {},
-                    std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers = nullptr);
+                    std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers = nullptr,
+                    std::shared_ptr<Core::PluginInstaller> plugin_installer = nullptr);
 
         ~CommandAgent();
 
@@ -110,6 +112,7 @@ namespace Orcha::Agent {
         std::shared_ptr<Core::IPluginDenylist> denylist_;
         Config::ServerConfig server_config_;
         std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers_;
+        std::shared_ptr<Core::PluginInstaller> plugin_installer_;   ///< null: no upload API
 
         Router router_;
         std::unique_ptr<HttpServer> server_;

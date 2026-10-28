@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "PluginUploadConfig.hpp"
+#include "../core/PluginSources.hpp"
 #include "IConfiguration.hpp"
 #include <vector>
 #include <string>
@@ -95,6 +97,7 @@ namespace Orcha::Config {
 
             validate_server_config(config, result);
             validate_plugin_config(config, result);
+            validate_plugin_upload_config(config, result);
             validate_logging_config(config, result);
             validate_workflow_config(config, result);
 
@@ -198,6 +201,48 @@ namespace Orcha::Config {
                         "Very short scan interval (" + std::to_string(interval) + "ms) may impact performance",
                         "Use at least 1000ms (1 second)");
                 }
+            }
+        }
+
+        static void validate_plugin_upload_config(const IConfiguration& config, ValidationResult& result) {
+            // Uploaded plugins live apart from the bundled ones; nested
+            // directories would make discovery see plugins twice.
+            const std::filesystem::path bundled = config.get_string("plugins.directory", "./commands");
+            const std::filesystem::path uploaded = config.get_string("plugins.upload.directory", "./uploaded-plugins");
+            if (uploaded.empty()) {
+                result.add_error("plugins.upload.directory", "Cannot be empty");
+            } else if (Core::PluginSources{bundled, uploaded}.overlapping()) {
+                result.add_error("plugins.upload.directory",
+                    "Must not be inside plugins.directory, or contain it",
+                    "Use a separate, persistent directory such as ./uploaded-plugins");
+            }
+            const auto max_bytes = config.get_int("plugins.upload.max_bytes", 32ll * 1024 * 1024);
+            if (max_bytes <= 0) {
+                result.add_error("plugins.upload.max_bytes", "Must be greater than 0");
+            } else if (max_bytes > 45ll * 1024 * 1024) {
+                // Uploads travel base64-encoded in a JSON body (64 MB HTTP limit).
+                result.add_warning("plugins.upload.max_bytes",
+                    "Larger than 45 MB: the base64 upload body would exceed the 64 MB request limit",
+                    "Use at most 47185920");
+            }
+            if (!config.get_bool("plugins.upload.enabled", false)) return;
+            result.add_warning("plugins.upload.enabled",
+                "Plugin uploads are on: admins can install signed plugins, whose code runs in the server",
+                "Keep the signing key private and the admin password strong");
+            if (!config.get_bool("admin.auth_required", true)) {
+                result.add_warning("plugins.upload.enabled",
+                    "Ignored: uploads need admin.auth_required: true");
+            }
+            // A YAML list (keys, or {key, plugins, override_bundled} mappings),
+            // or one string (as ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS sets it).
+            const auto upload = PluginUploadConfig::from_config(config);
+            for (const auto& problem : upload.errors) {
+                result.add_error("plugins.upload.public_keys", problem);
+            }
+            if (upload.public_keys.empty() && upload.errors.empty()) {
+                result.add_warning("plugins.upload.public_keys",
+                    "No signing keys: uploads stay disabled",
+                    "Create one with scripts/orcha-plugin-sign.sh keygen");
             }
         }
 

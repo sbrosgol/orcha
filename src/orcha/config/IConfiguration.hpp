@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "../core/Json.hpp"
 #include <string>
 #include <optional>
 #include <vector>
@@ -54,6 +55,10 @@ namespace Orcha::Config {
 
         // Array of strings
         [[nodiscard]] virtual std::vector<std::string> get_string_list(const std::string& key) const = 0;
+
+        /// Any value (scalar, list or mapping) as JSON, typed like YAML
+        /// workflow definitions (utils/YamlJson.hpp); nullopt if unset.
+        [[nodiscard]] virtual std::optional<Json> get_json(const std::string& key) const = 0;
 
         // Sections (nested configuration)
         [[nodiscard]] virtual std::unique_ptr<IConfiguration> get_section(const std::string& section) const = 0;

@@ -404,6 +404,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .dialog { background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow-lg);
               width:720px; max-width:100%; max-height:calc(100vh - 40px); display:flex; flex-direction:column; animation:pop .16s ease-out; }
     .dialog.sm { width:420px; }
+    .dialog.md { width:600px; }
     @keyframes pop { from { transform:translateY(6px) scale(.985); opacity:.6; } to { transform:none; opacity:1; } }
     .dialog .hd { display:flex; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid var(--line); }
     .dialog .hd h2 { margin:0; font-size:16px; font-weight:650; }
@@ -432,6 +433,29 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .drawer .bd { padding:20px; overflow:auto; flex:1; }
     .kv { display:grid; grid-template-columns:130px minmax(0,1fr); gap:10px 14px; font-size:13px; margin-bottom:20px; }
     .kv .k { color:var(--muted); } .kv .v { word-break:break-word; }
+    /* ---------- Plugin upload ---------- */
+    .dropzone { border:1.5px dashed var(--line-strong); border-radius:10px; padding:22px 16px; text-align:center; color:var(--muted);
+                background:var(--panel-2); display:flex; flex-direction:column; align-items:center; gap:6px; font-size:13px; }
+    .dropzone > .i { width:22px; height:22px; color:var(--faint); }
+    .dropzone.dropping { border-color:var(--accent); color:var(--accent); background:color-mix(in srgb,var(--panel) 90%,var(--accent)); }
+    .dropzone .hint { font-size:12px; color:var(--muted); }
+    .linkbtn { background:none; border:none; padding:0; font:inherit; color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+    .upfiles { list-style:none; margin:14px 0 0; padding:0; border:1px solid var(--line); border-radius:8px; }
+    .upfiles li { display:flex; gap:10px; align-items:center; padding:8px 8px 8px 12px; font-size:13px; min-height:44px; }
+    .upfiles li + li { border-top:1px solid var(--line); }
+    .upfiles .role { width:84px; flex:none; color:var(--muted); }
+    .upfiles .fname { flex:1; min-width:0; font-family:var(--mono); font-size:12.5px; overflow-wrap:anywhere; }
+    .upfiles .fname.missing { font-family:var(--font); color:var(--muted); }
+    .wrap-any { overflow-wrap:anywhere; }
+    .stack { margin-bottom:16px; }
+    .alert.flush { margin-bottom:0; }
+    .err-text { color:var(--err); }
+    p.tight { margin:0 0 12px; }
+    pre.snippet { margin:0; padding:10px 12px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font:12px/1.5 var(--mono); overflow:auto; }
+    .upfiles .size { color:var(--faint); font-size:12px; flex:none; }
+    #upFt { flex-wrap:wrap; }
+    .ok-text { color:var(--ok); display:inline-flex; align-items:center; gap:4px; vertical-align:bottom; }
+    .hash { font:12px/1.5 var(--mono); word-break:break-all; color:var(--fg-2); }
 
     #toasts { position:fixed; right:20px; bottom:20px; z-index:90; display:flex; flex-direction:column; gap:8px; width:360px; max-width:calc(100vw - 40px); }
     .toast { --c:var(--info); display:flex; align-items:flex-start; gap:10px; padding:12px 12px 12px 14px; border-radius:10px; background:var(--panel);
@@ -509,7 +533,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       .step-card .param .pname { padding-top:0; }
       .g-kpi { grid-template-columns:minmax(0,1fr); }
       .tbl .hide-sm { display:none; }
-      .tbl .sr-sm, .tabs .sr-sm { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+      .tbl .sr-sm, .tabs .sr-sm, .dialog .ft .sr-sm { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
   </style>
@@ -637,7 +661,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           <div class="page-hd"><div><h1 id="h-plugins">Plugins</h1><p id="pluginsSub">Command plugins discovered in the plugin directory.</p></div>
             <span class="sp"></span>
             <label class="switch" title="Automatically load, reload and unload plugins as files change on disk">
-              <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label></div>
+              <input type="checkbox" id="watch" /><span class="track"></span>Watch directory</label>
+            <button class="btn" id="uploadPluginBtn"><svg class="i"><use href="#i-upload"/></svg>Upload plugin</button></div>
+          <div id="stagedUploads"></div>
           <div class="card">
             <div class="toolbar">
               <div class="search"><svg class="i"><use href="#i-search"/></svg>
@@ -759,6 +785,17 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ===================== Plugin upload ===================== -->
+  <div class="overlay" id="upload" role="dialog" aria-modal="true" aria-labelledby="upTitle">
+    <div class="dialog md">
+      <div class="hd"><h2 id="upTitle">Upload plugin</h2><span class="sp"></span>
+        <button class="btn ghost sm icon" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
+      <div class="bd" id="upBody"></div>
+      <div class="ft" id="upFt"></div>
+    </div>
+  </div>
+  <input type="file" id="upFile" multiple hidden />
+
   <!-- ===================== Confirm dialog ===================== -->
   <div class="overlay" id="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle" aria-describedby="cfBody">
     <div class="dialog sm">
@@ -863,11 +900,19 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     let lastFocus=null;
     function openOverlay(el, focusSel){
       lastFocus=document.activeElement; el.classList.add('show');
-      const f = focusSel ? el.querySelector(focusSel) : el.querySelector('input,select,textarea,button');
-      setTimeout(()=>f&&f.focus(), 30);
+      // Resolve the target when focusing: the content may have re-rendered meanwhile.
+      setTimeout(()=>{
+        const f = (focusSel && el.querySelector(focusSel)) || el.querySelector('input,select,textarea,button');
+        if(f && !el.contains(document.activeElement)) f.focus();
+      }, 30);
     }
-    function closeOverlay(el){ el.classList.remove('show'); if(lastFocus&&lastFocus.focus) lastFocus.focus(); }
-    function topOverlay(){ return ['confirm','modal','drawer'].map($).find(e=>e.classList.contains('show')); }
+    function closeOverlay(el){
+      el.classList.remove('show');
+      const back = el._returnFocus || lastFocus; el._returnFocus = null;
+      if(back && back.isConnected && back.focus) back.focus();
+      else if(el.id==='upload') $('uploadPluginBtn').focus();
+    }
+    function topOverlay(){ return ['confirm','upload','modal','drawer'].map($).find(e=>e.classList.contains('show')); }
     // Trap Tab inside the top-most overlay; Esc closes it.
     document.addEventListener('keydown', e => {
       const ov=topOverlay();
@@ -998,6 +1043,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
 
     // ================= Data loading =================
     async function loadPluginsData(){ state.plugins = await api('/api/plugins'); }
+    async function loadUploadsData(){
+      try { state.uploads = await api('/api/plugins/_uploads'); state.uploadsErr=null; }
+      catch(e){ if(!isAuthErr(e)) state.uploadsErr=e.message||'request failed'; throw e; }
+    }
     async function loadJobsData(){ const d=await api('/api/jobs'); state.jobs=d.jobs||[]; }
     async function loadRunsData(){ const d=await api('/api/runs?limit=200'); state.runs=d.runs||[]; state.queue=d.queue||null; state.persistent=d.persistent!==false; }
     async function loadBreakersData(){
@@ -1008,13 +1057,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     async function refreshAll(){
       const btn=$('refreshBtn'); btn.classList.add('spinning'); btn.disabled=true;
       // Fail soft per endpoint: render whatever we can.
-      const results = await Promise.allSettled([loadPluginsData(), loadJobsData(), loadRunsData(), loadBreakersData()]);
+      const results = await Promise.allSettled([loadPluginsData(), loadJobsData(), loadRunsData(), loadBreakersData(), loadUploadsData()]);
       btn.classList.remove('spinning'); btn.disabled=false;
       if(!document.body.classList.contains('authed')) return;
       const failed=results.filter(r=>r.status==='rejected' && !isAuthErr(r.reason));
       if(failed.length) toast('Some data failed to load: '+failed[0].reason.message,'err');
       state.loadedAt=Date.now(); tickUpdated();
-      renderNavCounts(); renderPlugins(); renderJobList(); renderOverview(); renderBreakers();
+      renderNavCounts(); renderPlugins(); renderStagedUploads(); renderJobList(); renderOverview(); renderBreakers();
       if(state.view==='jobs' && state.currentJob) refreshCurrentJob();
     }
     $('refreshBtn').addEventListener('click', refreshAll);
@@ -1206,7 +1255,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ? `<button class="btn sm" data-pa="reload" data-name="${n}" title="Reload library from disk">${icon('refresh','ico')}${icon('loader','spin')}Reload</button>
              <button class="btn sm danger" data-pa="disable" data-name="${n}" title="Unload and keep disabled across restarts">${icon('power','ico')}${icon('loader','spin')}Disable</button>`
           : `<button class="btn sm" data-pa="enable" data-name="${n}">${icon('power','ico')}${icon('loader','spin')}Enable</button>`;
-        return `<tr class="click" data-plugin="${n}"><td><div class="pname">${n}</div><div class="pdesc">${esc(p.description||'')}</div></td>
+        const src = p.source==='uploaded' ? ` <span class="tag" title="${p.overrides?'Uploaded; overrides the bundled '+esc(p.overrides.version):'Uploaded from the dashboard'}">uploaded</span>` : '';
+        return `<tr class="click" data-plugin="${n}"><td><div class="pname">${n}${src}</div><div class="pdesc">${esc(p.description||'')}</div></td>
           <td class="mono nowrap">${esc(p.version||'—')}</td><td>${statusBadge(p.status)}</td><td>${deps}</td><td>${tags}</td>
           <td><div class="acts">${acts}</div></td></tr>`;
       }).join('');
@@ -1245,7 +1295,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('drBody').innerHTML = `<div class="kv">
           <div class="k">Version</div><div class="v mono">${esc(p.version||'—')}</div>
           <div class="k">Author</div><div class="v">${esc(p.author||'—')}</div>
-          <div class="k">Library</div><div class="v mono">${esc(p.library_path||'—')}</div>
+          <div class="k">Source</div><div class="v">${p.source==='uploaded'?'Uploaded'+(p.overrides?` <span class="muted">· overrides the bundled ${esc(p.overrides.version)}</span>`:''):'Bundled'}</div>
+          <div class="k">Library</div><div class="v mono wrap-any">${esc(p.library_path||'—')}</div>
+          ${p.provenance?`<div class="k">Installed from</div><div class="v">upload by ${esc(p.provenance.uploaded_by||'?')}, installed by ${esc(p.provenance.installed_by||'?')} ${timeCell(p.provenance.installed_at)} · key <code>${esc(p.provenance.signer||'?')}</code><div class="hash">${esc(p.provenance.sha256||'')}</div></div>`:''}
           <div class="k">Dependencies</div><div class="v">${(p.dependencies||[]).map(x=>`<span class="tag mono">${esc(x)}</span>`).join('')||'—'}</div>
           <div class="k">Tags</div><div class="v">${(p.tags||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'—'}</div>
         </div>
@@ -1256,6 +1308,241 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           : `<div class="muted">This plugin does not declare a parameter manifest.</div>`);
       openOverlay($('drawer'), '[data-close].btn');
     }
+
+    // ================= Plugin uploads =================
+    // Upload -> stage (server checks format, arch, manifest and signature
+    // without loading anything) -> review -> install. Installing runs the
+    // plugin's code in the server, so the review says so; uploads are off
+    // unless the server enables them (state.uploads.enabled/reason).
+    const up = { files:{library:null, signature:null, manifest:null}, staged:null, err:'', note:'', sending:false, statusErr:'' };
+    function fmtBytes(n){
+      n=Number(n)||0; if(n<1024) return n+' B';
+      const u=['KB','MB','GB']; let i=-1; do { n/=1024; i++; } while(n>=1024 && i<u.length-1);
+      return (n<10?n.toFixed(1):Math.round(n))+' '+u[i];
+    }
+    const upExt = () => (state.uploads && state.uploads.platform && state.uploads.platform.extension) || '.so';
+    const upVersion = s => s.version || 'unversioned';
+    // What installing it does, relative to the installed version.
+    const upChange = s => (({
+      new:'New plugin', upgrade:`Upgrade from ${s.replaces_version}`, downgrade:`Downgrade from ${s.replaces_version}`,
+      reinstall:`Reinstall of ${s.replaces_version}`, replace:`Replaces ${s.replaces_version||'the installed version'}`
+    })[s.change] || 'New plugin') + (s.replaces_bundled && s.change!=='new' ? ' (bundled)' : '');
+    const upAction = s => ({ upgrade:'Upgrade to '+upVersion(s), downgrade:'Downgrade to '+upVersion(s), reinstall:'Reinstall', replace:'Replace' })[s.change] || 'Install';
+
+    function renderStagedUploads(focusAfter){
+      const host=$('stagedUploads'), list=(state.uploads&&state.uploads.uploads)||[];
+      if(state.uploadsErr){
+        host.innerHTML=`<div class="alert err mid stack" role="alert">${icon('alert')}<span>Could not load staged plugin uploads: ${esc(state.uploadsErr)}</span>
+          <button type="button" class="btn sm" data-up="retry">${icon('refresh','ico')}${icon('loader','spin')}Retry</button></div>`;
+        return;
+      }
+      if(!list.length){ host.innerHTML=''; if(focusAfter) $('uploadPluginBtn').focus(); return; }
+      host.innerHTML = `<div class="card stack"><div class="card-hd"><h2>Waiting for install</h2><span class="muted num">${list.length}</span></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Plugin</th><th class="hide-sm">Size</th><th class="hide-sm">Signed by</th><th class="hide-sm">Uploaded</th><th class="r">Actions</th></tr></thead><tbody>${list.map(u=>`
+          <tr><td><div class="pname">${esc(u.name)} <span class="mono muted">${esc(upVersion(u))}</span></div>
+            <div class="pdesc">${esc(upChange(u))}${u.install_crashed_at?' · <span class="err-text">crashed the server</span>':''}</div></td>
+          <td class="muted num nowrap hide-sm">${esc(fmtBytes(u.size))}</td><td class="mono muted hide-sm">${esc(u.signer)}</td>
+          <td class="muted nowrap hide-sm">${esc(u.uploaded_by)} · ${timeCell(u.uploaded_at)}</td>
+          <td><div class="acts"><button class="btn sm primary" data-up="review" data-id="${esc(u.id)}">Review</button>
+            <button class="btn sm danger" data-up="discard" data-id="${esc(u.id)}" aria-label="Discard ${esc(u.name)} ${esc(upVersion(u))}">${icon('trash','ico')}${icon('loader','spin')}<span class="sr-sm">Discard</span></button></div></td></tr>`).join('')}
+        </tbody></table></div></div>`;
+      if(focusAfter){ const b=host.querySelector('[data-up="review"]'); (b||$('uploadPluginBtn')).focus(); }
+    }
+    function openUpload(staged){
+      up.files={library:null, signature:null, manifest:null}; up.staged=staged||null; up.err=''; up.note=''; up.statusErr='';
+      // A mouse click does not focus a button in every browser: fall back to
+      // the "Upload plugin" button so focus never returns to <body>.
+      const act=document.activeElement;
+      const opener = act && act!==document.body && act.closest('button,a,[tabindex]') ? act : $('uploadPluginBtn');
+      paintUpload();
+      openOverlay($('upload'), '#upInstall,#upPick,#upRetry,#upFt [data-close]');
+      $('upload')._returnFocus = opener;   // closeOverlay returns focus here
+    }
+    const upFocusables = () => $$('#upload button:not([disabled]), #upload [tabindex]:not([tabindex="-1"])').filter(x=>x.offsetParent!==null);
+    // Re-renders the dialog and keeps focus inside it: on the same control if
+    // it still exists, else on @p focusSel, else on the first control.
+    function renderUpload(focusSel){
+      const dlg=$('upload'), act=document.activeElement;
+      const keep = act && dlg.contains(act) ? (act.id ? '#'+act.id : act.dataset.upx ? `[data-upx="${act.dataset.upx}"]` : null) : null;
+      paintUpload();
+      if(!dlg.classList.contains('show')) return;
+      if(!focusSel && dlg.contains(document.activeElement)) return;   // focus survived the re-render
+      const target = (focusSel && dlg.querySelector(focusSel)) || (keep && dlg.querySelector(keep)) ||
+                     dlg.querySelector('#upInstall,#upPick,#upRetry') || upFocusables()[0];
+      if(target) target.focus();
+    }
+    function paintUpload(){
+      const u=state.uploads, body=$('upBody'), ft=$('upFt');
+      const err = up.err ? `<div class="alert err" role="alert">${icon('alert')}<span>${esc(up.err)}</span></div>` : '';
+      if(up.staged){
+        const s=up.staged, replacing=s.replaces_version!=null;
+        $('upTitle').textContent='Review plugin';
+        body.innerHTML = err + (s.install_crashed_at ? `<div class="alert err">${icon('alert')}<span>The server stopped while installing this upload (${timeCell(s.install_crashed_at)}), and the install was rolled back. Installing it again may stop the server again.</span></div>` : '') +
+          `<div class="kv">
+            <div class="k">Plugin</div><div class="v"><strong>${esc(s.name)}</strong> <span class="tag">${esc(upChange(s).toLowerCase())}</span></div>
+            <div class="k">Version</div><div class="v mono">${esc(upVersion(s))}</div>
+            ${s.description?`<div class="k">Description</div><div class="v">${esc(s.description)}</div>`:''}
+            <div class="k">Library</div><div class="v"><span class="mono wrap-any">${esc(s.library_filename)}</span> <span class="muted">· ${esc(fmtBytes(s.size))}</span></div>
+            <div class="k">SHA-256</div><div class="v hash">${esc(s.sha256)}</div>
+            <div class="k">Platform</div><div class="v">${esc(s.format)} ${esc(s.arch)} <span class="ok-text">· loads on this server</span></div>
+            <div class="k">Signature</div><div class="v"><span class="ok-text">${icon('check')} Verified</span> · key <code>${esc(s.signer)}</code> <span class="muted">(covers the file name and manifest)</span>${s.allowed_by?`<div class="muted">This key may sign: ${esc(s.allowed_by)}</div>`:''}</div>
+            <div class="k">Manifest</div><div class="v">${s.has_manifest?`${esc(String(s.parameters))} parameter${s.parameters===1?'':'s'} declared`:'None: the job editor will show raw JSON parameters'}</div>
+            <div class="k">Uploaded</div><div class="v">${esc(s.uploaded_by)} · ${timeCell(s.uploaded_at)}</div>
+          </div>
+          ${s.change==='downgrade'?`<div class="alert">${icon('warn')}<span>${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.</span></div>`:''}
+          ${s.replaces_bundled&&replacing?`<div class="alert info">${icon('info')}<span>This overrides the bundled ${esc(s.replaces_version)}. The bundled files are not changed.</span></div>`:''}
+          <div class="alert flush">${icon('warn')}<span>Installing loads this library into the Orcha server: its code runs with the server’s permissions. Install only plugins you trust.${replacing?` If ${esc(upVersion(s))} fails to load, ${esc(s.replaces_version)} is restored.`:''}</span></div>`;
+        ft.innerHTML = `<button class="btn danger" id="upDiscard" aria-label="Discard upload">${icon('trash','ico')}${icon('loader','spin')}<span class="sr-sm">Discard</span></button><span class="sp"></span>
+          <button class="btn" data-close>Keep for later</button>
+          <button class="btn primary" id="upInstall">${icon('loader','spin')}<span>${esc(upAction(s))}${s.install_crashed_at?' anyway':''}</span></button>`;
+      } else if(up.statusErr){
+        $('upTitle').textContent='Upload plugin';
+        body.innerHTML = `<div class="alert err flush" role="alert">${icon('alert')}<span>Could not check whether this server accepts plugin uploads: ${esc(up.statusErr)}</span></div>`;
+        ft.innerHTML = `<span class="sp"></span><button class="btn" data-close>Close</button><button class="btn primary" id="upRetry">${icon('refresh','ico')}${icon('loader','spin')}Retry</button>`;
+      } else if(!u || !u.enabled){
+        $('upTitle').textContent='Upload plugin';
+        const off = u && String(u.reason||'').startsWith('Plugin uploads are off');
+        body.innerHTML = `<div class="alert info${off?'':' flush'}">${icon('info')}<span>${u?esc(u.reason||'Plugin uploads are not available.'):'Checking whether this server accepts plugin uploads…'}</span></div>` + (off ? `
+          <p class="muted tight">Uploads are off by default because an installed plugin runs code inside the server. To allow signed uploads, set in <code>orcha.yaml</code>:</p>
+          <pre class="snippet">plugins:
+  upload:
+    enabled: true
+    public_keys: ["&lt;key from scripts/orcha-plugin-sign.sh keygen&gt;"]</pre>` : '');
+        ft.innerHTML = `<span class="sp"></span><button class="btn" data-close>Close</button>`;
+      } else {
+        $('upTitle').textContent='Upload plugin';
+        const p=u.platform||{}, ext=upExt(), f=up.files;
+        const row=(role, label, file, note)=>`<li><span class="role">${label}</span>${file
+          ? `<span class="fname">${esc(file.name)}</span><span class="size">${esc(fmtBytes(file.size))}</span>
+             <button class="btn ghost sm icon" data-upx="${role}" aria-label="Remove ${label.toLowerCase()} ${esc(file.name)}">${icon('x')}</button>`
+          : `<span class="fname missing">${note}</span>`}</li>`;
+        body.innerHTML = err + `<p class="muted tight">Signed plugins only. This server loads <code>${esc(ext)}</code> libraries for ${esc(p.format||'')} ${esc(p.arch||'')} and trusts ${(u.keys||[]).map(k=>`<code>${esc(k.id||k)}</code>${k.plugins?` <span class="muted">(${esc(k.plugins.join(', '))})</span>`:''}`).join(', ')||'no keys'}. Upload the library under the file name it was signed with.</p>
+          <div class="dropzone" id="upDrop">${icon('upload')}
+            <div><strong>Drop files here</strong> or <button type="button" class="linkbtn" id="upPick">choose files</button></div>
+            <div class="hint">The library, its <code>.sig</code> from <code>orcha-plugin-sign.sh</code>, and optionally <code>manifest.json</code>. Up to ${esc(fmtBytes(u.max_bytes))}.</div></div>
+          <ul class="upfiles">${row('library','Library',f.library,'Required: a '+esc(ext)+' file')}${row('signature','Signature',f.signature,'Required: the .sig file')}${row('manifest','Manifest',f.manifest,'Optional: name, version and parameters')}</ul>
+          <div class="sr-only" aria-live="polite" id="upLive">${esc(up.note)}</div>`;
+        ft.innerHTML = `<span class="sp"></span><button class="btn" data-close>Cancel</button>
+          <button class="btn primary${up.sending?' loading':''}" id="upSend" ${f.library&&f.signature&&!up.sending?'':'disabled'}>${icon('loader','spin')}<span>Upload for review</span></button>`;
+      }
+      $$('[data-close]', ft).forEach(b=>b.addEventListener('click', ()=>closeOverlay($('upload'))));
+    }
+    function addUploadFiles(fileList){
+      const ext=upExt(), max=(state.uploads&&state.uploads.max_bytes)||Infinity, problems=[], added=[];
+      up.err='';
+      Array.from(fileList||[]).forEach(file=>{
+        const n=file.name.toLowerCase();
+        const role = n.endsWith('.sig') ? 'signature' : n.endsWith('.json') ? 'manifest' : n.endsWith(ext) ? 'library' : null;
+        if(!role){ problems.push(`${file.name} is not a ${ext} library, .sig or manifest.json`); return; }
+        if(role==='library' && file.size>max){ problems.push(`${file.name} is larger than ${fmtBytes(max)}`); return; }
+        if(role!=='library' && file.size>1024*1024){ problems.push(`${file.name} is too large for a ${role} file`); return; }
+        up.files[role]=file; added.push(`${file.name} (${role})`);
+      });
+      up.err = problems.join('. ') + (problems.length ? '.' : '');
+      const f=up.files;
+      up.note = (added.length ? 'Added '+added.join(', ')+'. ' : '') + (f.library&&f.signature ? 'Ready to upload.' : 'Still needed: '+[!f.library&&'library', !f.signature&&'signature'].filter(Boolean).join(' and ')+'.');
+      renderUpload(f.library&&f.signature ? '#upSend' : '#upPick');
+    }
+    const readBase64 = file => new Promise((resolve, reject)=>{
+      const r=new FileReader();
+      r.onload=()=>{ const s=String(r.result); resolve(s.slice(s.indexOf(',')+1)); };
+      r.onerror=()=>reject(r.error||new Error('Could not read '+file.name));
+      r.readAsDataURL(file);
+    });
+    // Errors after the dialog was closed must not vanish.
+    const upFail = (msg) => { if($('upload').classList.contains('show')){ up.err=msg; renderUpload(); } else toast(msg,'err'); };
+    async function sendUpload(){
+      const f=up.files; if(!f.library||!f.signature||up.sending) return;
+      up.sending=true; up.err=''; renderUpload();
+      try {
+        const [data, signature, manifest] = await Promise.all([readBase64(f.library), readBase64(f.signature), f.manifest?readBase64(f.manifest):null]);
+        const staged = await api('/api/plugins/_uploads', {method:'POST', json:{library:{filename:f.library.name, data}, signature, manifest}});
+        up.sending=false;
+        await loadUploadsData().catch(()=>{}); renderStagedUploads();
+        if($('upload').classList.contains('show')){
+          up.staged=staged; up.files={library:null, signature:null, manifest:null}; renderUpload('#upInstall');
+        } else toast(`Uploaded ${staged.name} ${upVersion(staged)}: it is waiting for install`, 'ok');
+      } catch(e){
+        up.sending=false;
+        if(isAuthErr(e)) return;
+        upFail(e.status===413 ? 'The upload is larger than the server accepts.' : 'Upload failed: '+e.message);
+      }
+    }
+    async function installStaged(btn){
+      const s=up.staged; if(!s || btn.disabled) return;
+      busy(btn,true); up.err='';
+      try {
+        const r=await api('/api/plugins/_uploads/'+encodeURIComponent(s.id)+'/install', {method:'POST'});
+        closeOverlay($('upload'));
+        toast(r.previous_version!=null ? `${r.name}: ${r.previous_version} → ${r.version||'unversioned'}` : `Installed ${r.name} ${r.version||''}`.trim(), 'ok');
+        manifests=null;
+        await Promise.allSettled([loadPluginsData(), loadUploadsData()]);
+        renderPlugins(); renderStagedUploads(); renderNavCounts(); renderOverview();
+      } catch(e){
+        if(isAuthErr(e)) return;
+        upFail('Install failed: '+e.message);
+        await Promise.allSettled([loadPluginsData(), loadUploadsData()]); renderPlugins(); renderStagedUploads();
+      } finally { const b=$('upInstall'); if(b) busy(b,false); }
+    }
+    async function discardStaged(id, btn){
+      const s=((state.uploads&&state.uploads.uploads)||[]).find(x=>x.id===id) || up.staged;
+      const label = s ? s.name+' '+upVersion(s) : 'The upload';
+      const ok=await confirmDialog('Discard this upload?', `${label} is deleted from the staging area. Nothing is installed.`, 'Discard');
+      if(!ok) return;
+      if(btn) busy(btn,true);
+      try {
+        await api('/api/plugins/_uploads/'+encodeURIComponent(id), {method:'DELETE'});
+        toast('Discarded '+label, 'ok');
+        const fromDialog = $('upload').classList.contains('show') && up.staged && up.staged.id===id;
+        if(fromDialog) closeOverlay($('upload'));
+        await loadUploadsData().catch(()=>{}); renderStagedUploads(!fromDialog);
+      } catch(e){ if(!isAuthErr(e)) toast('Discard failed: '+e.message,'err'); }
+      finally { if(btn && btn.isConnected) busy(btn,false); }
+    }
+    async function refreshUploadStatus(){
+      try { await loadUploadsData(); up.statusErr=''; }
+      catch(e){ if(isAuthErr(e)) return; up.statusErr=e.message||'request failed'; }
+      if($('upload').classList.contains('show') && !up.staged) renderUpload();
+    }
+    $('uploadPluginBtn').addEventListener('click', ()=>{ openUpload(null); refreshUploadStatus(); });
+    $('stagedUploads').addEventListener('click', async e=>{
+      const b=e.target.closest('[data-up]'); if(!b) return;
+      if(b.dataset.up==='retry'){ busy(b,true); await loadUploadsData().catch(()=>{}); renderStagedUploads(); return; }
+      const s=((state.uploads&&state.uploads.uploads)||[]).find(x=>x.id===b.dataset.id); if(!s) return;
+      if(b.dataset.up==='review') openUpload(s); else discardStaged(s.id, b);
+    });
+    $('upload').addEventListener('click', e=>{
+      const t=e.target;
+      if(t.closest('#upPick')){ $('upFile').accept=[upExt(),'.sig','.json'].join(','); $('upFile').click(); return; }
+      const x=t.closest('[data-upx]');
+      if(x){ const f=up.files[x.dataset.upx]; up.files[x.dataset.upx]=null; up.err=''; up.note=f?`Removed ${f.name}.`:''; renderUpload('#upPick'); return; }
+      if(t.closest('#upSend')){ sendUpload(); return; }
+      if(t.closest('#upRetry')){ up.statusErr=''; renderUpload(); refreshUploadStatus(); return; }
+      const inst=t.closest('#upInstall'); if(inst){ installStaged(inst); return; }
+      const dis=t.closest('#upDiscard'); if(dis && up.staged){ discardStaged(up.staged.id, dis); }
+    });
+    $('upFile').addEventListener('change', e=>{ addUploadFiles(e.target.files); e.target.value=''; });
+    // Dropping files: on the dialog's drop zone, or anywhere on the Plugins page.
+    let upDragDepth=0;
+    const upHasFiles = e => Array.from((e.dataTransfer&&e.dataTransfer.types)||[]).includes('Files');
+    $('upload').addEventListener('dragenter', e=>{ const z=$('upDrop'); if(!z||!upHasFiles(e)) return; e.preventDefault(); upDragDepth++; z.classList.add('dropping'); });
+    $('upload').addEventListener('dragover', e=>{ if(upHasFiles(e)) e.preventDefault(); });
+    $('upload').addEventListener('dragleave', e=>{ const z=$('upDrop'); if(!z||!upHasFiles(e)) return; if(--upDragDepth<=0){ upDragDepth=0; z.classList.remove('dropping'); } });
+    $('upload').addEventListener('drop', e=>{
+      if(!upHasFiles(e)) return; e.preventDefault(); e.stopPropagation(); upDragDepth=0;
+      const z=$('upDrop'); if(!z) return;
+      z.classList.remove('dropping'); addUploadFiles(e.dataTransfer.files);
+    });
+    $('view-plugins').addEventListener('dragover', e=>{ if(upHasFiles(e)) e.preventDefault(); });
+    $('view-plugins').addEventListener('drop', e=>{
+      if(!upHasFiles(e) || $('upload').classList.contains('show')) return;
+      e.preventDefault();
+      const files=e.dataTransfer.files;
+      openUpload(null);
+      if(state.uploads && state.uploads.enabled) addUploadFiles(files);
+      else refreshUploadStatus().then(()=>{ if(state.uploads && state.uploads.enabled) addUploadFiles(files); });
+    });
+    $('upload').addEventListener('mousedown', e => { if(e.target===$('upload')) closeOverlay($('upload')); });
 
     // ================= Circuit breakers =================
     const BREAKER_STATES = { closed:'closed', open:'open', half_open:'half-open' };

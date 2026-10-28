@@ -8,6 +8,7 @@
 #include "routes/WorkflowRoute.hpp"
 #include "routes/SwaggerRoute.hpp"
 #include "routes/PluginAdminRoute.hpp"
+#include "routes/PluginUploadRoute.hpp"
 #include "routes/DashboardRoute.hpp"
 #include "routes/JobRoute.hpp"
 #include "routes/DefinitionRoute.hpp"
@@ -31,7 +32,8 @@ namespace Orcha::Agent {
         std::shared_ptr<Jobs::JobService> jobs,
         std::shared_ptr<Core::IPluginDenylist> denylist,
         Config::ServerConfig server,
-        std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers)
+        std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers,
+        std::shared_ptr<Core::PluginInstaller> plugin_installer)
         : registry_(std::move(registry))
         , runs_(std::move(runs))
         , logger_(std::move(logger))
@@ -43,7 +45,8 @@ namespace Orcha::Agent {
         , jobs_(std::move(jobs))
         , denylist_(std::move(denylist))
         , server_config_(std::move(server))
-        , circuit_breakers_(std::move(circuit_breakers)) {
+        , circuit_breakers_(std::move(circuit_breakers))
+        , plugin_installer_(std::move(plugin_installer)) {
         setup_default_routes();
     }
 
@@ -117,8 +120,14 @@ namespace Orcha::Agent {
         // /api/* calls. This avoids the browser's native Basic-auth dialog.
         router_.use(make_basic_auth(admin_, {"/api/"}, logger_));
 
+        // Uploads first: PluginAdminRoute matches every /api/plugins/* path.
+        if (plugin_installer_) {
+            router_.register_handler(std::make_shared<Routes::PluginUploadRoute>(plugin_installer_));
+        }
         router_.register_handler(std::make_shared<Routes::PluginAdminRoute>(
-            plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_, denylist_));
+            plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_, denylist_,
+            plugin_installer_ ? plugin_installer_->lifecycle_mutex() : nullptr,
+            plugin_installer_ ? plugin_installer_->upload_directory() : std::filesystem::path{}));
         router_.register_handler(std::make_shared<Routes::DashboardRoute>(logger_));
         // JSON <-> YAML for the job editor's YAML tab (stateless).
         router_.register_handler(std::make_shared<Routes::DefinitionRoute>());

@@ -50,7 +50,16 @@ requires rebuilding the `orcha` binary.
   YAML in JS), caches the last conversion in `yamlSync`, and serialises async work
   with `setDefBusy()`. File import (button or drop on `#defField`) accepts a bare
   definition or a whole job and never saves by itself.
-- API contracts the page relies on: `/api/plugins`, `/api/jobs`, `/api/runs`,
+- Plugin uploads (`#upload` dialog, `renderStagedUploads()`): states are disabled
+  (show the server's `reason`), pick files (sorted by extension into library /
+  signature / manifest), and review → Install / Keep for later / Discard. The
+  review must always say that installing runs the plugin's code in the server.
+  `/api/plugins/_uploads` `keys` are `{id, plugins|null, override_bundled}`; staged
+  uploads carry `allowed_by` (the key scope that permits the name).
+  `/api/plugins` entries carry `source` (`bundled`|`uploaded`) and, for an upload
+  that overrides a bundled plugin, `overrides {version, library_path}`.
+  `/api/plugins/_uploads` is fetched in `refreshAll()` (fail-soft).
+- API contracts the page relies on: `/api/plugins`, `/api/plugins/_uploads`, `/api/jobs`, `/api/runs`,
   `/api/definitions/convert`, `/api/circuit-breakers` (+ `POST /{command}/reset`); run `result[]` step entries may carry
   `rollback: {status: rolled_back|failed|skipped|not_supported, message?}`.
 - Auth: Basic token in `sessionStorage` (`orcha_auth`); `api()` handles 401 → login view.

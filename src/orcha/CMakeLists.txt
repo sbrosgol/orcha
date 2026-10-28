@@ -41,6 +41,7 @@ add_library(core STATIC
         core/PluginManager.cpp
         core/PluginManager.hpp
         core/PluginDenylist.hpp
+        core/PluginSources.hpp
 )
 
 add_library(logger STATIC
@@ -52,10 +53,11 @@ add_library(config STATIC
         config/YamlConfiguration.cpp
         config/YamlConfiguration.hpp
         config/IConfiguration.hpp
+        config/PluginUploadConfig.hpp
 )
 
 target_link_libraries(core PUBLIC nlohmann_json::nlohmann_json)
-target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
+target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json PRIVATE yaml_json)
 
 # Header-only utils library (modern CMake!)
 add_library(utils INTERFACE)
@@ -68,6 +70,16 @@ add_library(yaml_json STATIC
         utils/YamlJson.hpp
 )
 target_link_libraries(yaml_json PUBLIC nlohmann_json::nlohmann_json PRIVATE yaml-cpp::yaml-cpp)
+
+# Plugin upload: signature/format checks and staged install. OpenSSL stays
+# PRIVATE (PluginPackage.hpp/PluginInstaller.hpp do not include it).
+add_library(plugin_install STATIC
+        core/PluginPackage.cpp
+        core/PluginPackage.hpp
+        core/PluginInstaller.cpp
+        core/PluginInstaller.hpp
+)
+target_link_libraries(plugin_install PUBLIC core logger PRIVATE OpenSSL::Crypto)
 
 add_library(workflow STATIC
         workflow/WorkflowEngine.cpp
@@ -109,6 +121,7 @@ add_library(agent STATIC
         agent/routes/PluginAdminRoute.hpp
         agent/routes/JobRoute.hpp
         agent/routes/DefinitionRoute.hpp
+        agent/routes/PluginUploadRoute.hpp
         agent/routes/CircuitBreakerRoute.hpp
         agent/routes/DashboardRoute.hpp
 )
@@ -116,7 +129,7 @@ add_library(agent STATIC
 
 
 # Boost.Beast (header-only) powers the HTTP server; needs Boost::system + threads.
-target_link_libraries(agent PUBLIC core workflow jobs yaml_json Boost::thread Boost::system logger)
+target_link_libraries(agent PUBLIC core workflow jobs yaml_json plugin_install Boost::thread Boost::system logger)
 
 # Main executable
 add_executable(orcha
@@ -185,7 +198,7 @@ add_executable(test_new_features
 )
 # jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp;
 # agent brings the HTTP server (Boost.Beast) for the shutdown tests.
-target_link_libraries(test_new_features PRIVATE agent config)   # agent brings jobs
+target_link_libraries(test_new_features PRIVATE agent config OpenSSL::Crypto)   # agent brings jobs; OpenSSL signs test uploads
 
 # Test-only plugin used by the registry lifetime regression test (a command that
 # is still executing when it is unregistered).

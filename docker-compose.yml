@@ -18,7 +18,7 @@ services:
       ORCHA_JOBS_DB_PATH: /app/data/orcha-jobs.db
       ORCHA_LOGGING_FILE: /app/logs/orcha.log
     volumes:
-      - orcha-data:/app/data        # persistent SQLite job store
+      - orcha-data:/app/data        # persistent job store and uploaded plugins (/app/data/plugins)
       - orcha-logs:/app/logs        # log files
       # To use a custom config, copy `src/orcha/orcha.yaml.example` next to this
       # file as `orcha.yaml`, then uncomment the line below.

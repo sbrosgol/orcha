@@ -32,6 +32,7 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 | HTTP server / routing / auth | `agent/HttpServer.*`, `agent/CommandAgent.*`, `agent/IRouteHandler.hpp`, `agent/AuthMiddleware.hpp`, `agent/routes/*` |
 | Admin dashboard | `agent/dashboard_embedded.hpp` (single raw-string page) — use the `admin-ui` skill |
 | Run queue (async runs) | `jobs/RunQueue.*` (admission, runners, cancel, wait), `agent/routes/RunResponses.hpp` (run resource, 202/429/409 replies) |
+| Plugin uploads | `core/PluginSources.hpp` (bundled + uploaded dirs, overrides), `core/PluginPackage.*` (format/arch, SHA-256, Ed25519, never loads), `core/PluginInstaller.*` (stage, install/upgrade with rollback, crash recovery), `agent/routes/PluginUploadRoute.hpp`, `config/PluginUploadConfig.hpp`, `scripts/orcha-plugin-sign.sh` |
 | YAML definitions | `utils/YamlJson.*` (target `yaml_json`; convert + limits), `agent/HttpBody.hpp` (YAML/JSON bodies), `agent/routes/DefinitionRoute.hpp` (`POST /api/definitions/convert`) |
 | Jobs | `jobs/JobService.hpp` (`execute` persists a run's lifecycle), `jobs/SqliteJobStore.*`, `jobs/JobScheduler.*`, `jobs/RunJobCommand.hpp` |
 | Config | `config/YamlConfiguration.*`, `config/ServerConfig.hpp`, `config/AdminConfig.hpp`, `orcha.yaml.example` |
@@ -53,6 +54,28 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   refuses mismatched plugins.
 - **Plugin lifetime**: a loaded command's `shared_ptr` deleter owns the library
   handle. Never `dlclose` manually or keep raw `ICommand*` beyond a call.
+- **Plugin uploads** run code in the server: off unless `plugins.upload.enabled`,
+  admin auth required and an Ed25519 key in `plugins.upload.public_keys` (fail
+  closed). Nothing about an upload may be decided by loading it: staging checks
+  bytes only (`PluginPackage`), and the signature (v2) covers the library file
+  name, so the signed files decide which plugin an upload becomes. Uploaded
+  plugins live in `plugins.upload.directory`, never in `plugins.directory`
+  (bundled, possibly read-only; never written). `PluginSources` merges the two
+  for the loader, the admin API and the installer: an upload overrides a
+  bundled plugin of the same name, whose files are left alone. Uploads are
+  staged in `<upload dir>/.orcha-uploads` (discovery skips hidden directories),
+  so every install move is a same-filesystem rename. Each install goes to a new
+  `<upload dir>/<name>-<id>` directory (a fresh dlopen path; never reload a new
+  library from an old path). `install()` fsyncs a journal and
+  denylists the plugin before loading it; journal removal is the commit point;
+  `recover_interrupted()` runs at server start only (never CLI), under a flock.
+  Each trusted key has a name scope (`plugins` globs; none = any) and may
+  override a bundled plugin only with `override_bundled: true`; both are
+  checked at stage and again at install (`PluginInstaller::check_allowed`).
+  Install/stage/discard and `PluginAdminRoute` enable/disable/reload share the
+  installer's lifecycle `timed_mutex`. The signed message must stay identical in
+  `PluginPackage::signing_message` and `scripts/orcha-plugin-sign.sh` (golden
+  vector in tests/PluginUploadTests.hpp).
 - **Per-run state** (job stack for `run_job`, cancellation token) lives in
   `ExecutionContext`, never in `thread_local` globals. Anything that spawns a
   thread for a step must `capture()` and install a `Scope`.
@@ -104,7 +127,8 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 
 Config keys (env override `ORCHA_<SECTION>_<KEY>`, `_`→`.`): `server.{host,port,
 worker_threads,api_token,max_wait_ms}`, `logging.{file,level,console_output}`,
-`plugins.{directory,auto_reload,scan_interval_ms,denylist_path}`,
+`plugins.{directory,auto_reload,scan_interval_ms,denylist_path,
+upload.{enabled,public_keys,max_bytes,directory}}`,
 `admin.{enabled,auth_required,username,password,realm}`,
 `jobs.{db_path,max_runs,scheduler_enabled,scheduler_tick_seconds}`,
 `workflow.{default_timeout_ms, max_concurrent_runs, max_queued_runs,
