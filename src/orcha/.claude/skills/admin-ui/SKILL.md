@@ -129,13 +129,38 @@ primary confirm, phone width, and an editor round-trip:
 node .claude/skills/admin-ui/scripts/states.mjs http://127.0.0.1:8091 <scratch>/states
 ```
 
-For behaviour (not just looks), drive the real UI over CDP in a scratch script modelled on
-these harnesses: set control values and dispatch `change`/`input`, click Save, then read the
-result back through the API with `fetch` and assert on it.
+For behaviour (not just looks), the flow harnesses drive the real UI over CDP and check the
+results through the API (each prints `ok`/`FAIL` per check; exit 1 on a failure or JS error):
+
+```bash
+# Job editor: Visual/JSON/YAML tabs, live YAML errors, settings sync, file import
+# (picker + drop), tab keyboard support, remembered tab. Any agent with the echo plugin.
+node .claude/skills/admin-ui/scripts/editor-yaml.mjs http://127.0.0.1:8091 <scratch>/editor [390 844]
+
+# Plugin uploads: needs a prepared pair of servers (uploads on/off), a signing key and
+# signed fixtures. OpenSSL 3 is required (OPENSSL=/opt/homebrew/bin/openssl on macOS).
+bash .claude/skills/admin-ui/scripts/upload-env.sh start <scratch>/up 8094 8095
+node .claude/skills/admin-ui/scripts/upload-flow.mjs http://127.0.0.1:8094 http://127.0.0.1:8095 \
+     <scratch>/up/fixtures <scratch>/up/shots [390 844]
+bash .claude/skills/admin-ui/scripts/upload-env.sh stop <scratch>/up
+```
+
+`upload-flow.mjs` changes server state: run `upload-env.sh start` again before re-running it.
+For a new flow, build on `scripts/cdp.mjs` (browser, `check`, `until`, `mouse`, `setFiles`,
+`login`, `finish`). Pitfalls it documents:
+
+- `el.click()` from `Runtime.evaluate` does **not** focus the element (a real click does in
+  Chrome, not in Safari). App code must not assume the clicked button is focused; tests that
+  care use `mouse()`.
+- The app's `state`/`up` objects are not reachable from `evaluate`: assert on the DOM,
+  `location.hash` and the API.
+- Never sleep a fixed time for a request: `until()` the UI settles (a dialog closes, a
+  button leaves `.loading`). Installs and slow CI make fixed sleeps flaky.
 
 Finish with a JS syntax check if you only touched script code:
 ```bash
 python3 -c "import re;s=open('agent/dashboard_embedded.hpp').read();open('<scratch>/app.js','w').write(re.findall(r'<script>(.*?)</script>',s,re.S)[-1])" && node --check <scratch>/app.js
 ```
 
-Stop the agent afterwards (`pkill -f cmake-build-debug/orcha`).
+Stop the agent afterwards by the PID you started (`kill <pid>`). Do not `pkill -f
+cmake-build-debug/orcha`: other sessions or reviewer agents may be running their own.
