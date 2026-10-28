@@ -27,11 +27,13 @@ namespace Orcha::Agent {
         inline constexpr int Accepted = 202;
         inline constexpr int BadRequest = 400;
         inline constexpr int Unauthorized = 401;
+        inline constexpr int Forbidden = 403;
         inline constexpr int NotFound = 404;
         inline constexpr int MethodNotAllowed = 405;
         inline constexpr int Conflict = 409;
         inline constexpr int PayloadTooLarge = 413;
         inline constexpr int UnsupportedMediaType = 415;
+        inline constexpr int UnprocessableEntity = 422;
         inline constexpr int TooManyRequests = 429;
         inline constexpr int InternalError = 500;
         inline constexpr int ServiceUnavailable = 503;

@@ -820,6 +820,9 @@ namespace Orcha::Agent::Routes {
             paths["/api/plugins/{name}/enable"] = path_plugin_action("enable", "Enable");
             paths["/api/plugins/{name}/disable"]= path_plugin_action("disable", "Disable");
             paths["/api/plugins/_watch"]        = path_plugins_watch();
+            paths["/api/plugins/_uploads"]      = path_plugin_uploads();
+            paths["/api/plugins/_uploads/{id}"] = path_plugin_upload_item();
+            paths["/api/plugins/_uploads/{id}/install"] = path_plugin_upload_install();
 
             // Circuit breakers
             paths["/api/circuit-breakers"]                  = path_circuit_breakers();
@@ -1235,6 +1238,68 @@ namespace Orcha::Agent::Routes {
             path["put"] = put_op;
 
             return path;
+        }
+
+        // Plugin uploads: generic object schemas (see PluginUploadRoute.hpp).
+        static Orcha::Json path_plugin_uploads() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value get_op = value::object();
+            get_op["summary"] = "Plugin upload status and staged uploads";
+            get_op["description"] = "enabled/reason, max_bytes, platform {format, arch, extension}, trusted key ids, and uploads waiting for install.";
+            get_op["tags"] = tag("Plugins");
+            get_op["security"] = basic_auth_security();
+            get_op["responses"] = {{"200", simple_response("Status and staged uploads")}};
+            path["get"] = get_op;
+
+            value post_op = value::object();
+            post_op["summary"] = "Stage a signed plugin upload";
+            post_op["description"] =
+                "Body: {\"library\": {\"filename\", \"data\": base64}, \"manifest\": base64|null, "
+                "\"signature\": base64}. The server checks size, ELF/Mach-O format and architecture, the "
+                "manifest and the Ed25519 signature (scripts/orcha-plugin-sign.sh) without loading the "
+                "library, and stores it for review. The signature covers the library file name, the library and "
+                "the manifest. Off unless plugins.upload.enabled.";
+            post_op["tags"] = tag("Plugins");
+            post_op["security"] = basic_auth_security();
+            post_op["responses"] = {{"201", simple_response("Staged upload")},
+                                    {"400", error_response("Invalid upload (format, architecture, manifest, name)")},
+                                    {"403", error_response("Plugin uploads are disabled (the error says why)")},
+                                    {"409", error_response("Too many staged uploads, or another upload or plugin change is in progress")},
+                                    {"413", error_response("Library larger than plugins.upload.max_bytes")},
+                                    {"422", error_response("Signature missing, invalid or from an untrusted key")}};
+            path["post"] = post_op;
+            return path;
+        }
+
+        static Orcha::Json path_plugin_upload_item() {
+            using value = Orcha::Json;
+            value op = value::object();
+            op["summary"] = "Discard a staged plugin upload";
+            op["tags"] = tag("Plugins");
+            op["security"] = basic_auth_security();
+            op["responses"] = {{"200", simple_response("Discarded")}, {"404", error_response("No such upload")}};
+            return value{{"delete", op}};
+        }
+
+        static Orcha::Json path_plugin_upload_install() {
+            using value = Orcha::Json;
+            value op = value::object();
+            op["summary"] = "Install a staged plugin";
+            op["description"] =
+                "Installs into a new <plugins>/<name>-<id> directory and loads it, replacing a plugin with the "
+                "same name. If the new version fails to load, the previous one is restored (rolled_back: true "
+                "in the 422 body).";
+            op["tags"] = tag("Plugins");
+            op["security"] = basic_auth_security();
+            op["responses"] = {{"200", simple_response("{name, version, previous_version}")},
+                               {"400", error_response("Staged files no longer match their signature")},
+                               {"403", error_response("Plugin uploads are disabled")},
+                               {"404", error_response("No such upload")},
+                               {"409", error_response("Another plugin change is in progress, or a previous install did not finish (restart to roll it back)")},
+                               {"422", error_response("The plugin did not load (rolled_back says whether the previous version was restored)")},
+                               {"500", error_response("The files could not be installed")}};
+            return value{{"post", op}};
         }
 
         static Orcha::Json path_circuit_breakers() {

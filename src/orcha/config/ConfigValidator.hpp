@@ -95,6 +95,7 @@ namespace Orcha::Config {
 
             validate_server_config(config, result);
             validate_plugin_config(config, result);
+            validate_plugin_upload_config(config, result);
             validate_logging_config(config, result);
             validate_workflow_config(config, result);
 
@@ -198,6 +199,33 @@ namespace Orcha::Config {
                         "Very short scan interval (" + std::to_string(interval) + "ms) may impact performance",
                         "Use at least 1000ms (1 second)");
                 }
+            }
+        }
+
+        static void validate_plugin_upload_config(const IConfiguration& config, ValidationResult& result) {
+            const auto max_bytes = config.get_int("plugins.upload.max_bytes", 32ll * 1024 * 1024);
+            if (max_bytes <= 0) {
+                result.add_error("plugins.upload.max_bytes", "Must be greater than 0");
+            } else if (max_bytes > 45ll * 1024 * 1024) {
+                // Uploads travel base64-encoded in a JSON body (64 MB HTTP limit).
+                result.add_warning("plugins.upload.max_bytes",
+                    "Larger than 45 MB: the base64 upload body would exceed the 64 MB request limit",
+                    "Use at most 47185920");
+            }
+            if (!config.get_bool("plugins.upload.enabled", false)) return;
+            result.add_warning("plugins.upload.enabled",
+                "Plugin uploads are on: admins can install signed plugins, whose code runs in the server",
+                "Keep the signing key private and the admin password strong");
+            if (!config.get_bool("admin.auth_required", true)) {
+                result.add_warning("plugins.upload.enabled",
+                    "Ignored: uploads need admin.auth_required: true");
+            }
+            // A YAML list, or one string (as ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS sets it).
+            if (!config.get_string("plugins.upload.public_keys") &&
+                config.get_string_list("plugins.upload.public_keys").empty()) {
+                result.add_warning("plugins.upload.public_keys",
+                    "No signing keys: uploads stay disabled",
+                    "Create one with scripts/orcha-plugin-sign.sh keygen");
             }
         }
 

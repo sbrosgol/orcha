@@ -26,13 +26,16 @@ namespace Orcha::Core {
 
     } // namespace
 
-    bool CommandRegistry::load_command_library(const std::string& path) {
+    Result<void, std::string> CommandRegistry::try_load_command_library(const std::string& path) {
+        // Every refusal is logged and returned, so callers (plugin install)
+        // can tell the admin why.
+        const auto fail = [this](std::string reason) {
+            if (logger_) logger_->error(reason);
+            return Result<void, std::string>::Err(std::move(reason));
+        };
         void* handle = dlopen(path.c_str(), RTLD_NOW);
         if (!handle) {
-            if (logger_) {
-                logger_->error("Failed to load plugin: " + path + " (" + dlerror() + ")");
-            }
-            return false;
+            return fail("Failed to load plugin: " + path + " (" + dlerror() + ")");
         }
         auto library = std::make_shared<SharedLibrary>(handle);
 
@@ -42,22 +45,16 @@ namespace Orcha::Core {
         const auto abi_func = reinterpret_cast<PluginAbiVersionFunc>(
             dlsym(handle, "orcha_plugin_abi_version"));
         if (!abi_func || abi_func() != kPluginAbiVersion) {
-            if (logger_) {
-                logger_->error("Plugin " + path + " was built for plugin ABI " +
-                               (abi_func ? std::to_string(abi_func()) : std::string("1 (unversioned)")) +
-                               ", host requires " + std::to_string(kPluginAbiVersion) +
-                               "; rebuild it against the current core/ICommand.hpp");
-            }
-            return false;
+            return fail("Plugin " + path + " was built for plugin ABI " +
+                        (abi_func ? std::to_string(abi_func()) : std::string("1 (unversioned)")) +
+                        ", host requires " + std::to_string(kPluginAbiVersion) +
+                        "; rebuild it against the current core/ICommand.hpp");
         }
 
         dlerror(); // Clear any existing error
         const auto create_func = reinterpret_cast<CreateCommandFunc>(dlsym(handle, "create_command"));
         if (const char* dlsym_error = dlerror()) {
-            if (logger_) {
-                logger_->error("Cannot load symbol 'create_command' in " + path + ": " + dlsym_error);
-            }
-            return false;
+            return fail("Cannot load symbol 'create_command' in " + path + ": " + dlsym_error);
         }
         // Optional: lets the plugin free the object with its own allocator.
         const auto destroy_func = reinterpret_cast<DestroyCommandFunc>(dlsym(handle, "destroy_command"));
@@ -66,21 +63,12 @@ namespace Orcha::Core {
         try {
             raw = create_func();
         } catch (const std::exception& ex) {
-            if (logger_) {
-                logger_->error("Plugin factory in " + path + " threw: " + ex.what());
-            }
-            return false;
+            return fail("Plugin factory in " + path + " threw: " + ex.what());
         } catch (...) {
-            if (logger_) {
-                logger_->error("Plugin factory in " + path + " threw an unknown exception");
-            }
-            return false;
+            return fail("Plugin factory in " + path + " threw an unknown exception");
         }
         if (!raw) {
-            if (logger_) {
-                logger_->error("Plugin in " + path + " did not return a valid command.");
-            }
-            return false;
+            return fail("Plugin in " + path + " did not return a valid command.");
         }
 
         // The deleter owns the library: the command is destroyed first, then
@@ -99,10 +87,7 @@ namespace Orcha::Core {
         {
             std::unique_lock lock(mutex_);
             if (commands_.contains(cmd_name)) {
-                if (logger_) {
-                    logger_->error("Command '" + cmd_name + "' already registered, skipping.");
-                }
-                return false; // cmd and library are released here, in that order
+                return fail("Command '" + cmd_name + "' already registered, skipping."); // cmd and library are released here, in that order
             }
             commands_.emplace(cmd_name, std::move(cmd));
         }
@@ -110,7 +95,7 @@ namespace Orcha::Core {
         if (logger_) {
             logger_->info("Loaded command: " + cmd_name + " from " + path);
         }
-        return true;
+        return Result<void, std::string>::Ok();
     }
 
     bool CommandRegistry::register_command(std::shared_ptr<ICommand> command) {

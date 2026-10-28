@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "Result.hpp"
 
 namespace Orcha::Core {
 
@@ -63,9 +64,15 @@ namespace Orcha::Core {
         /**
          * @brief Load a command from a shared library.
          * @param path Path to the shared library.
-         * @return True if loading succeeded.
+         * @return Ok, or why it was refused (dlopen error, plugin ABI
+         *         mismatch, missing factory, name already registered, ...).
          */
-        [[nodiscard]] virtual bool load_command_library(const std::string& path) = 0;
+        [[nodiscard]] virtual Result<void, std::string> try_load_command_library(const std::string& path) = 0;
+
+        /// try_load_command_library() for callers that only need success.
+        [[nodiscard]] bool load_command_library(const std::string& path) {
+            return try_load_command_library(path).is_ok();
+        }
 
         /**
          * @brief Register a command instance directly.
