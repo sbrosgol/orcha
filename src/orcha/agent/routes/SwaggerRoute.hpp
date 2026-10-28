@@ -1264,7 +1264,7 @@ namespace Orcha::Agent::Routes {
             post_op["security"] = basic_auth_security();
             post_op["responses"] = {{"201", simple_response("Staged upload")},
                                     {"400", error_response("Invalid upload (format, architecture, manifest, name)")},
-                                    {"403", error_response("Plugin uploads are disabled (the error says why)")},
+                                    {"403", error_response("Plugin uploads are disabled, or the signing key may not sign this plugin name or override a bundled plugin (the error says why)")},
                                     {"409", error_response("Too many staged uploads, or another upload or plugin change is in progress")},
                                     {"413", error_response("Library larger than plugins.upload.max_bytes")},
                                     {"422", error_response("Signature missing, invalid or from an untrusted key")}};
@@ -1294,7 +1294,7 @@ namespace Orcha::Agent::Routes {
             op["security"] = basic_auth_security();
             op["responses"] = {{"200", simple_response("{name, version, previous_version}")},
                                {"400", error_response("Staged files no longer match their signature")},
-                               {"403", error_response("Plugin uploads are disabled")},
+                               {"403", error_response("Plugin uploads are disabled, or the signing key is no longer allowed this plugin")},
                                {"404", error_response("No such upload")},
                                {"409", error_response("Another plugin change is in progress, or a previous install did not finish (restart to roll it back)")},
                                {"422", error_response("The plugin did not load (rolled_back says whether the previous version was restored)")},

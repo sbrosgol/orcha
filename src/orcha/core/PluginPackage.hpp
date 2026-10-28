@@ -60,6 +60,9 @@ namespace Orcha::Core::PluginPackage {
     /// no "..", and not ending like a library or temporary file (.so, .part, ...).
     [[nodiscard]] bool is_valid_plugin_name(std::string_view name);
 
+    /// Glob match for key scopes: '*' any run of characters, '?' one character.
+    [[nodiscard]] bool name_matches(std::string_view pattern, std::string_view name);
+
     /// The name discovery gives a library without a manifest ("libfoo.so" -> "foo").
     [[nodiscard]] std::string plugin_name_from_filename(std::string_view filename);
 

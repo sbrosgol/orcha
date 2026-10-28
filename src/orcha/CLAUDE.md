@@ -69,6 +69,9 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   library from an old path). `install()` fsyncs a journal and
   denylists the plugin before loading it; journal removal is the commit point;
   `recover_interrupted()` runs at server start only (never CLI), under a flock.
+  Each trusted key has a name scope (`plugins` globs; none = any) and may
+  override a bundled plugin only with `override_bundled: true`; both are
+  checked at stage and again at install (`PluginInstaller::check_allowed`).
   Install/stage/discard and `PluginAdminRoute` enable/disable/reload share the
   installer's lifecycle `timed_mutex`. The signed message must stay identical in
   `PluginPackage::signing_message` and `scripts/orcha-plugin-sign.sh` (golden

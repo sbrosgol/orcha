@@ -1385,7 +1385,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="k">Library</div><div class="v"><span class="mono wrap-any">${esc(s.library_filename)}</span> <span class="muted">· ${esc(fmtBytes(s.size))}</span></div>
             <div class="k">SHA-256</div><div class="v hash">${esc(s.sha256)}</div>
             <div class="k">Platform</div><div class="v">${esc(s.format)} ${esc(s.arch)} <span class="ok-text">· loads on this server</span></div>
-            <div class="k">Signature</div><div class="v"><span class="ok-text">${icon('check')} Verified</span> · key <code>${esc(s.signer)}</code> <span class="muted">(covers the file name and manifest)</span></div>
+            <div class="k">Signature</div><div class="v"><span class="ok-text">${icon('check')} Verified</span> · key <code>${esc(s.signer)}</code> <span class="muted">(covers the file name and manifest)</span>${s.allowed_by?`<div class="muted">This key may sign: ${esc(s.allowed_by)}</div>`:''}</div>
             <div class="k">Manifest</div><div class="v">${s.has_manifest?`${esc(String(s.parameters))} parameter${s.parameters===1?'':'s'} declared`:'None: the job editor will show raw JSON parameters'}</div>
             <div class="k">Uploaded</div><div class="v">${esc(s.uploaded_by)} · ${timeCell(s.uploaded_at)}</div>
           </div>
@@ -1416,7 +1416,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
           ? `<span class="fname">${esc(file.name)}</span><span class="size">${esc(fmtBytes(file.size))}</span>
              <button class="btn ghost sm icon" data-upx="${role}" aria-label="Remove ${label.toLowerCase()} ${esc(file.name)}">${icon('x')}</button>`
           : `<span class="fname missing">${note}</span>`}</li>`;
-        body.innerHTML = err + `<p class="muted tight">Signed plugins only. This server loads <code>${esc(ext)}</code> libraries for ${esc(p.format||'')} ${esc(p.arch||'')} and trusts ${(u.keys||[]).map(k=>`<code>${esc(k)}</code>`).join(', ')||'no keys'}. Upload the library under the file name it was signed with.</p>
+        body.innerHTML = err + `<p class="muted tight">Signed plugins only. This server loads <code>${esc(ext)}</code> libraries for ${esc(p.format||'')} ${esc(p.arch||'')} and trusts ${(u.keys||[]).map(k=>`<code>${esc(k.id||k)}</code>${k.plugins?` <span class="muted">(${esc(k.plugins.join(', '))})</span>`:''}`).join(', ')||'no keys'}. Upload the library under the file name it was signed with.</p>
           <div class="dropzone" id="upDrop">${icon('upload')}
             <div><strong>Drop files here</strong> or <button type="button" class="linkbtn" id="upPick">choose files</button></div>
             <div class="hint">The library, its <code>.sig</code> from <code>orcha-plugin-sign.sh</code>, and optionally <code>manifest.json</code>. Up to ${esc(fmtBytes(u.max_bytes))}.</div></div>

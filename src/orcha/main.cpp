@@ -106,7 +106,8 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
         options.enabled = upload.enabled;
         options.bundled_directory = Config::PluginConfig::from_config(config).directory;
         options.upload_directory = upload.directory;
-        options.public_keys = upload.public_keys;
+        for (const auto& k : upload.public_keys) options.public_keys.push_back({k.key, k.plugins, k.override_bundled});
+        options.config_errors = upload.errors;
         options.max_bytes = static_cast<std::uint64_t>(std::max<int64_t>(1, upload.max_bytes));
         options.admin_auth_required = Config::AdminConfig::from_config(config).auth_required;
         services.register_singleton<Core::PluginInstaller>(std::make_shared<Core::PluginInstaller>(

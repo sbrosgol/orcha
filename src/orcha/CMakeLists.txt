@@ -57,7 +57,7 @@ add_library(config STATIC
 )
 
 target_link_libraries(core PUBLIC nlohmann_json::nlohmann_json)
-target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
+target_link_libraries(config PUBLIC yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json PRIVATE yaml_json)
 
 # Header-only utils library (modern CMake!)
 add_library(utils INTERFACE)

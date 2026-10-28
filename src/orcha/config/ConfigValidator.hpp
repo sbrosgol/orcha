@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "PluginUploadConfig.hpp"
 #include "../core/PluginSources.hpp"
 #include "IConfiguration.hpp"
 #include <vector>
@@ -232,9 +233,13 @@ namespace Orcha::Config {
                 result.add_warning("plugins.upload.enabled",
                     "Ignored: uploads need admin.auth_required: true");
             }
-            // A YAML list, or one string (as ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS sets it).
-            if (!config.get_string("plugins.upload.public_keys") &&
-                config.get_string_list("plugins.upload.public_keys").empty()) {
+            // A YAML list (keys, or {key, plugins, override_bundled} mappings),
+            // or one string (as ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS sets it).
+            const auto upload = PluginUploadConfig::from_config(config);
+            for (const auto& problem : upload.errors) {
+                result.add_error("plugins.upload.public_keys", problem);
+            }
+            if (upload.public_keys.empty() && upload.errors.empty()) {
                 result.add_warning("plugins.upload.public_keys",
                     "No signing keys: uploads stay disabled",
                     "Create one with scripts/orcha-plugin-sign.sh keygen");

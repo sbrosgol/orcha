@@ -85,6 +85,7 @@ namespace Orcha::Agent::Routes {
                 case K::Invalid:      return status::BadRequest;
                 case K::TooLarge:     return status::PayloadTooLarge;
                 case K::BadSignature: return status::UnprocessableEntity;
+                case K::NotAllowed:   return status::Forbidden;
                 case K::NotFound:     return status::NotFound;
                 case K::Conflict:     return status::Conflict;
                 case K::LoadFailed:   return status::UnprocessableEntity;
