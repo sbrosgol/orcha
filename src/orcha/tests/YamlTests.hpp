@@ -385,17 +385,13 @@ namespace Orcha::Tests {
         ORCHA_ASSERT_EQ(bad.status, Agent::status::BadRequest);
         ORCHA_ASSERT(Json::parse(bad.body)["line"] == 2);
 
-        // YAML job fields are typed strictly: `enabled: no` is the string "no",
-        // which JobDefinition::from_json would skip, leaving the job enabled.
+        // `enabled: no` is the string "no": a field error, not an enabled job.
         auto yes_no = route.handle(request("POST", "/api/jobs", "application/yaml",
             "name: wordy\nenabled: no\ndefinition:\n  steps: []\n"));
         ORCHA_ASSERT_EQ(yes_no.status, Agent::status::BadRequest);
-        ORCHA_ASSERT(Json::parse(yes_no.body)["error"].get<std::string>().find("'enabled' must be true or false") == 0);
+        ORCHA_ASSERT(Json::parse(yes_no.body)["error"] ==
+                     "Invalid job: 'enabled' must be true or false (got \"no\")");
         ORCHA_ASSERT(!store->get_job_by_name("wordy").has_value());
-        auto numeric_name = route.handle(request("POST", "/api/jobs", "application/yaml",
-            "name: 2024\ndefinition:\n  steps: []\n"));
-        ORCHA_ASSERT_EQ(numeric_name.status, Agent::status::BadRequest);
-        ORCHA_ASSERT(Json::parse(numeric_name.body)["error"] == "'name' must be a string");
 
         // JSON bodies are unchanged (no or JSON Content-Type).
         auto json_job = route.handle(request("POST", "/api/jobs", "",

@@ -74,7 +74,9 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
 - **Per-workflow settings**: `timeout_ms`, `"rollback": none|reverse|best_effort`,
   `"circuit_breaker": true`; per step `timeout_ms`, `parallel`, `name`. Invalid
   settings throw `std::invalid_argument` from `WorkflowDefinition::from_json`
-  (routes answer 400). The dashboard editor must preserve fields it does not edit.
+  (routes answer 400), as do mistyped job fields from `JobDefinition::from_json`
+  (never skip a present field of the wrong type). The dashboard editor must
+  preserve fields it does not edit.
 - **Runs are asynchronous**: every top-level run (`POST /workflow`, dashboard
   "Run now", scheduler) goes through the one bounded `RunQueue` (202 + `Location`;
   full → 429 + `Retry-After`; 503 only for "API disabled"/shutting down;

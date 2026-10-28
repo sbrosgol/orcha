@@ -216,9 +216,9 @@ YAML in these places (`POST /workflow` still takes JSON only):
   until you save the job.
 - **Jobs API:** `POST /api/jobs` and `PUT /api/jobs/{id}` accept YAML bodies
   sent with `Content-Type: application/yaml` (or `application/x-yaml`,
-  `text/yaml`). In a YAML job body, `name`, `description`, `schedule_cron`
-  and `enabled` must have the right type. For example, `enabled: no` is
-  rejected, because `no` is a string; write `enabled: false`:
+  `text/yaml`). Job fields must have the right type in any body (see
+  below), so YAML `enabled: no` is rejected, because `no` is a string; write
+  `enabled: false`:
 
   ```bash
   curl -u admin:change-me -X POST http://localhost:8080/api/jobs \
@@ -243,6 +243,17 @@ not kept, because the definition is stored as JSON.
 > (now booleans), `0x1F` was the float 31.0 (now the integer 31), and a
 > duplicate key silently kept its last value (now an error). Quote a value
 > exactly when it must stay a string.
+
+### Job field types
+
+`POST /api/jobs` and `PUT /api/jobs/{id}` reject a field with the wrong type
+with `400`, for example `Invalid job: 'enabled' must be true or false (got
+"false")`. `name` must be a string, `description` a string or null,
+`enabled` a boolean, `schedule_cron` a string or null, and `definition` an
+object. Unknown fields are ignored.
+
+> **Behaviour change:** a mistyped field used to be skipped silently, so
+> `"enabled": "false"` created an *enabled* job that the scheduler ran.
 
 ## API Documentation (Swagger / OpenAPI)
 

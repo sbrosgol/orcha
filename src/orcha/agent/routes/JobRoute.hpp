@@ -215,7 +215,8 @@ namespace Orcha::Agent::Routes {
         // ---- Helpers ----
 
         /// The request body as a job, or the 400/413 reply. Parse errors and
-        /// field errors are reported separately.
+        /// field errors (JobDefinition::from_json is strict) are reported
+        /// separately.
         static std::variant<Jobs::JobDefinition, HttpResponse> parse_job(const HttpRequest& request) {
             Orcha::Json body;
             try {
@@ -223,37 +224,11 @@ namespace Orcha::Agent::Routes {
             } catch (const std::exception& ex) {
                 return reply_bad_body(request, ex);
             }
-            if (!body.is_object()) {
-                return reply_error(status::BadRequest, "A job must be an object");
-            }
-            // JobDefinition::from_json skips optional fields of the wrong type.
-            // YAML makes that a trap (`enabled: no` is the string "no", so the
-            // job would stay enabled), so YAML bodies are checked strictly.
-            if (is_yaml_body(request)) {
-                if (auto err = check_yaml_job_fields(body)) return reply_error(status::BadRequest, *err);
-            }
             try {
                 return Jobs::JobDefinition::from_json(body);
             } catch (const std::exception& ex) {
                 return reply_error(status::BadRequest, std::string("Invalid job: ") + ex.what());
             }
-        }
-
-        static std::optional<std::string> check_yaml_job_fields(const Orcha::Json& body) {
-            const auto wrong = [&](const char* key, auto&& ok) {
-                return body.contains(key) && !ok(body.at(key));
-            };
-            if (wrong("name", [](const auto& v) { return v.is_string(); }))
-                return "'name' must be a string";
-            if (wrong("description", [](const auto& v) { return v.is_string() || v.is_null(); }))
-                return "'description' must be a string";
-            if (wrong("enabled", [](const auto& v) { return v.is_boolean(); }))
-                return "'enabled' must be true or false (YAML words such as yes/no/on/off are strings)";
-            if (wrong("schedule_cron", [](const auto& v) { return v.is_string() || v.is_null(); }))
-                return "'schedule_cron' must be a string such as \"0 3 * * *\"";
-            if (wrong("definition", [](const auto& v) { return v.is_object(); }))
-                return "'definition' must be a mapping with a 'steps' list";
-            return std::nullopt;
         }
 
         /// Returns an error message if the job is invalid, else nullopt.
