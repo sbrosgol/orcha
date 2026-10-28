@@ -173,7 +173,9 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .shell { display:grid; grid-template-columns:232px 1fr; min-height:100vh; }
     .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:4px;
                border-right:1px solid var(--line); background:var(--panel); padding:14px 12px; }
-    .brand { display:flex; align-items:center; gap:10px; padding:4px 8px 16px; }
+    .brand { display:flex; align-items:center; gap:10px; padding:6px 8px; margin:-2px 0 10px; border-radius:var(--radius-sm);
+             color:inherit; text-decoration:none; transition:background .12s; }
+    .brand:hover { background:var(--hover); text-decoration:none; }
     .logo { width:30px; height:30px; border-radius:8px; background:linear-gradient(135deg,#14b8a6,#0f766e);
             display:flex; align-items:center; justify-content:center; color:#fff; flex:none; box-shadow:var(--shadow-sm); }
     .logo svg { width:16px; height:16px; }
@@ -604,8 +606,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
   <!-- ===================== App ===================== -->
   <div class="shell">
     <aside class="sidebar" aria-label="Primary">
-      <div class="brand"><div class="logo"><svg><use href="#i-logo"/></svg></div>
-        <div><div class="nm">Orcha</div><div class="sub">Admin console</div></div></div>
+      <a class="brand" id="brandLink" href="#/overview" aria-label="Orcha admin console: go to Overview" title="Go to Overview"><div class="logo"><svg><use href="#i-logo"/></svg></div>
+        <div><div class="nm">Orcha</div><div class="sub">Admin console</div></div></a>
       <div class="navlbl">Workspace</div>
       <nav class="nav">
         <a href="#/overview" data-nav="overview"><svg class="i"><use href="#i-home"/></svg>Overview</a>
@@ -1044,6 +1046,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       $('crumbs').innerHTML=html;
     }
     $('menuBtn').addEventListener('click', ()=>document.body.classList.toggle('nav-open'));
+    // Already on Overview: the hash does not change, so route() would not run.
+    $('brandLink').addEventListener('click', ()=>{
+      if(state.view==='overview'){ document.body.classList.remove('nav-open'); window.scrollTo({top:0}); }
+    });
     document.addEventListener('click', e => {
       if(document.body.classList.contains('nav-open') && !e.target.closest('.sidebar,#menuBtn')) document.body.classList.remove('nav-open');
     });
