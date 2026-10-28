@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 
 namespace Orcha::Jobs {
 
@@ -28,7 +29,7 @@ namespace Orcha::Jobs {
 
     Core::Result<RunRecord, RunQueue::SubmitError> RunQueue::submit(
         std::optional<std::string> job_id, std::string trigger,
-        Orcha::Json definition, std::string name) {
+        Json definition, std::string name) {
         using R = Core::Result<RunRecord, SubmitError>;
 
         {
@@ -70,7 +71,7 @@ namespace Orcha::Jobs {
         return R::Err(SubmitError::ShuttingDown);
     }
 
-    void RunQueue::runner(std::stop_token stop) {
+    void RunQueue::runner(const std::stop_token &stop) {
         for (;;) {
             Entry entry;
             {
@@ -218,7 +219,7 @@ namespace Orcha::Jobs {
             for (const auto& entry : cancelled) {
                 active_.erase(entry.run.id);
             }
-            for (auto& [id, tracker] : active_) {
+            for (const auto &tracker: active_ | std::views::values) {
                 tracker->stop.request_stop();   // running runs stop cooperatively
             }
         }
