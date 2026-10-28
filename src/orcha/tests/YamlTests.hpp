@@ -1,10 +1,16 @@
 //
-// YamlTests.hpp - YAML <-> JSON conversion (utils/YamlJson.hpp).
+// YamlTests.hpp - YAML <-> JSON conversion (utils/YamlJson.hpp), YAML request
+// bodies (agent/HttpBody.hpp), the definition conversion endpoint and YAML job
+// bodies on the jobs API.
 //
 
 #pragma once
 
-#include "../core/JsonCompat.hpp"
+#include "../agent/HttpBody.hpp"
+#include "../agent/routes/DefinitionRoute.hpp"
+#include "../agent/routes/JobRoute.hpp"
+#include "../jobs/RunQueue.hpp"
+#include "../jobs/SqliteJobStore.hpp"
 #include "../utils/YamlJson.hpp"
 
 #include "Assertions.hpp"
@@ -18,6 +24,16 @@ namespace Orcha::Tests {
 
     namespace yaml_tests {
         using OJson = nlohmann::ordered_json;
+
+        inline Agent::HttpRequest request(const std::string& method, const std::string& path,
+                                          const std::string& content_type, std::string body) {
+            Agent::HttpRequest r;
+            r.method = method;
+            r.path = path;
+            r.body = std::move(body);
+            if (!content_type.empty()) r.headers.emplace_back("Content-Type", content_type);
+            return r;
+        }
 
         /// Runs @p fn, which must throw a YamlError; returns it.
         template <class Fn>
@@ -264,6 +280,130 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_yaml_large_inputs_are_bounded_and_linear\n";
     }
 
+    // ========== HTTP ==========
+
+    inline void test_yaml_media_types() {
+        using Agent::is_yaml_media_type;
+        ORCHA_ASSERT(is_yaml_media_type("application/yaml"));
+        ORCHA_ASSERT(is_yaml_media_type("Application/YAML; charset=utf-8"));
+        ORCHA_ASSERT(is_yaml_media_type("application/x-yaml"));
+        ORCHA_ASSERT(is_yaml_media_type("text/yaml"));
+        ORCHA_ASSERT(is_yaml_media_type(" text/x-yaml "));
+        ORCHA_ASSERT(!is_yaml_media_type("application/json"));
+        ORCHA_ASSERT(!is_yaml_media_type("text/plain"));
+        ORCHA_ASSERT(!is_yaml_media_type(""));
+        std::cout << "[PASS] test_yaml_media_types\n";
+    }
+
+    inline void test_definition_convert_route() {
+        using namespace yaml_tests;
+        Agent::Routes::DefinitionRoute route;
+        const std::string path = "/api/definitions/convert";
+        ORCHA_ASSERT(route.can_handle("POST", path));
+        ORCHA_ASSERT(!route.can_handle("POST", "/api/definitions"));
+
+        // YAML -> JSON keeps the author's key order.
+        auto from_yaml = route.handle(request("POST", path, "application/yaml",
+            "steps:\n  - name: greet\n    command: echo\n    params: {message: '42'}\nrollback: reverse\n"));
+        ORCHA_ASSERT_EQ(from_yaml.status, Agent::status::OK);
+        ORCHA_ASSERT(from_yaml.body.find(R"("definition":{"steps":[{"name":"greet","command":"echo","params":{"message":"42"}}],"rollback":"reverse"})") != std::string::npos);
+
+        // JSON -> YAML.
+        auto from_json = route.handle(request("POST", path, "application/json; charset=utf-8",
+            R"({"steps":[{"name":"a","command":"echo","params":{"n":"7"}}]})"));
+        ORCHA_ASSERT_EQ(from_json.status, Agent::status::OK);
+        const auto body = Json::parse(from_json.body);
+        // "n" is quoted too: YAML 1.1 readers take a bare n for false.
+        ORCHA_ASSERT(body["yaml"] == "steps:\n  - name: a\n    command: echo\n    params:\n      \"n\": \"7\"\n");
+
+        // Syntax errors report where.
+        auto bad = route.handle(request("POST", path, "text/yaml", "steps:\n  - [unclosed\n"));
+        ORCHA_ASSERT_EQ(bad.status, Agent::status::BadRequest);
+        const auto err = Json::parse(bad.body);
+        ORCHA_ASSERT(err.contains("line") && err.contains("column"));
+        ORCHA_ASSERT(err["error"].get<std::string>().rfind("Invalid YAML body: ", 0) == 0);
+
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "application/yaml", "- a\n- b\n")).status,
+                        Agent::status::BadRequest);   // not a mapping
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "text/plain", "steps: []")).status,
+                        Agent::status::UnsupportedMediaType);
+        ORCHA_ASSERT_EQ(route.handle(request("GET", path, "", "")).status,
+                        Agent::status::MethodNotAllowed);
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "Application/JSON", R"({"steps":[]})")).status,
+                        Agent::status::OK);
+
+        // Size caps apply to both formats here (ordered JSON is costly to build).
+        const std::string huge(Agent::kMaxYamlBodyBytes + 1, ' ');
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "application/yaml", huge)).status,
+                        Agent::status::PayloadTooLarge);
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "application/json", huge)).status,
+                        Agent::status::PayloadTooLarge);
+        std::string many = R"({"steps":[],"params":{)";
+        for (int i = 0; i <= 10'000; ++i) many += (i ? "," : "") + std::string("\"k") + std::to_string(i) + "\":0";
+        many += "}}";
+        ORCHA_ASSERT_EQ(route.handle(request("POST", path, "application/json", many)).status,
+                        Agent::status::BadRequest);
+        std::cout << "[PASS] test_definition_convert_route\n";
+    }
+
+    inline void test_job_api_accepts_yaml_bodies() {
+        using namespace yaml_tests;
+        auto store = std::make_shared<Jobs::SqliteJobStore>(":memory:");
+        auto service = std::make_shared<Jobs::JobService>(
+            store, [] { return std::shared_ptr<Workflow::IWorkflowEngine>{}; });
+        auto runs = std::make_shared<Jobs::RunQueue>(service, Jobs::RunQueue::Options{1, 8});
+        Agent::Routes::JobRoute route(service, runs);
+
+        auto created = route.handle(request("POST", "/api/jobs", "application/yaml",
+            "name: nightly\n"
+            "schedule_cron: 0 3 * * *\n"
+            "enabled: true\n"
+            "definition:\n"
+            "  rollback: best_effort\n"
+            "  steps:\n"
+            "    - name: greet\n"
+            "      command: echo\n"
+            "      params:\n"
+            "        message: |-\n"
+            "          line one\n"
+            "          line two\n"));
+        ORCHA_ASSERT_EQ(created.status, Agent::status::Created);
+        auto job = store->get_job_by_name("nightly");
+        ORCHA_ASSERT(job.has_value());
+        ORCHA_ASSERT(job->schedule_cron == "0 3 * * *");
+        ORCHA_ASSERT(job->definition["rollback"] == "best_effort");
+        ORCHA_ASSERT(job->definition["steps"][0]["params"]["message"] == "line one\nline two");
+
+        // Update with YAML; a bad document is a 400 with its position, not a 500.
+        auto updated = route.handle(request("PUT", "/api/jobs/" + job->id, "application/yaml",
+            "name: nightly\ndefinition:\n  steps: []\nenabled: false\n"));
+        ORCHA_ASSERT_EQ(updated.status, Agent::status::OK);
+        ORCHA_ASSERT(store->get_job(job->id)->enabled == false);
+
+        auto bad = route.handle(request("PUT", "/api/jobs/" + job->id, "application/yaml",
+            "name: nightly\nname: again\n"));
+        ORCHA_ASSERT_EQ(bad.status, Agent::status::BadRequest);
+        ORCHA_ASSERT(Json::parse(bad.body)["line"] == 2);
+
+        // YAML job fields are typed strictly: `enabled: no` is the string "no",
+        // which JobDefinition::from_json would skip, leaving the job enabled.
+        auto yes_no = route.handle(request("POST", "/api/jobs", "application/yaml",
+            "name: wordy\nenabled: no\ndefinition:\n  steps: []\n"));
+        ORCHA_ASSERT_EQ(yes_no.status, Agent::status::BadRequest);
+        ORCHA_ASSERT(Json::parse(yes_no.body)["error"].get<std::string>().find("'enabled' must be true or false") == 0);
+        ORCHA_ASSERT(!store->get_job_by_name("wordy").has_value());
+        auto numeric_name = route.handle(request("POST", "/api/jobs", "application/yaml",
+            "name: 2024\ndefinition:\n  steps: []\n"));
+        ORCHA_ASSERT_EQ(numeric_name.status, Agent::status::BadRequest);
+        ORCHA_ASSERT(Json::parse(numeric_name.body)["error"] == "'name' must be a string");
+
+        // JSON bodies are unchanged (no or JSON Content-Type).
+        auto json_job = route.handle(request("POST", "/api/jobs", "",
+            R"({"name":"plain","definition":{"steps":[]}})"));
+        ORCHA_ASSERT_EQ(json_job.status, Agent::status::Created);
+        std::cout << "[PASS] test_job_api_accepts_yaml_bodies\n";
+    }
+
     inline void run_yaml_tests() {
         test_yaml_scalars_follow_core_schema();
         test_yaml_round_trip_is_lossless();
@@ -272,6 +412,9 @@ namespace Orcha::Tests {
         test_yaml_limits_bound_untrusted_input();
         test_yaml_merge_keys();
         test_yaml_large_inputs_are_bounded_and_linear();
+        test_yaml_media_types();
+        test_definition_convert_route();
+        test_job_api_accepts_yaml_bodies();
     }
 
 } // namespace Orcha::Tests

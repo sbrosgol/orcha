@@ -224,6 +224,7 @@ namespace Orcha::Agent::Routes {
             schemas["JobDefinition"]    = schema_job_definition();
             schemas["JobInput"]         = schema_job_input();
             schemas["JobsList"]         = schema_jobs_list();
+            schemas["DefinitionConversion"] = schema_definition_conversion();
             schemas["RunRecord"]        = schema_run_record();
             schemas["RunsList"]         = schema_runs_list();
             schemas["PluginInfo"]       = schema_plugin_info();
@@ -268,6 +269,12 @@ namespace Orcha::Agent::Routes {
             s["type"] = "object";
             value props = value::object();
             props["error"] = type_of("string");
+            value line = type_of("integer");
+            line["description"] = "YAML body errors: 1-based line of the problem";
+            props["line"] = line;
+            value column = type_of("integer");
+            column["description"] = "YAML body errors: 1-based column of the problem";
+            props["column"] = column;
             s["properties"] = props;
             value req = value::array();
             req[0] = "error";
@@ -482,6 +489,19 @@ namespace Orcha::Agent::Routes {
             req[0] = "name";
             req[1] = "definition";
             s["required"] = req;
+            return s;
+        }
+
+        static Orcha::Json schema_definition_conversion() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value props = value::object();
+            props["definition"] = ref("WorkflowRequest");
+            value yaml = type_of("string");
+            yaml["description"] = "The same definition as block-style YAML";
+            props["yaml"] = yaml;
+            s["properties"] = props;
             return s;
         }
 
@@ -740,6 +760,19 @@ namespace Orcha::Agent::Routes {
             return p;
         }
 
+        // A request body accepted as JSON or, with a YAML Content-Type, YAML.
+        static Orcha::Json json_or_yaml_body(const std::string& schema_name) {
+            using value = Orcha::Json;
+            value body = json_body(schema_name);
+            value yaml = value::object();
+            yaml["schema"] = ref(schema_name);
+            body["content"]["application/yaml"] = yaml;
+            body["description"] =
+                "JSON, or YAML when sent as application/yaml (also application/x-yaml, "
+                "text/yaml). YAML follows the 1.2 core schema: quoted values are strings.";
+            return body;
+        }
+
         static Orcha::Json json_body(const std::string& schema_name,
                                           bool required = true) {
             using value = Orcha::Json;
@@ -773,6 +806,7 @@ namespace Orcha::Agent::Routes {
             paths["/api/jobs/{id}"]             = path_job_item();
             paths["/api/jobs/{id}/run"]         = path_job_run();
             paths["/api/jobs/{id}/runs"]        = path_job_runs();
+            paths["/api/definitions/convert"]   = path_definition_convert();
 
             // Admin: runs
             paths["/api/runs"]                  = path_runs_collection();
@@ -933,6 +967,29 @@ namespace Orcha::Agent::Routes {
 
         // -- Jobs paths ------------------------------------------------------
 
+        static Orcha::Json path_definition_convert() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value op = value::object();
+            op["summary"] = "Convert a workflow definition between JSON and YAML";
+            op["description"] =
+                "Send a definition as YAML or JSON; the reply carries both forms, keeping key "
+                "order. YAML errors return their line and column. The definition is not "
+                "validated as a workflow (saving a job does that). Comments are not kept.";
+            op["tags"] = tag("Jobs");
+            op["security"] = basic_auth_security();
+            op["requestBody"] = json_or_yaml_body("WorkflowRequest");
+            value responses = value::object();
+            responses["200"] = json_response("Both forms of the definition", "DefinitionConversion");
+            responses["400"] = error_response("Invalid YAML or JSON (YAML errors include line and column), or not a mapping");
+            responses["401"] = error_response("Unauthorized");
+            responses["413"] = error_response("Body larger than 512 KB");
+            responses["415"] = error_response("Not YAML or JSON");
+            op["responses"] = responses;
+            path["post"] = op;
+            return path;
+        }
+
         static Orcha::Json path_jobs_collection() {
             using value = Orcha::Json;
             value path = value::object();
@@ -953,12 +1010,13 @@ namespace Orcha::Agent::Routes {
             post_op["summary"] = "Create a job";
             post_op["tags"] = tag("Jobs");
             post_op["security"] = basic_auth_security();
-            post_op["requestBody"] = json_body("JobInput");
+            post_op["requestBody"] = json_or_yaml_body("JobInput");
             value post_resp = value::object();
             post_resp["201"] = json_response("Created", "JobDefinition");
             post_resp["400"] = error_response("Validation error");
             post_resp["401"] = error_response("Unauthorized");
             post_resp["409"] = error_response("Job name already exists");
+            post_resp["413"] = error_response("YAML body larger than 512 KB");
             post_op["responses"] = post_resp;
             path["post"] = post_op;
 
@@ -986,12 +1044,13 @@ namespace Orcha::Agent::Routes {
             put_op["summary"] = "Update a job";
             put_op["tags"] = tag("Jobs");
             put_op["security"] = basic_auth_security();
-            put_op["requestBody"] = json_body("JobInput");
+            put_op["requestBody"] = json_or_yaml_body("JobInput");
             value put_resp = value::object();
             put_resp["200"] = json_response("Updated", "JobDefinition");
             put_resp["400"] = error_response("Validation error");
             put_resp["404"] = error_response("Not found");
             put_resp["409"] = error_response("Name conflict");
+            put_resp["413"] = error_response("YAML body larger than 512 KB");
             put_op["responses"] = put_resp;
             path["put"] = put_op;
 

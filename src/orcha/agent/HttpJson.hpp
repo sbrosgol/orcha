@@ -17,11 +17,15 @@ namespace Orcha::Agent {
 
     /**
      * @brief Build an application/json response with @p body and status @p code.
+     *
+     * @p body is an Orcha::Json, or an nlohmann::ordered_json when the reply
+     * must keep the key order the client sent (definition conversion).
      */
-    [[nodiscard]] inline HttpResponse reply_json(int code, const Orcha::Json& body) {
+    template <class J = Orcha::Json>
+    [[nodiscard]] HttpResponse reply_json(int code, const J& body) {
         // Step outputs may contain invalid UTF-8: replace it rather than throw.
         return HttpResponse(code, "application/json",
-                            body.dump(-1, ' ', false, Orcha::Json::error_handler_t::replace));
+                            body.dump(-1, ' ', false, J::error_handler_t::replace));
     }
 
     /**

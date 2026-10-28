@@ -30,6 +30,7 @@ namespace Orcha::Agent {
         inline constexpr int NotFound = 404;
         inline constexpr int MethodNotAllowed = 405;
         inline constexpr int Conflict = 409;
+        inline constexpr int PayloadTooLarge = 413;
         inline constexpr int UnsupportedMediaType = 415;
         inline constexpr int TooManyRequests = 429;
         inline constexpr int InternalError = 500;
