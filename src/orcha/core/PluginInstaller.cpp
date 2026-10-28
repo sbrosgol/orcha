@@ -155,6 +155,7 @@ namespace Orcha::Core {
         j["uploaded_by"] = uploaded_by;
         j["install_crashed_at"] = install_crashed_at ? Json(*install_crashed_at) : Json(nullptr);
         j["replaces_version"] = replaces_version ? Json(*replaces_version) : Json(nullptr);
+        j["replaces_bundled"] = replaces_bundled;
         j["change"] = change;
         return j;
     }
@@ -216,8 +217,10 @@ namespace Orcha::Core {
         } else if (keys_.empty()) {
             disabled_reason_ = "No signing keys are configured. Add one to plugins.upload.public_keys "
                                "(scripts/orcha-plugin-sign.sh keygen prints it).";
-        } else if (options_.plugin_directory.empty()) {
-            disabled_reason_ = "plugins.directory must be set.";
+        } else if (options_.upload_directory.empty()) {
+            disabled_reason_ = "plugins.upload.directory must be set.";
+        } else if (sources().overlapping()) {
+            disabled_reason_ = "plugins.upload.directory and plugins.directory must not be inside each other.";
         } else {
             std::error_code ec;
             fs::create_directories(staging_dir(), ec);
@@ -242,25 +245,16 @@ namespace Orcha::Core {
         return j;
     }
 
-    fs::path PluginInstaller::staging_dir() const { return options_.plugin_directory / kStagingDirName; }
+    fs::path PluginInstaller::staging_dir() const { return options_.upload_directory / kStagingDirName; }
     fs::path PluginInstaller::upload_dir(const std::string& id) const { return staging_dir() / id; }
 
     std::optional<PluginInstaller::Existing> PluginInstaller::find_existing(const std::string& name) const {
-        if (auto meta = manager_->get_plugin_metadata(name)) return Existing{*meta, true};
-        for (auto& meta : scan()) {
-            if (meta.name == name) return Existing{std::move(meta), false};
+        const auto src = sources();
+        if (auto meta = manager_->get_plugin_metadata(name)) return Existing{*meta, true, src.is_uploaded(*meta)};
+        for (auto& entry : src.scan(*discovery_)) {
+            if (entry.meta.name == name) return Existing{std::move(entry.meta), false, entry.uploaded};
         }
         return std::nullopt;
-    }
-
-    std::vector<PluginMetadata> PluginInstaller::scan() const {
-        try {
-            return discovery_->scan_plugins(options_.plugin_directory);
-        } catch (const std::exception& ex) {
-            // e.g. a directory removed mid-scan; callers treat it as "none found"
-            if (logger_) logger_->warn(std::string("Plugin directory scan failed: ") + ex.what());
-            return {};
-        }
     }
 
     std::string PluginInstaller::version_change(const std::string& current, const std::string& next) {
@@ -420,6 +414,7 @@ namespace Orcha::Core {
         }
         if (auto existing = find_existing(staged.name)) {
             staged.replaces_version = existing->meta.version;
+            staged.replaces_bundled = !existing->uploaded;
             staged.change = version_change(existing->meta.version, staged.version);
         }
         if (logger_) {
@@ -446,14 +441,16 @@ namespace Orcha::Core {
             if (auto staged = read_staged(id)) out.push_back(std::move(*staged));
         }
         if (!out.empty()) {
-            // One scan for all of them.
-            std::map<std::string, std::string> installed;
-            for (const auto& meta : scan()) installed[meta.name] = meta.version;
-            for (const auto& meta : manager_->get_all_plugins()) installed[meta.name] = meta.version;
+            // One scan for all of them; what is loaded wins over what is on disk.
+            const auto src = sources();
+            std::map<std::string, std::pair<std::string, bool>> installed;   // name -> {version, uploaded}
+            for (const auto& entry : src.scan(*discovery_)) installed[entry.meta.name] = {entry.meta.version, entry.uploaded};
+            for (const auto& meta : manager_->get_all_plugins()) installed[meta.name] = {meta.version, src.is_uploaded(meta)};
             for (auto& s : out) {
                 if (auto it = installed.find(s.name); it != installed.end()) {
-                    s.replaces_version = it->second;
-                    s.change = version_change(it->second, s.version);
+                    s.replaces_version = it->second.first;
+                    s.replaces_bundled = !it->second.second;
+                    s.change = version_change(it->second.first, s.version);
                 }
             }
         }
@@ -524,21 +521,23 @@ namespace Orcha::Core {
                 "The staged files no longer match their signature; discard this upload and upload it again"));
         }
 
-        // Plan. Every install goes to a new directory, <plugins>/<name>-<id>:
+        // Plan. Every install goes to a new directory, <uploads>/<name>-<id>:
         // a fresh path means dlopen maps the new library even while a running
         // workflow (or a library that cannot be unloaded) keeps the old image,
-        // and a rollback reload gets the old code back. The current version's
-        // library, manifest and provenance are moved aside; nothing else in
-        // its directory is touched.
-        const auto& plugin_dir = options_.plugin_directory;
+        // and a rollback reload gets the old code back. An uploaded current
+        // version has its library, manifest and provenance moved aside
+        // (nothing else in its directory is touched); a bundled one is only
+        // overridden, its files left alone.
+        const auto& plugin_dir = options_.upload_directory;
         const auto existing = find_existing(staged->name);
         const bool was_loaded = existing && existing->loaded;
+        const bool overrides_bundled = existing && !existing->uploaded;
         const auto old_lib = existing ? existing->meta.library_path : fs::path{};
         const auto old_dir = old_lib.parent_path();
-        const bool old_dedicated = existing && normal(old_dir) != normal(plugin_dir);
+        const bool old_dedicated = existing && existing->uploaded && normal(old_dir) != normal(plugin_dir);
         const auto backup = dir / "previous";
         std::vector<std::pair<fs::path, fs::path>> restore;   // {backup, original}
-        if (existing) {
+        if (existing && existing->uploaded) {
             restore.emplace_back(backup / old_lib.filename(), old_lib);
             if (old_dedicated) {
                 // Its manifest also hides any other library in that directory;
@@ -567,7 +566,7 @@ namespace Orcha::Core {
             return InstallResult::Err(err(Kind::Conflict, target_dir.string() + " already exists"));
         }
         if (!strictly_within(target_dir, plugin_dir)) {
-            return InstallResult::Err(err(Kind::Conflict, "Refusing to install outside plugins.directory: " +
+            return InstallResult::Err(err(Kind::Conflict, "Refusing to install outside plugins.upload.directory: " +
                                           target_dir.string()));
         }
 
@@ -672,9 +671,10 @@ namespace Orcha::Core {
         if (logger_) {
             logger_->warn("Plugin installed: " + staged->name + " " + staged->version + " (sha256 " +
                           staged->sha256 + ", key " + staged->signer + ")" +
-                          (existing ? " replacing " + existing->meta.version : std::string()) + " by " + user);
+                          (existing ? (overrides_bundled ? " overriding the bundled " : " replacing ") +
+                                      existing->meta.version : std::string()) + " by " + user);
         }
-        InstalledPlugin out{staged->name, staged->version, std::nullopt};
+        InstalledPlugin out{staged->name, staged->version, std::nullopt, overrides_bundled};
         if (existing) out.previous_version = existing->meta.version;
         return InstallResult::Ok(std::move(out));
     }
@@ -710,9 +710,9 @@ namespace Orcha::Core {
     }
 
     void PluginInstaller::recover_one(const fs::path& upload, const Json& j) {
-        const auto& plugin_dir = options_.plugin_directory;
+        const auto& plugin_dir = options_.upload_directory;
         const auto inside = [&](const std::string& p) {
-            if (!strictly_within(p, plugin_dir)) throw std::runtime_error("path outside plugins.directory: " + p);
+            if (!strictly_within(p, plugin_dir)) throw std::runtime_error("path outside plugins.upload.directory: " + p);
             return fs::path(p);
         };
         // Validate everything before touching anything.

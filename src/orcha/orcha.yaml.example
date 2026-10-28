@@ -34,6 +34,10 @@ plugins:
     enabled: false
     public_keys: []                       # ["<base64 key>", ...]; env: comma-separated
     max_bytes: 33554432                   # largest library accepted (32 MB)
+    # Installed uploads (and their staging area), apart from the bundled
+    # plugins in plugins.directory; an upload overrides a bundled plugin of the
+    # same name without touching its files. Keep it on persistent storage.
+    directory: "./uploaded-plugins"
 
 # Admin dashboard (/admin) and admin API (/api/plugins).
 admin:

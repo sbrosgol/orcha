@@ -41,7 +41,8 @@ namespace Orcha::Agent::Routes {
                          std::chrono::milliseconds watch_interval,
                          std::shared_ptr<Utils::ILogger> logger = nullptr,
                          std::shared_ptr<Core::IPluginDenylist> denylist = nullptr,
-                         std::shared_ptr<std::timed_mutex> lifecycle_mutex = nullptr)
+                         std::shared_ptr<std::timed_mutex> lifecycle_mutex = nullptr,
+                         std::filesystem::path upload_directory = {})
             : manager_(std::move(manager))
             , discovery_(std::move(discovery))
             , registry_(std::move(registry))
@@ -49,7 +50,8 @@ namespace Orcha::Agent::Routes {
             , watch_interval_(watch_interval)
             , logger_(std::move(logger))
             , denylist_(std::move(denylist))
-            , lifecycle_(std::move(lifecycle_mutex)) {}
+            , lifecycle_(std::move(lifecycle_mutex))
+            , upload_directory_(std::move(upload_directory)) {}
 
         [[nodiscard]] bool can_handle(
             const std::string& method,
@@ -125,20 +127,22 @@ namespace Orcha::Agent::Routes {
             auto loaded = manager_->get_all_plugins();
             std::unordered_set<std::string> loaded_names;
             for (const auto& m : loaded) loaded_names.insert(m.name);
+            // Bundled and uploaded plugins on disk, an upload overriding a bundled one.
+            const auto on_disk = sources().scan(*discovery_);
 
             value plugins = value::array();
             size_t idx = 0;
 
             for (const auto& meta : loaded) {
-                plugins[idx++] = plugin_to_json(meta, "loaded");
+                plugins[idx++] = plugin_to_json(meta, "loaded", on_disk);
             }
 
             // Available-but-not-loaded from disk. Denylisted ones are tagged
             // "disabled" (won't auto-load on restart) vs plain "available".
-            for (const auto& meta : discovery_->scan_plugins(directory_)) {
-                if (!loaded_names.contains(meta.name)) {
-                    const bool denied = denylist_ && denylist_->contains(meta.name);
-                    plugins[idx++] = plugin_to_json(meta, denied ? "disabled" : "available");
+            for (const auto& entry : on_disk) {
+                if (!loaded_names.contains(entry.meta.name)) {
+                    const bool denied = denylist_ && denylist_->contains(entry.meta.name);
+                    plugins[idx++] = plugin_to_json(entry.meta, denied ? "disabled" : "available", on_disk);
                 }
             }
 
@@ -165,7 +169,7 @@ namespace Orcha::Agent::Routes {
 
         HttpResponse serve_plugin(const std::string& name) {
             if (auto meta = manager_->get_plugin_metadata(name)) {
-                return reply_json(status::OK, plugin_to_json(*meta, "loaded"));
+                return reply_json(status::OK, plugin_to_json(*meta, "loaded", sources().scan(*discovery_)));
             }
             return reply_error(status::NotFound, "Plugin not loaded: " + name);
         }
@@ -223,9 +227,9 @@ namespace Orcha::Agent::Routes {
                 // Resolve the library path from disk (manager has no record
                 // of unloaded plugins).
                 std::filesystem::path lib_path;
-                for (const auto& meta : discovery_->scan_plugins(directory_)) {
-                    if (meta.name == name) {
-                        lib_path = meta.library_path;
+                for (const auto& entry : sources().scan(*discovery_)) {
+                    if (entry.meta.name == name) {
+                        lib_path = entry.meta.library_path;
                         break;
                     }
                 }
@@ -253,9 +257,12 @@ namespace Orcha::Agent::Routes {
 
         // ---- Helpers ----
 
-        static Orcha::Json plugin_to_json(
+        /// @p on_disk (from sources().scan) says which bundled plugin an
+        /// uploaded one overrides.
+        Orcha::Json plugin_to_json(
             const Core::PluginMetadata& meta,
-            const std::string& status) {
+            const std::string& status,
+            const std::vector<Core::PluginSources::Entry>& on_disk) const {
 
             Orcha::Json obj = meta.to_json(); // name/version/description/author/tags/parameters
             obj["status"] = status;
@@ -268,6 +275,14 @@ namespace Orcha::Agent::Routes {
             obj["dependencies"] = deps;
             // Set for plugins installed from an upload: who, when, which key.
             if (auto origin = Core::PluginInstaller::provenance(meta)) obj["provenance"] = *origin;
+            const bool uploaded = sources().is_uploaded(meta);
+            obj["source"] = uploaded ? "uploaded" : "bundled";
+            for (const auto& entry : on_disk) {
+                if (uploaded && entry.meta.name == meta.name && entry.overrides) {
+                    obj["overrides"] = {{"version", entry.overrides->version},
+                                        {"library_path", entry.overrides->library_path.string()}};
+                }
+            }
             return obj;
         }
 
@@ -279,6 +294,9 @@ namespace Orcha::Agent::Routes {
         std::shared_ptr<Utils::ILogger> logger_;
         std::shared_ptr<Core::IPluginDenylist> denylist_;
         std::shared_ptr<std::timed_mutex> lifecycle_;
+        std::filesystem::path upload_directory_;   ///< uploaded plugins (override bundled ones)
+
+        [[nodiscard]] Core::PluginSources sources() const { return {directory_, upload_directory_}; }
     };
 
 } // namespace Orcha::Agent::Routes
