@@ -10,6 +10,7 @@
 #include "routes/PluginAdminRoute.hpp"
 #include "routes/DashboardRoute.hpp"
 #include "routes/JobRoute.hpp"
+#include "routes/DefinitionRoute.hpp"
 #include "routes/CircuitBreakerRoute.hpp"
 #include "AuthMiddleware.hpp"
 #include "HttpJson.hpp"
@@ -119,6 +120,8 @@ namespace Orcha::Agent {
         router_.register_handler(std::make_shared<Routes::PluginAdminRoute>(
             plugins_, discovery_, registry_, plugin_dir_, watch_interval_, logger_, denylist_));
         router_.register_handler(std::make_shared<Routes::DashboardRoute>(logger_));
+        // JSON <-> YAML for the job editor's YAML tab (stateless).
+        router_.register_handler(std::make_shared<Routes::DefinitionRoute>());
 
         // Jobs API (CRUD + run history). Gated by the same Basic-auth middleware.
         if (jobs_) {

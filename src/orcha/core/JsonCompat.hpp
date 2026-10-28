@@ -9,8 +9,10 @@
 
 #include "Json.hpp"
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace Orcha {
 
@@ -52,16 +54,31 @@ namespace Orcha {
      * arrays) overflows a worker thread's stack. The limit is enforced while
      * parsing, so an oversized document is never materialised.
      *
-     * @throws JsonDepthError if the limit is exceeded.
+     * @p max_object_keys bounds each object's member count. Set it when
+     * parsing into nlohmann::ordered_json, whose member lookup is linear (an
+     * object with n keys costs O(n^2) to build).
+     *
+     * @tparam J Json, or nlohmann::ordered_json to keep the document's key order.
+     * @throws JsonDepthError if a limit is exceeded.
      * @throws Json::parse_error on malformed input.
      */
-    [[nodiscard]] inline Json parse_json_bounded(const std::string& s,
-                                                 std::size_t max_depth = kMaxRequestJsonDepth) {
+    template <class J = Json>
+    [[nodiscard]] J parse_json_bounded(const std::string& s,
+                                       std::size_t max_depth = kMaxRequestJsonDepth,
+                                       std::size_t max_object_keys = std::numeric_limits<std::size_t>::max()) {
+        std::vector<std::size_t> keys;   // members seen in each open object
         // The callback's depth is 0-based (a top-level array is at depth 0),
         // so the nesting level is depth + 1.
-        return Json::parse(s, [max_depth](int depth, Json::parse_event_t, Json&) {
+        return J::parse(s, [&](int depth, typename J::parse_event_t event, J&) {
             if (static_cast<std::size_t>(depth) + 1 > max_depth) {
                 throw JsonDepthError(max_depth);
+            }
+            using E = typename J::parse_event_t;
+            if (event == E::object_start) keys.push_back(0);
+            else if (event == E::object_end && !keys.empty()) keys.pop_back();
+            else if (event == E::key && !keys.empty() && ++keys.back() > max_object_keys) {
+                throw std::runtime_error("JSON object has more than " +
+                                         std::to_string(max_object_keys) + " keys");
             }
             return true;
         });

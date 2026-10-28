@@ -45,8 +45,13 @@ requires rebuilding the `orcha` binary.
 - Routing is hash-based (`#/overview`, `#/plugins`, `#/jobs/<id>`, `#/breakers`) and handled
   in `route()`. Data loads in `refreshAll()` (plugins, jobs, runs, circuit breakers; fail-soft
   per endpoint) and re-renders every view.
+- The job editor has Visual / JSON / YAML tabs. `#jDef` (JSON text) is the common
+  format; the YAML tab converts through `POST /api/definitions/convert` (never parse
+  YAML in JS), caches the last conversion in `yamlSync`, and serialises async work
+  with `setDefBusy()`. File import (button or drop on `#defField`) accepts a bare
+  definition or a whole job and never saves by itself.
 - API contracts the page relies on: `/api/plugins`, `/api/jobs`, `/api/runs`,
-  `/api/circuit-breakers` (+ `POST /{command}/reset`); run `result[]` step entries may carry
+  `/api/definitions/convert`, `/api/circuit-breakers` (+ `POST /{command}/reset`); run `result[]` step entries may carry
   `rollback: {status: rolled_back|failed|skipped|not_supported, message?}`.
 - Auth: Basic token in `sessionStorage` (`orcha_auth`); `api()` handles 401 → login view.
   `/admin` itself is unauthenticated; only `/api/*` is gated.

@@ -6,8 +6,10 @@
 #include "WorkflowEngine.hpp"
 #include "../core/Json.hpp"
 #include "ExecutionContext.hpp"
-#include "../utils/YamlToJson.hpp"
+#include "../utils/YamlJson.hpp"
 #include <yaml-cpp/yaml.h>
+#include <fstream>
+#include <iterator>
 #include <regex>
 #include <algorithm>
 #include <charconv>
@@ -587,9 +589,10 @@ namespace Orcha::Workflow {
 
     WorkflowResult WorkflowEngine::execute_yaml(const std::string& yaml_path) {
         try {
-            YAML::Node yaml = YAML::LoadFile(yaml_path);
-            auto json = Utils::yaml_to_json(yaml);
-            auto definition = WorkflowDefinition::from_json(json);
+            std::ifstream in(yaml_path, std::ios::binary);
+            if (!in) throw std::runtime_error("cannot open " + yaml_path);
+            const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+            auto definition = WorkflowDefinition::from_json(Utils::parse_yaml(text));
             return execute(definition);
         } catch (const std::exception& ex) {
             WorkflowResult error_result;
@@ -601,9 +604,7 @@ namespace Orcha::Workflow {
 
     WorkflowResult WorkflowEngine::execute_yaml_string(const std::string& yaml_content) {
         try {
-            YAML::Node yaml = YAML::Load(yaml_content);
-            auto json = Utils::yaml_to_json(yaml);
-            auto definition = WorkflowDefinition::from_json(json);
+            auto definition = WorkflowDefinition::from_json(Utils::parse_yaml(yaml_content));
             return execute(definition);
         } catch (const std::exception& ex) {
             WorkflowResult error_result;

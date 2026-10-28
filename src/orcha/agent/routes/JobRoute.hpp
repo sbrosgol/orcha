@@ -3,9 +3,9 @@
 //
 // Endpoints (all under the admin auth gate):
 //   GET    /api/jobs                 list jobs
-//   POST   /api/jobs                 create a job        (body: JobDefinition)
+//   POST   /api/jobs                 create a job        (body: JobDefinition, JSON or YAML)
 //   GET    /api/jobs/{id}            get a job
-//   PUT    /api/jobs/{id}            update a job        (body: JobDefinition)
+//   PUT    /api/jobs/{id}            update a job        (body: JobDefinition, JSON or YAML)
 //   DELETE /api/jobs/{id}            delete a job
 //   POST   /api/jobs/{id}/run        queue a run of the job -> 202 + run
 //   POST   /api/runs/{id}/cancel     cancel a queued or running run
@@ -13,10 +13,14 @@
 //   GET    /api/runs                 recent runs (all jobs + ad-hoc) + queue stats
 //   GET    /api/runs/{id}            single run detail
 //
+// Job bodies are YAML when sent with a YAML Content-Type (application/yaml,
+// text/yaml, ...), JSON otherwise; jobs are stored and returned as JSON.
+//
 
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpBody.hpp"
 #include "../HttpJson.hpp"
 #include "RunResponses.hpp"
 #include "../../core/JsonCompat.hpp"
@@ -24,7 +28,9 @@
 #include "../../jobs/JobService.hpp"
 #include "../../utils/ILogger.hpp"
 
+#include <optional>
 #include <string>
+#include <variant>
 
 namespace Orcha::Agent::Routes {
 
@@ -117,13 +123,9 @@ namespace Orcha::Agent::Routes {
         }
 
         HttpResponse create_job(const HttpRequest& request) {
-            Jobs::JobDefinition job;
-            try {
-                job = Jobs::JobDefinition::from_json(Orcha::parse_json_bounded(request.body));
-            } catch (const std::exception& ex) {
-                return reply_error(status::BadRequest,
-                                   std::string("Invalid JSON body: ") + ex.what());
-            }
+            auto parsed = parse_job(request);
+            if (auto* error = std::get_if<HttpResponse>(&parsed)) return std::move(*error);
+            auto job = std::get<Jobs::JobDefinition>(std::move(parsed));
             if (auto err = validate(job)) {
                 return reply_error(status::BadRequest, *err);
             }
@@ -143,13 +145,9 @@ namespace Orcha::Agent::Routes {
             if (!existing) {
                 return reply_error(status::NotFound, "No such job: " + id);
             }
-            Jobs::JobDefinition job;
-            try {
-                job = Jobs::JobDefinition::from_json(Orcha::parse_json_bounded(request.body));
-            } catch (const std::exception& ex) {
-                return reply_error(status::BadRequest,
-                                   std::string("Invalid JSON body: ") + ex.what());
-            }
+            auto parsed = parse_job(request);
+            if (auto* error = std::get_if<HttpResponse>(&parsed)) return std::move(*error);
+            auto job = std::get<Jobs::JobDefinition>(std::move(parsed));
             if (auto err = validate(job)) {
                 return reply_error(status::BadRequest, *err);
             }
@@ -215,6 +213,48 @@ namespace Orcha::Agent::Routes {
         }
 
         // ---- Helpers ----
+
+        /// The request body as a job, or the 400/413 reply. Parse errors and
+        /// field errors are reported separately.
+        static std::variant<Jobs::JobDefinition, HttpResponse> parse_job(const HttpRequest& request) {
+            Orcha::Json body;
+            try {
+                body = parse_request_body(request);
+            } catch (const std::exception& ex) {
+                return reply_bad_body(request, ex);
+            }
+            if (!body.is_object()) {
+                return reply_error(status::BadRequest, "A job must be an object");
+            }
+            // JobDefinition::from_json skips optional fields of the wrong type.
+            // YAML makes that a trap (`enabled: no` is the string "no", so the
+            // job would stay enabled), so YAML bodies are checked strictly.
+            if (is_yaml_body(request)) {
+                if (auto err = check_yaml_job_fields(body)) return reply_error(status::BadRequest, *err);
+            }
+            try {
+                return Jobs::JobDefinition::from_json(body);
+            } catch (const std::exception& ex) {
+                return reply_error(status::BadRequest, std::string("Invalid job: ") + ex.what());
+            }
+        }
+
+        static std::optional<std::string> check_yaml_job_fields(const Orcha::Json& body) {
+            const auto wrong = [&](const char* key, auto&& ok) {
+                return body.contains(key) && !ok(body.at(key));
+            };
+            if (wrong("name", [](const auto& v) { return v.is_string(); }))
+                return "'name' must be a string";
+            if (wrong("description", [](const auto& v) { return v.is_string() || v.is_null(); }))
+                return "'description' must be a string";
+            if (wrong("enabled", [](const auto& v) { return v.is_boolean(); }))
+                return "'enabled' must be true or false (YAML words such as yes/no/on/off are strings)";
+            if (wrong("schedule_cron", [](const auto& v) { return v.is_string() || v.is_null(); }))
+                return "'schedule_cron' must be a string such as \"0 3 * * *\"";
+            if (wrong("definition", [](const auto& v) { return v.is_object(); }))
+                return "'definition' must be a mapping with a 'steps' list";
+            return std::nullopt;
+        }
 
         /// Returns an error message if the job is invalid, else nullopt.
         static std::optional<std::string> validate(const Jobs::JobDefinition& job) {

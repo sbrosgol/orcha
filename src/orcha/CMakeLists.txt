@@ -91,6 +91,7 @@ add_library(agent STATIC
         agent/HttpServer.hpp
         agent/Http.hpp
         agent/HttpJson.hpp
+        agent/HttpBody.hpp
         agent/IRouteHandler.hpp
         agent/AuthMiddleware.hpp
         agent/dashboard_embedded.hpp
@@ -99,6 +100,7 @@ add_library(agent STATIC
         agent/routes/SwaggerRoute.hpp
         agent/routes/PluginAdminRoute.hpp
         agent/routes/JobRoute.hpp
+        agent/routes/DefinitionRoute.hpp
         agent/routes/CircuitBreakerRoute.hpp
         agent/routes/DashboardRoute.hpp
 )
