@@ -5,6 +5,9 @@
 //   GET  /workflow/runs/{id}          run status/result
 //   POST /workflow/runs/{id}/cancel   cancel a queued or running run
 //
+// The workflow is JSON, or YAML when sent with a YAML Content-Type
+// (application/yaml, text/yaml, ...; see agent/HttpBody.hpp).
+//
 // Runs are asynchronous: POST /workflow answers 202 Accepted with a Location
 // and the queued run. A client that prefers to wait sends `Prefer: wait=<s>`
 // (RFC 7240); the server waits up to that long (capped by the configured
@@ -16,6 +19,7 @@
 #pragma once
 
 #include "../IRouteHandler.hpp"
+#include "../HttpBody.hpp"
 #include "../HttpJson.hpp"
 #include "RunResponses.hpp"
 #include "../../core/JsonCompat.hpp"
@@ -127,17 +131,15 @@ namespace Orcha::Agent::Routes {
 
         HttpResponse submit(const HttpRequest& request) {
             const auto content_type = request.header("Content-Type").value_or("");
-            // Accept "application/json" with or without a charset suffix.
-            if (content_type.rfind("application/json", 0) != 0) {
+            if (!is_json_media_type(content_type) && !is_yaml_media_type(content_type)) {
                 return handle_unsupported_media_type();
             }
 
             Orcha::Json json;
             try {
-                json = Orcha::parse_json_bounded(request.body);
+                json = parse_request_body(request);
             } catch (const std::exception& ex) {
-                return reply_error(status::BadRequest,
-                                   std::string("Invalid JSON body: ") + ex.what());
+                return reply_bad_body(request, ex);
             }
             if (!json.is_object() || !json.contains("steps") || !json.at("steps").is_array()) {
                 return reply_error(status::BadRequest, "Invalid workflow: expected a \"steps\" array");
@@ -203,7 +205,7 @@ namespace Orcha::Agent::Routes {
 
         static HttpResponse handle_unsupported_media_type() {
             Orcha::Json msg = Orcha::Json::object();
-            msg["error"] = "Only application/json is accepted for /workflow";
+            msg["error"] = "Send the workflow as application/json or application/yaml";
             msg["hint"] = "See /swagger for API documentation and a sample payload";
             return reply_json(status::UnsupportedMediaType, msg);
         }
