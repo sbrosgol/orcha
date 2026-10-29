@@ -147,9 +147,9 @@ namespace Orcha::Agent {
 
             const std::string& path = request.path;
 
-            const bool guarded = std::any_of(
-                prefixes.begin(), prefixes.end(),
-                [&](const std::string& p) { return path_starts_with(path, p); });
+            const bool guarded = std::ranges::any_of(prefixes
+                                                     ,
+                                                     [&](const std::string& p) { return path_starts_with(path, p); });
 
             if (!guarded || !cfg.auth_required) {
                 return std::nullopt; // not our concern -> continue dispatch
@@ -203,9 +203,9 @@ namespace Orcha::Agent {
                    const HttpRequest& request) -> std::optional<HttpResponse> {
 
             const std::string& path = request.path;
-            const bool guarded = std::any_of(
-                prefixes.begin(), prefixes.end(),
-                [&](const std::string& p) { return path_starts_with(path, p); });
+            const bool guarded = std::ranges::any_of(prefixes
+                                                     ,
+                                                     [&](const std::string& p) { return path_starts_with(path, p); });
             if (!guarded) {
                 return std::nullopt;
             }
