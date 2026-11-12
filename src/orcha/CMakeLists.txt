@@ -6,6 +6,14 @@ if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
+# De-duplicate libraries on link lines where the linker allows it (CMake 3.29+).
+# Without it a static dep reached both directly and transitively (e.g.
+# OpenSSL::Crypto in test_new_features) is listed twice and Apple ld warns
+# "ignoring duplicate libraries".
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
+
 project(orcha VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
