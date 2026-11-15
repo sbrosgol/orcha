@@ -29,7 +29,10 @@ by hand:
    final file. For test files, include only the tests whose code exists at that
    commit (and their includes/helpers).
 3. Self-check: rebuilding the last commit's version must reproduce the final
-   file byte for byte (`assert generated == final`).
+   file byte for byte (`assert generated == final`). If you derived the
+   intermediates by *removing* later changes, do not "re-apply" pure deletions
+   by searching for an empty string (it matches everywhere); check instead that
+   `diff HEAD-version intermediate` shows only that commit's hunks.
 4. Reset the tree to `HEAD` (`git reset -q && git checkout -q -- . && rm` new
    files), then for each commit: copy in its files, `git add` them, **verify**,
    commit.

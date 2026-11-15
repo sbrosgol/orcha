@@ -29,6 +29,13 @@ Also run `scripts/admin_smoke.sh` (admin dashboard API) when routes or auth chan
 ORCHA_URL=http://127.0.0.1:<port> ADMIN_USER=admin ADMIN_PASS=change-me bash scripts/admin_smoke.sh echo
 ```
 
+Plugin uploads (signing keys, scopes, bundled overrides, downgrades, crash recovery),
+when the installer, the upload route or plugin loading change. Needs OpenSSL 3:
+
+```bash
+OPENSSL=/opt/homebrew/bin/openssl bash .claude/skills/server-smoke/scripts/upload_smoke.sh <scratchpad>/upsmoke 18090
+```
+
 ## Writing your own scenario — pitfalls we hit
 
 - Start the server with `(cd "$W" && exec env ... "$BIN") &` so `$!` is the server.
@@ -42,5 +49,8 @@ ORCHA_URL=http://127.0.0.1:<port> ADMIN_USER=admin ADMIN_PASS=change-me bash scr
   `ORCHA_ADMIN_PASSWORD`, `ORCHA_JOBS_SCHEDULER_ENABLED=false`,
   `ORCHA_WORKFLOW_CIRCUIT_BREAKER_FAILURE_THRESHOLD=2`, `ORCHA_LOGGING_LEVEL=warn`.
 - In-memory state (circuit breakers) resets on restart; jobs persist in the run dir's DB.
-- Always stop what you started (`kill -TERM`, then `pkill -f cmake-build-debug/orcha`
-  as a fallback) and report the PASS/FAIL output verbatim.
+- Always stop what you started, by its PID (keep it in a pid file), and report the
+  PASS/FAIL output verbatim. Do not `pkill -f cmake-build-debug/orcha`: other sessions
+  and reviewer agents may have their own servers running.
+- Bash defaults like `${2:-{\}}` do not do what they look like (that one yields `{\}`):
+  set defaults in a separate statement.
