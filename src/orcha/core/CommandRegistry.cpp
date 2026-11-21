@@ -26,7 +26,8 @@ namespace Orcha::Core {
 
     } // namespace
 
-    Result<void, std::string> CommandRegistry::try_load_command_library(const std::string& path) {
+    Result<void, std::string> CommandRegistry::try_load_command_library(const std::string& path,
+                                                                        const std::optional<std::string>& expected_command) {
         // Every refusal is logged and returned, so callers (plugin install)
         // can tell the admin why.
         const auto fail = [this](std::string reason) {
@@ -82,7 +83,25 @@ namespace Orcha::Core {
             }
         });
 
-        const std::string cmd_name = cmd->name();
+        // name() is plugin code: it decides whether the plugin is accepted, so
+        // a throw is a refusal like a throwing factory, not an escape.
+        std::string cmd_name;
+        try {
+            cmd_name = cmd->name();
+        } catch (const std::exception& ex) {
+            return fail("Plugin in " + path + " threw from name(): " + ex.what());
+        } catch (...) {
+            return fail("Plugin in " + path + " threw from name()");
+        }
+        // A plugin is one command, named like the plugin. The plugin's name is
+        // what a signed upload binds and what key scopes and override_bundled
+        // are checked against, so a library may not register any other name
+        // (e.g. an upload allowed to sign "acme-x" registering "echo").
+        if (expected_command && cmd_name != *expected_command) {
+            return fail("Plugin " + path + " registers the command '" + cmd_name + "', but its plugin name is '" +
+                        *expected_command + "'. A plugin's command must be named like the plugin: rename "
+                        "the command, or set \"name\": \"" + cmd_name + "\" in its manifest.json.");
+        }
 
         {
             std::unique_lock lock(mutex_);

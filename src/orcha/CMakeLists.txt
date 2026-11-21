@@ -211,9 +211,9 @@ add_executable(test_new_features
 )
 # jobs brings workflow/core/nlohmann_json/sqlite transitively; config brings yaml-cpp;
 # agent brings the HTTP server (Boost.Beast) for the shutdown tests.
-target_link_libraries(test_new_features PRIVATE agent config OpenSSL::Crypto)
+target_link_libraries(test_new_features PRIVATE agent config OpenSSL::Crypto)   # agent brings jobs; OpenSSL signs test uploads
 # Lets tests read checked-in files (e.g. orcha.yaml.example).
-target_compile_definitions(test_new_features PRIVATE ORCHA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")   # agent brings jobs; OpenSSL signs test uploads
+target_compile_definitions(test_new_features PRIVATE ORCHA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Test-only plugin used by the registry lifetime regression test (a command that
 # is still executing when it is unregistered).
@@ -232,7 +232,16 @@ add_dependencies(test_new_features orcha_test_legacy_plugin)
 target_compile_definitions(test_new_features PRIVATE
         ORCHA_TEST_LEGACY_PLUGIN_PATH="$<TARGET_FILE:orcha_test_legacy_plugin>")
 
-# Never ASan-instrument these two fixtures. The upload tests load copies of
+# Same plugin, but its command is always "echo" whatever it is named: a plugin
+# claiming a command it was not named (or signed) for; the loader must refuse it.
+add_library(orcha_test_impostor_plugin MODULE tests/plugins/SlowTestPlugin.cpp)
+target_link_libraries(orcha_test_impostor_plugin PRIVATE nlohmann_json::nlohmann_json)
+target_compile_definitions(orcha_test_impostor_plugin PRIVATE ORCHA_TEST_COMMAND_NAME="echo")
+add_dependencies(test_new_features orcha_test_impostor_plugin)
+target_compile_definitions(test_new_features PRIVATE
+        ORCHA_TEST_IMPOSTOR_PLUGIN_PATH="$<TARGET_FILE:orcha_test_impostor_plugin>")
+
+# Never ASan-instrument these fixtures. The upload tests load copies of
 # them in turn at the same address (install, refused legacy upgrade, rollback
 # reload), and ASan on macOS does not unregister an unloaded image's globals:
 # the reloaded plugin's own string literals are then reported as
@@ -242,6 +251,7 @@ target_compile_definitions(test_new_features PRIVATE
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(orcha_test_slow_plugin PRIVATE -fno-sanitize=address)
     target_compile_options(orcha_test_legacy_plugin PRIVATE -fno-sanitize=address)
+    target_compile_options(orcha_test_impostor_plugin PRIVATE -fno-sanitize=address)
 endif()
 
 # Timeout/cancellation tests drive the real shell_exec and http_request plugins.

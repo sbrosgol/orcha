@@ -7,7 +7,6 @@
 #include "Json.hpp"
 #include <fstream>
 #include <sstream>
-#include <unordered_set>
 
 namespace Orcha::Core {
 
@@ -271,26 +270,21 @@ namespace Orcha::Core {
             }
         }
 
-        // Snapshot registered command names so we can attribute the newly
-        // registered command(s) to this plugin (the command name frequently
-        // differs from the plugin/library name).
-        std::unordered_set<std::string> before;
-        for (auto& n : registry_->list_commands()) {
-            before.insert(n);
+        // No name, no identity: never load it unchecked (a manifest without
+        // "name", or a library file called just "lib<ext>").
+        if (meta.name.empty()) {
+            const std::string reason = "Plugin " + library_path.string() +
+                " has no name (set \"name\" in its manifest.json, or rename the library)";
+            notify_error("unknown", reason);
+            return R::Err(reason);
         }
-
-        // Load through registry
-        if (auto loaded = registry_->try_load_command_library(library_path.string()); loaded.is_err()) {
+        // Load through the registry, which refuses a command not named like
+        // the plugin: the plugin's (signed) name is the command's identity.
+        if (auto loaded = registry_->try_load_command_library(library_path.string(), meta.name); loaded.is_err()) {
             notify_error(meta.name, "Failed to load library: " + library_path.string());
             return R::Err(loaded.error());
         }
-
-        std::vector<std::string> new_commands;
-        for (auto& n : registry_->list_commands()) {
-            if (!before.contains(n)) {
-                new_commands.push_back(n);
-            }
-        }
+        const std::vector<std::string> new_commands{meta.name};
 
         // Track plugin
         {

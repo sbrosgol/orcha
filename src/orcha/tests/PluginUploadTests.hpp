@@ -390,7 +390,7 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(fs::exists(v1_dir / lib_name("slowtest")) && fs::exists(v1_dir / "manifest.json"));
         const auto v1 = env.manager->get_plugin_metadata("slowtest");
         ORCHA_ASSERT(v1 && v1->version == "1.0.0");
-        ORCHA_ASSERT(env.registry->get_command("slow_test_plugin") != nullptr);
+        ORCHA_ASSERT(env.registry->get_command("slowtest") != nullptr);
         ORCHA_ASSERT(env.installer->list().empty() && !fs::exists(env.staging / s.id));
         ORCHA_ASSERT(!env.denylist->contains("slowtest"));
         const auto origin = Core::PluginInstaller::provenance(*v1);
@@ -407,7 +407,7 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(failed.error().rolled_back);
         ORCHA_ASSERT(failed.error().message.find("plugin ABI") != std::string::npos);
         ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.0.0");
-        ORCHA_ASSERT(env.registry->get_command("slow_test_plugin") != nullptr);
+        ORCHA_ASSERT(env.registry->get_command("slowtest") != nullptr);
         ORCHA_ASSERT(fs::exists(v1_dir / lib_name("slowtest")) && fs::exists(v1_dir / "manifest.json"));
         ORCHA_ASSERT(fs::exists(v1_dir / "settings.json"));
         ORCHA_ASSERT(Core::PluginInstaller::provenance(*env.manager->get_plugin_metadata("slowtest")).has_value());
@@ -419,12 +419,12 @@ namespace Orcha::Tests {
 
         // A good upgrade while a workflow still holds v1: the new path means
         // dlopen maps the new library (not v1's image again).
-        auto busy = env.registry->get_command("slow_test_plugin");
+        auto busy = env.registry->get_command("slowtest");
         auto up = env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.0.0")));
         ORCHA_ASSERT(up.previous_version == "1.0.0");
         const auto v2 = env.manager->get_plugin_metadata("slowtest");
         ORCHA_ASSERT(v2 && v2->version == "2.0.0" && v2->library_path.parent_path() != v1_dir);
-        auto now = env.registry->get_command("slow_test_plugin");
+        auto now = env.registry->get_command("slowtest");
         ORCHA_ASSERT(now != nullptr && now != busy);
         // v1's own files moved out; the rest of its directory stays.
         ORCHA_ASSERT(!fs::exists(v1_dir / lib_name("slowtest")) && !fs::exists(v1_dir / "manifest.json"));
@@ -665,6 +665,62 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_plugin_upload_key_scopes\n";
     }
 
+    // A plugin is the command it is named (and signed) as. Regression: the
+    // command name came from the loaded code, so a key allowed to sign only
+    // "acme-*" could ship "acme-x" whose command is "echo" and take over the
+    // bundled echo (when loaded first, or when echo is disabled).
+    inline void test_plugin_command_is_its_signed_name() {
+        using namespace upload_tests;
+        Env env;
+        auto o = env.options();
+        o.public_keys = {{env.key.public_base64(), {"acme-*"}, false}};
+        auto acme = env.make(o);
+
+        // Upload: staged (bytes only), refused when loaded, previous state kept.
+        auto staged = acme->stage(env.upload(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, lib_name("x"), manifest("acme-x", "1.0.0")));
+        ORCHA_ASSERT(staged.is_ok());
+        auto installed = acme->install(staged.value().id, "tester");
+        ORCHA_ASSERT(installed.is_err() && installed.error().kind == K::LoadFailed);
+        ORCHA_ASSERT(installed.error().message.find("registers the command 'echo'") != std::string::npos);
+        ORCHA_ASSERT(installed.error().message.find("plugin name is 'acme-x'") != std::string::npos);
+        ORCHA_ASSERT(!env.registry->has_command("echo") && !env.manager->get_plugin_metadata("acme-x"));
+        ORCHA_ASSERT(env.install_dirs("acme-x").empty());
+
+        // Start-up order can't help it either: loaded before the real echo, the
+        // impostor is refused and echo keeps its command.
+        write_file(env.plugins / "acme-x" / "manifest.json", manifest("acme-x", "1.0.0"));
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.plugins / "acme-x" / lib_name("x"));
+        write_file(env.bundled / "Echo" / "manifest.json", manifest("echo", "1.0.0"));
+        fs::copy_file(ORCHA_TEST_SLOW_PLUGIN_PATH, env.bundled / "Echo" / lib_name("echo"));
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.plugins / "acme-x" / lib_name("x")).is_err());
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.bundled / "Echo" / lib_name("echo")).is_ok());
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("echo") && !env.manager->get_plugin_metadata("acme-x"));
+        ORCHA_ASSERT(env.registry->has_command("echo"));
+
+        // Plugins in plugins.directory follow the same rule (without a manifest
+        // the name comes from the file name).
+        fs::create_directories(env.bundled / "Plain");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Plain" / lib_name("plain"));
+        auto plain = env.manager->try_load_plugin(env.bundled / "Plain" / lib_name("plain"));
+        ORCHA_ASSERT(plain.is_err() && plain.error().find("its plugin name is 'plain'") != std::string::npos);
+
+        // No name, no load (it used to skip the check and register anything).
+        write_file(env.bundled / "Nameless" / "manifest.json", R"({"version":"1.0.0"})");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Nameless" / lib_name("nameless"));
+        auto nameless = env.manager->try_load_plugin(env.bundled / "Nameless" / lib_name("nameless"));
+        ORCHA_ASSERT(nameless.is_err() && nameless.error().find("has no name") != std::string::npos);
+        fs::create_directories(env.bundled / "Bare");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Bare" / lib_name(""));   // "lib.so": no name either
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.bundled / "Bare" / lib_name("")).is_err());
+        ORCHA_ASSERT(!env.registry->has_command("echo") || env.manager->get_plugin_metadata("echo"));
+
+        // The manifest's name wins over the file name (the fixture follows the
+        // same rule, so this pins the loader to the manifest).
+        env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("file-name"), manifest("manifest-name", "1.0.0")));
+        ORCHA_ASSERT(env.registry->has_command("manifest-name") && !env.registry->has_command("file-name"));
+        std::cout << "[PASS] test_plugin_command_is_its_signed_name\n";
+    }
+
     inline void test_plugin_downgrade_needs_confirmation() {
         using namespace upload_tests;
         Env env;
@@ -850,6 +906,7 @@ namespace Orcha::Tests {
         test_plugin_upload_overrides_bundled();
         test_plugin_upload_key_scopes();
         test_plugin_downgrade_needs_confirmation();
+        test_plugin_command_is_its_signed_name();
         test_plugin_upload_route();
 #endif
     }

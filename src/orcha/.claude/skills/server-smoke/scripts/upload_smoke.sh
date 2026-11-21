@@ -9,6 +9,7 @@
 # bundled echo -> 403; the scoped key -> staged, installed, loaded from the
 # upload directory, bundled files untouched, a workflow runs on it; a renamed
 # library and a forged signature -> 422; an out-of-scope name -> 403; a
+# plugin whose command is not its name -> 422; a
 # downgrade -> 409 until confirmed; a crashed install is rolled back at the
 # next start and the upload marked; the override survives the restart.
 #
@@ -98,6 +99,7 @@ fixture v12    "$WORK/scoped.pem" echo 1.2.0
 fixture v11    "$WORK/scoped.pem" echo 1.1.0
 fixture other  "$WORK/scoped.pem" billing 1.0.0
 fixture dup    "$WORK/scoped.pem" echo-dup 0.1.0
+fixture twin   "$WORK/scoped.pem" echo2 1.0.0     # echo's library under another (in-scope) name
 
 # 1. Uploads off.
 config false; start
@@ -126,6 +128,13 @@ mv "$WORK/fx/v11/$LIB.sig.ok" "$WORK/fx/v11/$LIB.sig"
 ID="$(upload v11 | id_of)"
 expect "downgrade 1.2.0 -> 1.1.0 without confirmation -> 409" "$(install "$ID")" 409
 expect "  ...with {allow_downgrade: true} -> 200" "$(install "$ID" '{"allow_downgrade":true}')" 200
+# A plugin is the command it is named as: "echo2" may be signed, but its code
+# registers "echo" (another plugin's command), so it must not load.
+ID="$(upload twin | id_of)"
+OUT="$(curl "${A[@]}" -w ' %{http_code}' -H 'Content-Type: application/json' -d '{}' "$U/api/plugins/_uploads/$ID/install")"
+expect "plugin whose command isn't its name -> 422" "${OUT##* }" 422
+case "$OUT" in *"registers the command 'echo'"*) pass "  ...and says which command it registers" ;; *) fail "  message: $OUT" ;; esac
+expect "  ...echo still the installed 1.1.0" "$(curl "${A[@]}" "$U/api/plugins/echo" | field 'd["version"]')" 1.1.0
 
 # 7. A crashed install is rolled back at the next start.
 ID="$(upload dup | id_of)"
