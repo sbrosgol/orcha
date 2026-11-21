@@ -11,8 +11,8 @@
 # when the queue is full), step timeout, binary step output, admin API auth,
 # nested run cancel (409) vs parent cancel, SIGTERM during a long run
 # (cancelled, no leftover children), clean exit when the port is taken (without
-# touching the live server's runs), and a crashed server's runs marked
-# interrupted on restart.
+# touching the live server's runs), a crashed server's runs marked
+# interrupted on restart, and an invalid config refusing to start (exit 2).
 # Prints PASS/FAIL lines; exits non-zero if any check failed.
 set -uo pipefail
 
@@ -146,6 +146,13 @@ start && {
     check "orphaned run interrupted" interrupted "$(status_of "$crashed")"
     stop; }
 }
+
+echo "== invalid configuration refuses to start"
+W=$(mktemp -d "$SCRATCH/orcha-run.XXXX")
+(cd "$W" && exec env ORCHA_SERVER_PORT=70000 ORCHA_LOGGING_FILE="$W/orcha.log" "$BIN" </dev/null >"$W/out.log" 2>&1)
+check "port 70000 exits 2" 2 "$?"
+check "names the bad key" yes "$(grep -q 'server.port' "$W/out.log" && echo yes || echo no)"
+check "nothing listening on the wrapped port" no "$(lsof -nP -iTCP:4464 -sTCP:LISTEN >/dev/null 2>&1 && echo yes || echo no)"
 
 [ $fails -eq 0 ] && echo "ALL PASSED" || echo "$fails FAILED"
 exit $fails

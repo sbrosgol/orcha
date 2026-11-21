@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../config/ConfigValidator.hpp"
+#include <sstream>
 #include "../config/YamlConfiguration.hpp"
 #include "../core/CircuitBreaker.hpp"
 #include "mocks/MockCommandRegistry.hpp"
@@ -128,6 +129,33 @@ server:
         std::cout << "[PASS] test_config_validation_invalid_port\n";
     }
 
+    // Regression: main never ran the validator, so ORCHA_SERVER_PORT=70000
+    // silently listened on 4464 (uint16_t wrap). main now refuses to start.
+    inline void test_startup_config_check_refuses_errors() {
+        Config::YamlConfiguration bad;
+        bad.load_from_string("server:\n  port: 70000\nlogging:\n  level: loud\n");
+        std::ostringstream out;
+        ORCHA_ASSERT(!Config::check_startup_config(bad, out));
+        const auto text = out.str();
+        ORCHA_ASSERT(text.find("server.port") != std::string::npos);
+        ORCHA_ASSERT(text.find("logging.level") != std::string::npos);   // every error, not just the first
+        ORCHA_ASSERT(text.find("Refusing to start") != std::string::npos);
+
+        // Warnings are reported but don't stop startup.
+        Config::YamlConfiguration warn;
+        warn.load_from_string("server:\n  port: 80\n");
+        std::ostringstream wout;
+        ORCHA_ASSERT(Config::check_startup_config(warn, wout));
+        ORCHA_ASSERT(wout.str().find("[WARN] server.port") != std::string::npos);
+
+        // The shipped example config is valid as is.
+        Config::YamlConfiguration example;
+        example.load_from_file(ORCHA_SOURCE_DIR "/orcha.yaml.example");
+        std::ostringstream eout;
+        ORCHA_ASSERT(Config::check_startup_config(example, eout));
+        std::cout << "[PASS] test_startup_config_check_refuses_errors\n";
+    }
+
     inline void test_config_validation_invalid_log_level() {
         std::string yaml = R"(
 logging:
@@ -247,6 +275,7 @@ server:
         std::cout << "-- Configuration Validation --\n";
         test_config_validation_valid();
         test_config_validation_invalid_port();
+        test_startup_config_check_refuses_errors();
         test_config_validation_invalid_log_level();
         test_config_validation_warnings();
         test_config_repeated_lookups_keep_values();

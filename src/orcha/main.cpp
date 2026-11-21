@@ -33,6 +33,7 @@
 // Config
 #include "config/YamlConfiguration.hpp"
 #include "config/PluginUploadConfig.hpp"
+#include "config/ConfigValidator.hpp"
 
 // Agent
 #include "agent/CommandAgent.hpp"
@@ -435,6 +436,12 @@ auto main(int argc, char* argv[]) -> int {
 
     // Apply environment variable overrides
     config->merge_environment("ORCHA_");
+
+    // Validate the merged configuration before anything starts: errors exit 2
+    // (a port of 70000 would otherwise wrap), warnings are reported.
+    if (!Config::check_startup_config(*config, std::cerr)) {
+        return 2;
+    }
 
     // Create service locator and bootstrap services
     Core::ServiceLocator services;

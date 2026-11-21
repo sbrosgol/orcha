@@ -7,10 +7,12 @@
 #include "PluginUploadConfig.hpp"
 #include "../core/PluginSources.hpp"
 #include "IConfiguration.hpp"
-#include <vector>
-#include <string>
 #include <functional>
+#include <optional>
+#include <ostream>
 #include <regex>
+#include <string>
+#include <vector>
 
 namespace Orcha::Config {
 
@@ -333,5 +335,19 @@ namespace Orcha::Config {
 
         std::vector<CustomValidator> custom_validators_;
     };
+
+    /**
+     * @brief Validate the final configuration (file + environment) at startup.
+     *
+     * Writes every issue to @p out, one per line. Returns false if any is an
+     * error: the caller must not start with values that are out of range or
+     * unusable (e.g. a port of 70000 would otherwise wrap to 4464).
+     */
+    [[nodiscard]] inline bool check_startup_config(const IConfiguration& config, std::ostream& out) {
+        const auto result = ConfigValidator{}.validate(config);
+        for (const auto& issue : result.issues) out << "[Orcha] config " << issue.to_string() << "\n";
+        if (!result.valid) out << "[Orcha] Refusing to start: fix the configuration errors above.\n";
+        return result.valid;
+    }
 
 } // namespace Orcha::Config
