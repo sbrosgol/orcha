@@ -172,6 +172,7 @@ namespace Orcha::Agent::Routes {
                 {"System",   "Health and discovery"},
                 {"Workflow", "Ad-hoc workflow execution"},
                 {"Commands", "Available command plugins"},
+                {"Admin",    "First-run setup of the admin account"},
                 {"Jobs",     "Saved workflow definitions (admin)"},
                 {"Runs",     "Execution history (admin)"},
                 {"Plugins",  "Plugin lifecycle (admin)"},
@@ -225,6 +226,8 @@ namespace Orcha::Agent::Routes {
             schemas["JobInput"]         = schema_job_input();
             schemas["JobsList"]         = schema_jobs_list();
             schemas["DefinitionConversion"] = schema_definition_conversion();
+            schemas["SetupStatus"]      = schema_setup_status();
+            schemas["SetupRequest"]     = schema_setup_request();
             schemas["RunRecord"]        = schema_run_record();
             schemas["RunsList"]         = schema_runs_list();
             schemas["PluginInfo"]       = schema_plugin_info();
@@ -502,6 +505,30 @@ namespace Orcha::Agent::Routes {
             yaml["description"] = "The same definition as block-style YAML";
             props["yaml"] = yaml;
             s["properties"] = props;
+            return s;
+        }
+
+        static Orcha::Json schema_setup_status() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            value flag = type_of("boolean");
+            flag["description"] = "True until the admin account exists (no admin.password, no stored account)";
+            s["properties"] = value{{"setup_required", flag}};
+            return s;
+        }
+
+        static Orcha::Json schema_setup_request() {
+            using value = Orcha::Json;
+            value s = value::object();
+            s["type"] = "object";
+            s["required"] = value::array({"username", "password"});
+            value user = type_of("string");
+            user["description"] = "1-64 of letters, digits and . _ - @";
+            value pass = type_of("string");
+            pass["description"] = "At least 12 characters";
+            pass["format"] = "password";
+            s["properties"] = value{{"username", user}, {"password", pass}};
             return s;
         }
 
@@ -801,6 +828,9 @@ namespace Orcha::Agent::Routes {
             paths["/commands"]    = path_commands();
             paths["/sample"]      = path_sample();
 
+            // Admin: first-run setup (no login)
+            paths["/api/setup"]                 = path_setup();
+
             // Admin: jobs
             paths["/api/jobs"]                  = path_jobs_collection();
             paths["/api/jobs/{id}"]             = path_job_item();
@@ -991,6 +1021,37 @@ namespace Orcha::Agent::Routes {
             responses["415"] = error_response("Not YAML or JSON");
             op["responses"] = responses;
             path["post"] = op;
+            return path;
+        }
+
+        static Orcha::Json path_setup() {
+            using value = Orcha::Json;
+            value path = value::object();
+            value get_op = value::object();
+            get_op["summary"] = "Whether the admin account still needs to be created";
+            get_op["tags"] = tag("Admin");
+            value get_resp = value::object();
+            get_resp["200"] = json_response("Setup state", "SetupStatus");
+            get_op["responses"] = get_resp;
+            path["get"] = get_op;
+
+            value post_op = value::object();
+            post_op["summary"] = "Create the admin account (first run only)";
+            post_op["description"] =
+                "Allowed only while no admin.password is configured and no account is stored. "
+                "No login is needed: the first request to succeed creates the admin account "
+                "(stored hashed in admin.credentials_file), and every later one gets 409. "
+                "Then use the account with HTTP Basic auth.";
+            post_op["tags"] = tag("Admin");
+            post_op["requestBody"] = json_body("SetupRequest");
+            value post_resp = value::object();
+            post_resp["201"] = simple_response("Account created; the body echoes the username");
+            post_resp["400"] = error_response("Invalid username or password, or malformed JSON");
+            post_resp["409"] = error_response("Already set up");
+            post_resp["415"] = error_response("Not JSON");
+            post_resp["500"] = error_response("The account could not be saved (see the server log)");
+            post_op["responses"] = post_resp;
+            path["post"] = post_op;
             return path;
         }
 

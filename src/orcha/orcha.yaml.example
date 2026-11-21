@@ -46,11 +46,18 @@ plugins:
 # Admin dashboard (/admin) and admin API (/api/plugins).
 admin:
   enabled: true
+  # false skips the admin login, but only on a loopback server.host; it is
+  # ignored (login required) on any other bind, including Docker.
   auth_required: true
   username: "admin"
-  # The admin surface is DISABLED unless a password is set (fail closed) while
-  # auth_required is true. Set it here or via ORCHA_ADMIN_PASSWORD.
-  password: "change-me"
+  # Set a password here or via ORCHA_ADMIN_PASSWORD. Leave it empty to create
+  # the admin account on first visit to /admin: the first person to submit
+  # that form becomes admin, so do it right after the first start. The
+  # placeholder "change-me" is ignored on a non-loopback bind.
+  password: ""
+  # Where first-run setup stores the account (username + salted PBKDF2 hash,
+  # mode 0600). Delete the file to set up a new account.
+  credentials_file: "./orcha-admin.json"
   realm: "Orcha Admin"
 
 # Workflow execution limits.

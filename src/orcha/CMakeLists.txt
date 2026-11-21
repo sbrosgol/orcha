@@ -122,6 +122,9 @@ add_library(agent STATIC
         agent/HttpBody.hpp
         agent/IRouteHandler.hpp
         agent/AuthMiddleware.hpp
+        agent/AdminAccount.cpp
+        agent/AdminAccount.hpp
+        agent/routes/SetupRoute.hpp
         agent/dashboard_embedded.hpp
         agent/routes/HealthRoute.hpp
         agent/routes/WorkflowRoute.hpp
@@ -138,6 +141,8 @@ add_library(agent STATIC
 
 # Boost.Beast (header-only) powers the HTTP server; needs Boost::system + threads.
 target_link_libraries(agent PUBLIC core workflow jobs yaml_json plugin_install Boost::thread Boost::system logger)
+# Admin account hashing (PBKDF2); AdminAccount.hpp does not include OpenSSL.
+target_link_libraries(agent PRIVATE OpenSSL::Crypto)
 
 # Main executable
 add_executable(orcha

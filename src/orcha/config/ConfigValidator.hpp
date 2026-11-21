@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include "AdminConfig.hpp"
 #include "PluginUploadConfig.hpp"
+#include "ServerConfig.hpp"
 #include "../core/PluginSources.hpp"
 #include "IConfiguration.hpp"
 #include <functional>
@@ -231,7 +233,9 @@ namespace Orcha::Config {
             result.add_warning("plugins.upload.enabled",
                 "Plugin uploads are on: admins can install signed plugins, whose code runs in the server",
                 "Keep the signing key private and the admin password strong");
-            if (!config.get_bool("admin.auth_required", true)) {
+            // auth_required=false is overridden on an exposed bind (AdminConfig::for_bind).
+            const bool exposed = !ServerConfig::is_loopback_host(config.get_string("server.host", "127.0.0.1"));
+            if (!AdminConfig::from_config(config).for_bind(exposed).auth_required) {
                 result.add_warning("plugins.upload.enabled",
                     "Ignored: uploads need admin.auth_required: true");
             }

@@ -21,6 +21,7 @@
 #include "RunQueueTests.hpp"
 #include "YamlTests.hpp"
 #include "PluginUploadTests.hpp"
+#include "AdminAccountTests.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -291,6 +292,7 @@ server:
 
         // Admin Dashboard (Phase 1)
         run_plugin_admin_tests();
+        run_admin_account_tests();
 
         // Jobs (Phase 2)
         run_job_store_tests();

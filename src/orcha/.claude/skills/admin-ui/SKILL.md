@@ -65,7 +65,13 @@ requires rebuilding the `orcha` binary.
   `/api/definitions/convert`, `/api/circuit-breakers` (+ `POST /{command}/reset`); run `result[]` step entries may carry
   `rollback: {status: rolled_back|failed|skipped|not_supported, message?}`.
 - Auth: Basic token in `sessionStorage` (`orcha_auth`); `api()` handles 401 → login view.
-  `/admin` itself is unauthenticated; only `/api/*` is gated.
+  `/admin` itself is unauthenticated; only `/api/*` is gated. `showLogin()` asks
+  `GET /api/setup` (no login) and shows `#setupForm` ("Create the admin account")
+  instead of `#loginForm` when `setup_required`; `#login[data-mode]` is
+  `checking|login|setup` (forms hidden while checking, so sign-in never flashes).
+  Setup success stores the new Basic token and enters the app; 409 (claimed
+  meanwhile) falls back to sign-in with a message. `#login` scrolls: keep auth
+  cards reachable on short windows.
 - Cron in the backend is evaluated in **UTC** (`jobs/CronExpr.hpp`). The JS preview
   (`cronNext`) must match in UTC and display results in local time.
 - Keep keyboard and screen-reader support: focus-visible rings, `aria-*` on toggles, tabs and
@@ -180,6 +186,17 @@ bash .claude/skills/admin-ui/scripts/upload-env.sh stop <scratch>/up
 ```
 
 `upload-flow.mjs` changes server state: run `upload-env.sh start` again before re-running it.
+
+First-run setup needs servers with **no** admin password and a fresh
+`admin.credentials_file` (the run claims both; restart with new files to rerun):
+
+```bash
+# two such servers, e.g. ORCHA_SERVER_PORT=8096 / 8097, each from its own empty run dir
+node .claude/skills/admin-ui/scripts/setup-flow.mjs http://127.0.0.1:8096 http://127.0.0.1:8097 <scratch>/setup [390 844]
+```
+
+Run harnesses from bash (or pass width and height as separate words): zsh does
+not split `$size`, and a single "390 844" argument silently runs at a NaN width.
 For a new flow, build on `scripts/cdp.mjs` (browser, `check`, `until`, `mouse`, `setFiles`,
 `login`, `finish`). Pitfalls it documents:
 

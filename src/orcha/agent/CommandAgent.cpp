@@ -13,6 +13,7 @@
 #include "routes/JobRoute.hpp"
 #include "routes/DefinitionRoute.hpp"
 #include "routes/CircuitBreakerRoute.hpp"
+#include "routes/SetupRoute.hpp"
 #include "AuthMiddleware.hpp"
 #include "HttpJson.hpp"
 
@@ -46,7 +47,8 @@ namespace Orcha::Agent {
         , denylist_(std::move(denylist))
         , server_config_(std::move(server))
         , circuit_breakers_(std::move(circuit_breakers))
-        , plugin_installer_(std::move(plugin_installer)) {
+        , plugin_installer_(std::move(plugin_installer))
+        , admin_account_(std::make_shared<AdminAccount>(admin_, !server_config_.is_loopback(), logger_)) {
         setup_default_routes();
     }
 
@@ -57,7 +59,7 @@ namespace Orcha::Agent {
     void CommandAgent::setup_default_routes() {
         // The execution API runs arbitrary commands (e.g. shell_exec), so it is
         // never served unauthenticated on a reachable interface.
-        router_.use(make_api_auth(server_config_, admin_, {"/workflow"}, logger_));
+        router_.use(make_api_auth(server_config_, admin_account_, {"/workflow"}, logger_));
         if (logger_) {
             if (!server_config_.api_token.empty()) {
                 logger_->info("POST /workflow requires a bearer token (server.api_token)");
@@ -103,22 +105,26 @@ namespace Orcha::Agent {
             return;
         }
 
-        // Fail closed: never expose config-mutating endpoints unauthenticated.
-        if (!admin_.is_serviceable()) {
-            if (logger_) {
-                logger_->warn(
-                    "Admin dashboard NOT started: auth is required but no "
-                    "admin.password is configured (set admin.password or "
-                    "ORCHA_ADMIN_PASSWORD, or set admin.auth_required=false).");
+        // Settings ignored on an exposed bind, or why the surface is off.
+        const auto mode = admin_account_->mode();
+        if (logger_) {
+            for (const auto& note : admin_account_->notes()) {
+                if (mode == AdminAccount::Mode::Disabled) logger_->error("Admin dashboard: " + note);
+                else logger_->warn("Admin dashboard: " + note);
             }
+        }
+        // Fail closed: never expose config-mutating endpoints unauthenticated.
+        if (mode == AdminAccount::Mode::Disabled) {
+            if (logger_) logger_->warn("Admin dashboard NOT started (see above)");
             return;
         }
 
-        // Guard the admin API with Basic auth (no-op when auth_required=false).
-        // The /admin HTML shell is intentionally NOT gated: it carries no data
-        // and renders its own custom login view, which then authenticates the
-        // /api/* calls. This avoids the browser's native Basic-auth dialog.
-        router_.use(make_basic_auth(admin_, {"/api/"}, logger_));
+        // Admin login on /api/* (not on /api/setup; no-op when Open). The /admin
+        // HTML shell is intentionally NOT gated: it carries no data and renders
+        // its own login and setup views, which then authenticate the /api/*
+        // calls. This avoids the browser's native Basic-auth dialog.
+        router_.use(make_basic_auth(admin_account_, {"/api/"}, logger_));
+        router_.register_handler(std::make_shared<Routes::SetupRoute>(admin_account_, logger_));
 
         // Uploads first: PluginAdminRoute matches every /api/plugins/* path.
         if (plugin_installer_) {
@@ -142,8 +148,19 @@ namespace Orcha::Agent {
         }
 
         if (logger_) {
-            logger_->info(std::string("Admin dashboard enabled at /admin (auth ") +
-                          (admin_.auth_required ? "required" : "disabled") + ")");
+            logger_->info(std::string("Admin dashboard enabled at /admin (login: ") +
+                          to_string(mode) + ")");
+            if (mode == AdminAccount::Mode::Setup) {
+                const std::string where = server_config_.host + ":" + std::to_string(server_config_.port);
+                if (admin_account_->exposed()) {
+                    logger_->warn("ADMIN ACCOUNT NOT SET UP: anyone who can reach " + where +
+                                  " can open /admin and become admin (which can run commands on this host). "
+                                  "Open /admin now to create the account, or set ORCHA_ADMIN_PASSWORD.");
+                } else {
+                    logger_->warn("Admin account not set up: open /admin on " + where +
+                                  " to create it (or set ORCHA_ADMIN_PASSWORD).");
+                }
+            }
         }
     }
 

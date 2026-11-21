@@ -7,6 +7,7 @@
 
 #include "IRouteHandler.hpp"
 #include "HttpJson.hpp"
+#include "AdminAccount.hpp"
 #include "../config/AdminConfig.hpp"
 #include "../config/ServerConfig.hpp"
 #include "../utils/ILogger.hpp"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -124,42 +126,62 @@ namespace Orcha::Agent {
 
     } // namespace detail
 
+    /// Paths under the admin prefix that answer without a login (first-run setup).
+    inline constexpr const char* kSetupPath = "/api/setup";
+
+    namespace detail {
+        /// Another password check is running (see AdminAccount::check).
+        inline HttpResponse login_busy_response() {
+            return reply_error(status::TooManyRequests, "Too many login attempts; retry shortly")
+                .with_header("Retry-After", "1");
+        }
+    } // namespace detail
+
     /**
-     * @brief Build a Basic-auth middleware that guards the given path prefixes.
+     * @brief Build the admin login middleware for the given path prefixes.
      *
-     * Requests to paths outside @p protected_prefixes pass through untouched, as
-     * do all requests when @p cfg.auth_required is false. Guarded requests must
-     * carry valid credentials matching @p cfg, otherwise a 401 challenge is sent.
-     *
-     * @param cfg                Admin configuration (credentials + realm).
-     * @param protected_prefixes Path prefixes requiring authentication.
-     * @param logger             Optional logger for auth failures.
+     * Requests outside @p protected_prefixes, and to kSetupPath, pass through.
+     * Guarded requests need a login @p account accepts, unless it is Open
+     * (auth_required=false on a loopback bind). In first-run setup every
+     * guarded request is refused with `"setup_required": true`, so the
+     * dashboard knows to show the setup form.
      */
     [[nodiscard]] inline Router::Middleware make_basic_auth(
-        Config::AdminConfig cfg,
+        std::shared_ptr<const AdminAccount> account,
         std::vector<std::string> protected_prefixes,
         std::shared_ptr<Utils::ILogger> logger = nullptr) {
 
-        return [cfg = std::move(cfg),
+        return [account = std::move(account),
                 prefixes = std::move(protected_prefixes),
                 logger = std::move(logger)](
                    const HttpRequest& request) -> std::optional<HttpResponse> {
 
             const std::string& path = request.path;
-
-            const bool guarded = std::ranges::any_of(prefixes
-                                                     ,
-                                                     [&](const std::string& p) { return path_starts_with(path, p); });
-
-            if (!guarded || !cfg.auth_required) {
+            const bool guarded = std::ranges::any_of(prefixes,
+                [&](const std::string& p) { return path_starts_with(path, p); });
+            if (!guarded || path == kSetupPath) {
                 return std::nullopt; // not our concern -> continue dispatch
             }
 
+            const auto mode = account->mode();
+            if (mode == AdminAccount::Mode::Open) {
+                return std::nullopt;
+            }
+            if (mode == AdminAccount::Mode::Setup) {
+                auto reply = detail::unauthorized_response();
+                Orcha::Json body = {{"error", "Unauthorized: create the admin account first"},
+                                    {"setup_required", true}};
+                reply.body = body.dump();
+                return reply;
+            }
             if (auto value = request.header("Authorization")) {
                 if (auto creds = detail::parse_basic_auth(*value)) {
-                    if (detail::constant_time_equals(creds->user, cfg.username) &&
-                        detail::constant_time_equals(creds->pass, cfg.password)) {
+                    const auto login = account->check(creds->user, creds->pass);
+                    if (login == AdminAccount::Login::Ok) {
                         return std::nullopt; // authenticated -> continue dispatch
+                    }
+                    if (login == AdminAccount::Login::Busy) {
+                        return detail::login_busy_response();
                     }
                 }
             }
@@ -183,22 +205,19 @@ namespace Orcha::Agent {
      *   rather than exposed unauthenticated).
      *
      * @param server             Server configuration (host + api_token).
-     * @param admin              Admin configuration (Basic credentials accepted too).
+     * @param admin              The admin login, accepted too once it exists.
      * @param protected_prefixes Path prefixes requiring authentication.
      * @param logger             Optional logger for rejections.
      */
     [[nodiscard]] inline Router::Middleware make_api_auth(
         Config::ServerConfig server,
-        Config::AdminConfig admin,
+        std::shared_ptr<const AdminAccount> admin,
         std::vector<std::string> protected_prefixes,
         std::shared_ptr<Utils::ILogger> logger = nullptr) {
-
-        const bool accept_admin_basic = admin.is_serviceable() && admin.auth_required;
 
         return [server = std::move(server),
                 admin = std::move(admin),
                 prefixes = std::move(protected_prefixes),
-                accept_admin_basic,
                 logger = std::move(logger)](
                    const HttpRequest& request) -> std::optional<HttpResponse> {
 
@@ -231,11 +250,15 @@ namespace Orcha::Agent {
                                                  server.api_token)) {
                     return std::nullopt;
                 }
-                if (accept_admin_basic) {
+                // Checked per request: first-run setup can create the login later.
+                if (admin) {
                     if (auto creds = detail::parse_basic_auth(*value)) {
-                        if (detail::constant_time_equals(creds->user, admin.username) &&
-                            detail::constant_time_equals(creds->pass, admin.password)) {
+                        const auto login = admin->check(creds->user, creds->pass);
+                        if (login == AdminAccount::Login::Ok) {
                             return std::nullopt;
+                        }
+                        if (login == AdminAccount::Login::Busy) {
+                            return detail::login_busy_response();
                         }
                     }
                 }
@@ -246,6 +269,19 @@ namespace Orcha::Agent {
             }
             return detail::unauthorized_response();
         };
+    }
+
+    /// Same, from a password-only admin configuration (no stored account).
+    [[nodiscard]] inline Router::Middleware make_api_auth(
+        Config::ServerConfig server,
+        Config::AdminConfig admin,
+        std::vector<std::string> protected_prefixes,
+        std::shared_ptr<Utils::ILogger> logger = nullptr) {
+        admin.credentials_file.clear();
+        const bool exposed = !server.is_loopback();
+        return make_api_auth(std::move(server),
+                             std::make_shared<const AdminAccount>(std::move(admin), exposed, logger),
+                             std::move(protected_prefixes), std::move(logger));
     }
 
 } // namespace Orcha::Agent
