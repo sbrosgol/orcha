@@ -20,12 +20,27 @@ edit repository files; all builds, repros and logs go in the session scratchpad.
 - `jobs/JobScheduler.cpp`, `utils/Logger.cpp`: `jthread` +
   `condition_variable_any` with stop tokens; logger queue/output mutexes.
 - `core/CircuitBreaker.hpp`: per-command breaker, single half-open probe.
-- `main.cpp`: `asio::signal_set` shutdown; order cancel runs → scheduler → agent.
+- `jobs/RunQueue.*`: bounded admission, fixed `jthread` runners (declared last,
+  joined first), `condition_variable_any` on stop tokens, per-run `done_cv` for
+  `Prefer: wait`, cancel of queued vs running runs. Store I/O must never run
+  under `RunQueue::mutex_` (it calls into SQLite).
+- `jobs/JobService.hpp`: `execute` is the runner's body and must never throw.
+- `core/PluginInstaller.*`: one lifecycle `timed_mutex` shared with
+  `PluginAdminRoute` (enable/disable/reload) for stage/install/discard; journal
+  + fsync; `recover_interrupted()` under a cross-process `flock` at start-up.
+  Check that no request waits on it unbounded and that a load under the lock
+  cannot call back into code needing it.
+- `main.cpp`: `asio::signal_set` shutdown; order scheduler → `run_cancel`
+  (cancel runs) → `RunQueue::stop()` → agent.
 
 ## Checklist
 
 - Every shared mutable object has one synchronisation story (lock, single
   owner thread, or atomic) and every access follows it, including reads.
+- Every lock a request handler takes that long-running work (installs, plugin
+  loads) may hold is acquired with a timeout (`try_lock_for`) and answers 409
+  on expiry. Check all call sites of a shared mutex, not just the one that was
+  changed: one plain `unique_lock` parks every HTTP worker.
 - Lock ordering is consistent; no callbacks/plugin code invoked while holding a
   lock that the callee may need; no blocking I/O under a lock that request
   threads need.

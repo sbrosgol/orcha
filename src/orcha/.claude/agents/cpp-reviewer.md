@@ -29,6 +29,27 @@ area's files and prioritise by risk, not by count.
 - No UB: signed overflow, out-of-range indexing, `string_view` to temporaries,
   iterator invalidation, uninitialised members.
 
+**Files, crypto and untrusted bytes** (plugin packages, journals, uploads)
+- `std::filesystem` calls on paths another process or request can change use
+  the `error_code` overloads where failure is expected, and check them; a
+  throwing overload in a rollback/recovery path must not abort the rollback.
+- No check-then-use on paths (exists → open/rename); open once and operate on
+  the handle, or rely on rename atomicity within one filesystem.
+- Lengths and offsets read from untrusted bytes are bounds-checked before use
+  (no `size_t` underflow, no allocation sized by an unchecked header).
+- Recursive walkers over untrusted graphs (YAML aliases and `<<` merge keys,
+  JSON) count **every** recursive call toward the depth limit; a call made at
+  the same or lower depth (e.g. converting a merge source at `depth - 1`) lets
+  a self-referencing document recurse until the stack dies. Node-count limits
+  are not a substitute: the stack runs out first.
+- Don't round-trip parsed data through text to convert it (emit YAML → parse):
+  emitters drop quoting, so `'007'` comes back as `7`. Convert node to node.
+- The `directory_iterator(dir, ec)` range-for still throws on increment; use
+  `increment(ec)` or a try around the loop when failure must not escape.
+- OpenSSL/C handles are RAII (`unique_ptr` with the `*_free` deleter); every
+  return code is checked; comparisons of digests/signatures are constant time
+  where it matters.
+
 **Exception safety**
 - No exception escapes a thread function, destructor, `noexcept` function or C
   ABI boundary (`create_command`). Catch-alls convert to a result, not silence.

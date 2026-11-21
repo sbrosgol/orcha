@@ -41,6 +41,12 @@ conventions and how to build, run, seed and screenshot the page.
 - Cron preview is UTC-evaluated, matching `jobs/CronExpr.hpp`.
 - Listeners are not re-bound on every render (watch `window`/`document` listeners inside render paths).
 
+- The "Design principles" in the `admin-ui` skill hold: action-first hierarchy,
+  colour reserved for status, every KPI/chart states its window and is not
+  silently capped by a page size, all statuses counted (incl. `cancelled`),
+  run history labelled from the stored run, not the current definition.
+- Payload discipline: polling endpoints don't fetch full `result[]` for lists.
+
 **Security**
 - All interpolated data passes through `esc()`, including attribute values and `title=`.
 - No credentials in URLs or `localStorage` (the auth token lives in `sessionStorage` only).
@@ -59,7 +65,12 @@ conventions and how to build, run, seed and screenshot the page.
 - Phone width: no horizontal page scroll, no clipped primary actions or status badges (rows wrap), secondary columns collapse (`.hide-sm`), long names wrap, and the nav drawer works.
 
 **Accessibility**
-- Interactive elements are buttons or links, not bare divs. Icon-only buttons have `aria-label`.
+- Interactive elements are buttons or links, not bare divs or clickable `<tr>`s
+  (check every `data-href`/`.click` row has a focusable control). Icon-only
+  buttons have `aria-label`. Canvas/SVG visualisations have a text alternative
+  and keyboard/touch access to anything clickable.
+- `role="tab"` only inside a `role="tablist"` with arrow-key handling;
+  otherwise use `.seg` with `aria-checked`.
 - Visible focus. Esc closes overlays. Focus moves into dialogs and returns afterwards.
 - Focus survives re-renders: a dialog whose content is rebuilt after an async fetch or an
   action (innerHTML) must keep or restore focus inside it, and code that focuses "later"
