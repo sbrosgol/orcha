@@ -388,7 +388,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     /* ---------- Login ---------- */
     #login { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; padding:20px;
              background:radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb,var(--accent) 12%,transparent), transparent), var(--bg); }
-    .login-card { width:380px; max-width:100%; padding:32px; }
+    /* Scrolls when the card is taller than the window (setup form + an error,
+       a phone in landscape); auto margins centre it without clipping its top. */
+    #login { overflow-y:auto; }
+    .login-card { width:380px; max-width:100%; padding:32px; margin:auto; }
     .login-card .logo { width:40px; height:40px; border-radius:10px; margin-bottom:20px; }
     .login-card .logo svg { width:20px; height:20px; }
     .login-card h1 { margin:0; font-size:20px; font-weight:650; letter-spacing:-.015em; }
@@ -398,6 +401,10 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     .pw button { position:absolute; right:4px; top:50%; transform:translateY(-50%); }
     .login-foot { display:flex; align-items:center; justify-content:space-between; margin-top:24px; padding-top:18px; border-top:1px solid var(--line); font-size:12px; color:var(--faint); }
     .login-foot .theme-switch { width:110px; }
+    /* First-run setup shares the login card; the form shown follows GET /api/setup. */
+    #login[data-mode="checking"] form { visibility:hidden; }
+    #login[data-mode="setup"] #loginForm, #login:not([data-mode="setup"]) #setupForm { display:none; }
+    .login-card .alert { margin-bottom:16px; }
     body:not(.authed) .shell { display:none; }
     body.authed #login { display:none; }
     body.booting #login, body.booting .shell { visibility:hidden; }
@@ -586,7 +593,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
   </svg>
 
   <!-- ===================== Login ===================== -->
-  <div id="login">
+  <div id="login" data-mode="checking">
     <form class="card login-card" id="loginForm" autocomplete="on" novalidate>
       <div class="logo"><svg><use href="#i-logo"/></svg></div>
       <h1>Sign in to Orcha</h1>
@@ -596,8 +603,28 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
         <input class="input" id="user" type="text" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required /></div>
       <div class="field"><label for="pass">Password</label>
         <div class="pw"><input class="input" id="pass" type="password" name="current-password" autocomplete="current-password" required />
-          <button type="button" class="btn ghost sm icon" id="pwToggle" aria-label="Show password" title="Show password"><svg class="i"><use href="#i-eye"/></svg></button></div></div>
+          <button type="button" class="btn ghost sm icon" id="pwToggle" aria-label="Show password" aria-pressed="false" title="Show password"><svg class="i"><use href="#i-eye"/></svg></button></div></div>
       <button class="btn primary" type="submit" id="signin"><svg class="i spin"><use href="#i-loader"/></svg><span>Sign in</span></button>
+      <div class="login-foot"><span>Orcha workflow agent</span>
+        <div class="theme-switch" role="radiogroup" aria-label="Theme"></div></div>
+    </form>
+    <form class="card login-card" id="setupForm" autocomplete="on" novalidate aria-labelledby="setupTitle">
+      <div class="logo"><svg><use href="#i-logo"/></svg></div>
+      <h1 id="setupTitle">Create the admin account</h1>
+      <p class="sub">This Orcha server has no administrator yet. The account you create here becomes its admin.</p>
+      <div class="alert info" id="setupNote"><svg class="i"><use href="#i-info"/></svg><span>Until this is done, anyone who can open this page can create the account.</span></div>
+      <div id="setupErr" class="alert err" role="alert" style="display:none"><svg class="i"><use href="#i-alert"/></svg><span></span></div>
+      <div class="field"><label for="suUser">Username</label>
+        <input class="input" id="suUser" type="text" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" value="admin" maxlength="64" required aria-describedby="suUserHint" />
+        <div class="hint" id="suUserHint">Letters, digits and . _ - @</div></div>
+      <div class="field"><label for="suPass">Password</label>
+        <div class="pw"><input class="input" id="suPass" type="password" name="new-password" autocomplete="new-password" minlength="12" required aria-describedby="suPassHint" />
+          <button type="button" class="btn ghost sm icon" id="suPwToggle" aria-label="Show passwords" aria-pressed="false" title="Show passwords"><svg class="i"><use href="#i-eye"/></svg></button></div>
+        <div class="hint" id="suPassHint">At least 12 characters.</div></div>
+      <div class="field"><label for="suPass2">Confirm password</label>
+        <input class="input" id="suPass2" type="password" name="confirm-password" autocomplete="new-password" required aria-describedby="suPass2Hint" />
+        <div class="hint" id="suPass2Hint">Type the same password again.</div></div>
+      <button class="btn primary" type="submit" id="setupBtn"><svg class="i spin"><use href="#i-loader"/></svg><span>Create admin account</span></button>
       <div class="login-foot"><span>Orcha workflow agent</span>
         <div class="theme-switch" role="radiogroup" aria-label="Theme"></div></div>
     </form>
@@ -966,7 +993,13 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       opts=opts||{}; const headers=Object.assign({}, opts.headers||{});
       const auth=getAuth(); if(auth) headers['Authorization']=auth;
       if(opts.json!==undefined){ headers['Content-Type']='application/json'; opts.body=JSON.stringify(opts.json); }
-      const res=await fetch(path, Object.assign({}, opts, {headers}));
+      let res=await fetch(path, Object.assign({}, opts, {headers}));
+      if(res.status===429 && !opts.retried){
+        // Busy checking another login: retry once after Retry-After (capped).
+        const wait=Math.min(5, parseInt(res.headers.get('Retry-After')||'1',10)||1);
+        await new Promise(r=>setTimeout(r, wait*1000));
+        return api(path, Object.assign({}, opts, {retried:true}));
+      }
       if(res.status===401){ signOut('Your session has expired. Please sign in again.'); throw new Error('Unauthorized'); }
       let body=null; try{ body=await res.json(); }catch(e){}
       if(!res.ok){
@@ -979,10 +1012,35 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     }
     function loginError(msg){
       const el=$('loginErr'); el.style.display=msg?'flex':'none'; el.querySelector('span').textContent=msg||'';
+      if(msg) el.scrollIntoView({block:'nearest'});
     }
-    function showLogin(msg){
-      document.body.classList.remove('authed'); loginError(msg);
-      $('pass').value=''; setTimeout(()=>($('user').value?$('pass'):$('user')).focus(),0);
+    // Shows the message (scrolled into view on short windows) and marks the
+    // field it is about with aria-invalid.
+    function setupError(msg, fieldId){
+      const el=$('setupErr'); el.style.display=msg?'flex':'none'; el.querySelector('span').textContent=msg||'';
+      for(const id of ['suUser','suPass','suPass2']) $(id).removeAttribute('aria-invalid');
+      if(fieldId) $(fieldId).setAttribute('aria-invalid','true');
+      if(msg) el.scrollIntoView({block:'nearest'});
+    }
+    // Sign-in, or first-run setup when the server has no admin account yet.
+    // GET /api/setup needs no login; a server without it (admin off, older
+    // version) answers 404 and gets the sign-in form.
+    let authViewSeq=0;
+    async function showLogin(msg){
+      document.body.classList.remove('authed'); loginError(msg); setupError('');
+      $('pass').value=''; $('suPass').value=''; $('suPass2').value='';
+      const seq=++authViewSeq, view=$('login');
+      if(view.dataset.mode!=='setup') view.dataset.mode='checking';
+      let setup=false;
+      try {
+        const r=await fetch('/api/setup', {signal:AbortSignal.timeout(5000)});
+        if(r.ok){ const b=await r.json(); setup=!!(b&&b.setup_required); }
+      }
+      catch(e){ /* unreachable: the sign-in form reports it on submit */ }
+      if(seq!==authViewSeq || document.body.classList.contains('authed')) return;
+      view.dataset.mode=setup?'setup':'login';
+      if(setup){ loginError(''); setTimeout(()=>($('suUser').value?$('suPass'):$('suUser')).focus(),0); }
+      else setTimeout(()=>($('user').value?$('pass'):$('user')).focus(),0);
     }
     function signOut(msg){
       store.del(sessionStorage,AUTH_KEY); stopPolling();
@@ -993,6 +1051,8 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       const u=store.get(sessionStorage,USER_KEY)||'admin';
       $('who').textContent=u; $('avatar').textContent=u.slice(0,1);
       document.body.classList.add('authed');
+      // Next sign-out starts from "checking", never a stale setup form.
+      $('login').dataset.mode='checking';
       route(); refreshAll(); startPolling();
     }
     $('loginForm').addEventListener('submit', async e => {
@@ -1003,15 +1063,56 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       try {
         const token='Basic '+b64(user+':'+pass);
         const res=await fetch('/api/plugins',{headers:{Authorization:token}});
-        if(res.status===401){ loginError('Invalid username or password.'); $('pass').select(); return; }
+        if(res.status===401){
+          // The server may need setup (e.g. it was unreachable when the page loaded).
+          let body=null; try{ body=await res.json(); }catch(_){}
+          if(body && body.setup_required){ await showLogin(''); return; }
+          loginError('Invalid username or password.'); $('pass').select(); return;
+        }
+        if(res.status===429){ loginError('The server is busy checking another sign-in. Try again in a moment.'); return; }
         if(!res.ok){ loginError('Server error (HTTP '+res.status+'). Check the agent logs.'); return; }
         store.set(sessionStorage,AUTH_KEY,token); store.set(sessionStorage,USER_KEY,user); enterApp();
       } catch(err){ loginError('Could not reach the Orcha agent. Is it running?'); }
       finally { busy(btn,false); }
     });
+    $('setupForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const user=$('suUser').value.trim(), pass=$('suPass').value, again=$('suPass2').value, btn=$('setupBtn');
+      if(!user){ setupError('Choose a username.','suUser'); $('suUser').focus(); return; }
+      if(!/^[A-Za-z0-9._@-]{1,64}$/.test(user)){ setupError('The username may contain only letters, digits and . _ - @','suUser'); $('suUser').focus(); return; }
+      if(pass.length<12){ setupError('The password must be at least 12 characters.','suPass'); $('suPass').focus(); return; }
+      if(pass!==again){ setupError('The passwords don\u2019t match.','suPass2'); $('suPass2').select(); return; }
+      busy(btn,true); setupError('');
+      try {
+        const res=await fetch('/api/setup',{method:'POST', headers:{'Content-Type':'application/json'},
+                                             body:JSON.stringify({username:user, password:pass})});
+        let body=null; try{ body=await res.json(); }catch(_){}
+        if(res.status===409){
+          // Someone else finished setup first (or it was configured meanwhile).
+          $('user').value=''; await showLogin('The admin account already exists. Sign in with it.'); return;
+        }
+        if(res.status===429){ setupError('Setup is already being saved. Try again in a moment.'); return; }
+        if(!res.ok){ setupError((body&&body.error)||('Server error (HTTP '+res.status+'). Check the agent logs.')); return; }
+        store.set(sessionStorage,AUTH_KEY,'Basic '+b64(user+':'+pass)); store.set(sessionStorage,USER_KEY,user);
+        $('suPass').value=''; $('suPass2').value='';
+        enterApp(); toast('Admin account created. You are signed in as '+user+'.','ok');
+      } catch(err){ setupError('Could not reach the Orcha agent. Is it running?'); }
+      finally { busy(btn,false); }
+    });
+    // Remember which password field was in use, to give it focus back.
+    let suLastPass='suPass';
+    for(const id of ['suPass','suPass2']) $(id).addEventListener('focus', ()=>{ suLastPass=id; });
+    $('suPwToggle').addEventListener('click', () => {
+      const show=$('suPass').type==='password';
+      for(const id of ['suPass','suPass2']) $(id).type=show?'text':'password';
+      $('suPwToggle').setAttribute('aria-label', show?'Hide passwords':'Show passwords');
+      $('suPwToggle').setAttribute('aria-pressed', String(show));
+      $('suPwToggle').title=show?'Hide passwords':'Show passwords'; $(suLastPass).focus();
+    });
     $('pwToggle').addEventListener('click', () => {
       const p=$('pass'), show=p.type==='password'; p.type=show?'text':'password';
-      $('pwToggle').setAttribute('aria-label', show?'Hide password':'Show password'); p.focus();
+      $('pwToggle').setAttribute('aria-label', show?'Hide password':'Show password');
+      $('pwToggle').setAttribute('aria-pressed', String(show)); p.focus();
     });
     $('logout').addEventListener('click', () => { signOut(''); toast('Signed out','ok'); });
 

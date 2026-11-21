@@ -11,8 +11,9 @@
 # when the queue is full), step timeout, binary step output, admin API auth,
 # nested run cancel (409) vs parent cancel, SIGTERM during a long run
 # (cancelled, no leftover children), clean exit when the port is taken (without
-# touching the live server's runs), and a crashed server's runs marked
-# interrupted on restart.
+# touching the live server's runs), a crashed server's runs marked
+# interrupted on restart, first-run admin setup on an exposed bind (weak
+# settings ignored), and an invalid config refusing to start (exit 2).
 # Prints PASS/FAIL lines; exits non-zero if any check failed.
 set -uo pipefail
 
@@ -146,6 +147,34 @@ start && {
     check "orphaned run interrupted" interrupted "$(status_of "$crashed")"
     stop; }
 }
+
+echo "== exposed bind: weak admin settings ignored, first-run setup"
+start ORCHA_SERVER_HOST=0.0.0.0 ORCHA_SERVER_API_TOKEN=tok ORCHA_ADMIN_AUTH_REQUIRED=false ORCHA_ADMIN_PASSWORD=change-me \
+      ORCHA_ADMIN_CREDENTIALS_FILE=./admin.json && {
+  check "auth_required=false ignored: /api/jobs refused" 401 "$(code "$URL/api/jobs")"
+  check "placeholder password refused" 401 "$(code -u admin:change-me "$URL/api/jobs")"
+  check "setup required" yes "$(curl -s "$URL/api/setup" | grep -q '"setup_required":true' && echo yes || echo no)"
+  check "short password -> 400" 400 "$(code -H 'Content-Type: application/json' -d '{"username":"ops","password":"short"}' "$URL/api/setup")"
+  check "setup -> 201" 201 "$(code -H 'Content-Type: application/json' -d '{"username":"ops","password":"correct horse battery"}' "$URL/api/setup")"
+  check "second setup -> 409" 409 "$(code -H 'Content-Type: application/json' -d '{"username":"evil","password":"correct horse battery"}' "$URL/api/setup")"
+  check "new login works" 200 "$(code -u 'ops:correct horse battery' "$URL/api/jobs")"
+  check "wrong password -> 401" 401 "$(code -u 'ops:wrong password!!' "$URL/api/jobs")"
+  check "admin login accepted on /workflow" 202 "$(wf -u 'ops:correct horse battery')"
+  check "account file is 0600" 600 "$(stat -f %Lp "$W/admin.json" 2>/dev/null || stat -c %a "$W/admin.json")"
+  check "warned about the open claim" yes "$(grep -q 'ADMIN ACCOUNT NOT SET UP' "$W/orcha.log" && echo yes || echo no)"
+  stop
+  start_in "$W" ORCHA_SERVER_HOST=0.0.0.0 ORCHA_SERVER_API_TOKEN=tok ORCHA_ADMIN_CREDENTIALS_FILE=./admin.json && {
+    check "account survives a restart" 200 "$(code -u 'ops:correct horse battery' "$URL/api/jobs")"
+    check "setup closed after restart" 409 "$(code -H 'Content-Type: application/json' -d '{"username":"evil","password":"correct horse battery"}' "$URL/api/setup")"
+    stop; }
+}
+
+echo "== invalid configuration refuses to start"
+W=$(mktemp -d "$SCRATCH/orcha-run.XXXX")
+(cd "$W" && exec env ORCHA_SERVER_PORT=70000 ORCHA_LOGGING_FILE="$W/orcha.log" "$BIN" </dev/null >"$W/out.log" 2>&1)
+check "port 70000 exits 2" 2 "$?"
+check "names the bad key" yes "$(grep -q 'server.port' "$W/out.log" && echo yes || echo no)"
+check "nothing listening on the wrapped port" no "$(lsof -nP -iTCP:4464 -sTCP:LISTEN >/dev/null 2>&1 && echo yes || echo no)"
 
 [ $fails -eq 0 ] && echo "ALL PASSED" || echo "$fails FAILED"
 exit $fails

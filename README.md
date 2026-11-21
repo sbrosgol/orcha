@@ -51,15 +51,49 @@ docker compose up -d
 docker compose logs -f orcha
 ```
 
-The agent is now reachable on `http://localhost:8070/`. To override admin
-credentials or the exposed port, set them in the environment or in a
-`.env` file beside `docker-compose.yml`:
+The agent is now reachable on `http://localhost:8070/` (compose publishes it
+on the host's loopback only). Open `http://localhost:8070/admin` right away:
+with no admin password configured, the first visit asks you to **create the
+admin account** (username and a password of at least 12 characters), which is
+stored hashed on the data volume (`/app/data/orcha-admin.json`). Until it is
+created, anyone who can reach the port can create it, so don't publish the
+port before then.
+
+To set the admin login, an API token, or reach Orcha from other machines, use
+the environment or a `.env` file beside `docker-compose.yml`:
 
 ```bash
-ORCHA_ADMIN_PASSWORD=super-secret
+ORCHA_ADMIN_PASSWORD=super-secret-password   # skips first-run setup
 ORCHA_SERVER_API_TOKEN=$(openssl rand -hex 32)
 ORCHA_PORT=8080
+ORCHA_BIND=0.0.0.0                           # publish on all host interfaces
 ```
+
+Credentials are passed to the container only when you set them, so a password
+in a mounted `orcha.yaml` is not overridden by an empty variable.
+
+On an exposed bind (anything but loopback, which includes every container)
+`admin.auth_required: false` and the placeholder password `change-me` are
+ignored. To reset a forgotten setup password, delete the account file and
+restart, then open `/admin` again (or set `ORCHA_ADMIN_PASSWORD` instead):
+
+```bash
+docker compose exec orcha rm /app/data/orcha-admin.json && docker compose restart orcha
+# outside Docker: delete admin.credentials_file (default ./orcha-admin.json)
+```
+
+Checking a set-up password is deliberately slow (PBKDF2), so the server checks
+one unknown login at a time and answers others `429` with `Retry-After: 1`
+(signed-in sessions are unaffected). Use `ORCHA_SERVER_API_TOKEN` (bearer) for
+automation calling `POST /workflow`, not the admin login.
+
+> **Upgrading:** a server bound to a non-loopback address with no admin
+> password used to keep the admin dashboard off; it now waits for first-run
+> setup, and whoever opens `/admin` first becomes admin. Set
+> `admin.enabled: false` to keep it off, or set a password. With the old
+> compose file's default `change-me`, the dashboard also enters first-run
+> setup. Configurations with errors (e.g. a port above 65535) now refuse to
+> start (exit 2) instead of running with wrapped or ignored values.
 
 `POST /workflow` executes commands (including `shell_exec`), so it is
 fail-closed: it requires `Authorization: Bearer $ORCHA_SERVER_API_TOKEN`
@@ -229,7 +263,7 @@ YAML in these places:
   `enabled: false`:
 
   ```bash
-  curl -u admin:change-me -X POST http://localhost:8080/api/jobs \
+  curl -u "admin:$ORCHA_ADMIN_PASSWORD" -X POST http://localhost:8080/api/jobs \
        -H 'Content-Type: application/yaml' --data-binary @nightly-job.yaml
   ```
 - **Conversion:** `POST /api/definitions/convert` takes a definition as YAML or
@@ -389,4 +423,6 @@ The spec covers every public route (`/`, `/workflow`, `/workflow/runs/*`, `/comm
 plus the admin surface under `/api/*` (jobs, run history, plugin lifecycle).
 Admin endpoints are gated by HTTP Basic auth — credentials come from
 `admin.username` / `admin.password` in `orcha.yaml` (or
-`ORCHA_ADMIN_USERNAME` / `ORCHA_ADMIN_PASSWORD`).
+`ORCHA_ADMIN_USERNAME` / `ORCHA_ADMIN_PASSWORD`), or, with no password set,
+from the account created by first-run setup (`GET`/`POST /api/setup`, the only
+`/api/*` route that needs no login; `POST` works once).

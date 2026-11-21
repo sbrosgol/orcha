@@ -98,8 +98,20 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   quoting). Definitions are stored as JSON; YAML comments are not kept.
 - **Auth**: `POST /workflow` needs `Authorization: Bearer <server.api_token>`
   (or admin Basic). With no token it is served only on a loopback bind, else 503.
-  `/api/*` is admin Basic auth. `server.host` defaults to `127.0.0.1`
-  (Docker sets `ORCHA_SERVER_HOST=0.0.0.0`).
+  `/api/*` is admin Basic auth, decided by one `Agent::AdminAccount` shared by
+  both middlewares: `admin.password` if set, else the account first-run setup
+  stored in `admin.credentials_file` (PBKDF2, 0600, created once via `link()`),
+  else setup mode, where `POST /api/setup` (the only unauthenticated `/api/*`
+  route) creates it. No setup code by product decision: the first claimant wins;
+  it is logged loudly on an exposed bind. On any non-loopback bind
+  `auth_required: false` and the placeholder `change-me` are ignored
+  (`AdminConfig::for_bind`, also used for the plugin installer). A corrupt
+  account file disables admin rather than reopening setup. `server.host`
+  defaults to `127.0.0.1` (Docker sets `ORCHA_SERVER_HOST=0.0.0.0`; compose
+  publishes on the host loopback unless `ORCHA_BIND`).
+- **Config validation**: `main` runs `check_startup_config()` on the merged
+  config before anything starts; errors exit 2. New error rules must only
+  reject values that are already unusable.
 - **Per-workflow settings**: `timeout_ms`, `"rollback": none|reverse|best_effort`,
   `"circuit_breaker": true`; per step `timeout_ms`, `parallel`, `name`. Invalid
   settings throw `std::invalid_argument` from `WorkflowDefinition::from_json`
@@ -132,7 +144,7 @@ Config keys (env override `ORCHA_<SECTION>_<KEY>`, `_`→`.`): `server.{host,por
 worker_threads,api_token,max_wait_ms}`, `logging.{file,level,console_output}`,
 `plugins.{directory,auto_reload,scan_interval_ms,denylist_path,
 upload.{enabled,public_keys,max_bytes,directory}}`,
-`admin.{enabled,auth_required,username,password,realm}`,
+`admin.{enabled,auth_required,username,password,realm,credentials_file}`,
 `jobs.{db_path,max_runs,scheduler_enabled,scheduler_tick_seconds}`,
 `workflow.{default_timeout_ms, max_concurrent_runs, max_queued_runs,
 circuit_breaker.{failure_threshold,success_threshold,reset_timeout_ms}}`.

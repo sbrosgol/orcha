@@ -72,7 +72,8 @@ export async function openBrowser({ out, width = 1440, height = 900, port = +(pr
     },
     /** A real mouse click at the centre of @p sel (focuses buttons like a user's click). */
     async mouse(sel) {
-      const p = await ev(`(()=>{ const r=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2}; })()`);
+      // Scroll it into view first: a click outside the viewport hits nothing.
+      const p = await ev(`(()=>{ const e=document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2}; })()`);
       for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', clickCount: 1 });
     },
     async key(key, code = key, keyCode = 0) {

@@ -33,6 +33,7 @@
 // Config
 #include "config/YamlConfiguration.hpp"
 #include "config/PluginUploadConfig.hpp"
+#include "config/ConfigValidator.hpp"
 
 // Agent
 #include "agent/CommandAgent.hpp"
@@ -109,7 +110,9 @@ void bootstrap_services(Orcha::Core::ServiceLocator& services,
         for (const auto& k : upload.public_keys) options.public_keys.push_back({k.key, k.plugins, k.override_bundled});
         options.config_errors = upload.errors;
         options.max_bytes = static_cast<std::uint64_t>(std::max<int64_t>(1, upload.max_bytes));
-        options.admin_auth_required = Config::AdminConfig::from_config(config).auth_required;
+        // As the agent applies it: auth_required=false is ignored on an exposed bind.
+        options.admin_auth_required = Config::AdminConfig::from_config(config)
+            .for_bind(!Config::ServerConfig::from_config(config).is_loopback()).auth_required;
         services.register_singleton<Core::PluginInstaller>(std::make_shared<Core::PluginInstaller>(
             std::move(options), plugin_manager, discovery, denylist, logger_ptr, nullptr));
     }
@@ -346,7 +349,8 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
         scheduler->start();
     }
 
-    const bool admin_on = admin_config.is_serviceable();
+    const auto admin_account = agent.admin_account();
+    const bool admin_on = admin_config.enabled && admin_account->serves() && plugins && discovery;
 
     std::cout << "[Orcha] Listening on http://" << server_config.host
               << ":" << server_config.port << "/\n";
@@ -359,8 +363,12 @@ int run_server_mode(Orcha::Core::ServiceLocator& services,
     std::cout << "  GET  /commands  - List commands\n";
     std::cout << "  GET  /swagger   - API documentation\n";
     if (admin_on) {
+        using Mode = Agent::AdminAccount::Mode;
+        const auto mode = admin_account->mode();
         std::cout << "  GET  /admin     - Admin dashboard"
-                  << (admin_config.auth_required ? " (Basic auth)" : "") << "\n";
+                  << (mode == Mode::Open ? " (no login: loopback only)"
+                      : mode == Mode::Setup ? " (FIRST RUN: open it to create the admin account)"
+                      : " (admin login)") << "\n";
         std::cout << "  *    /api/plugins - Plugin admin API\n";
         std::cout << "  *    /api/circuit-breakers - Circuit breaker state/reset\n";
         std::cout << "  *    /api/jobs, /api/runs - Jobs and run history admin API\n";
@@ -435,6 +443,12 @@ auto main(int argc, char* argv[]) -> int {
 
     // Apply environment variable overrides
     config->merge_environment("ORCHA_");
+
+    // Validate the merged configuration before anything starts: errors exit 2
+    // (a port of 70000 would otherwise wrap), warnings are reported.
+    if (!Config::check_startup_config(*config, std::cerr)) {
+        return 2;
+    }
 
     // Create service locator and bootstrap services
     Core::ServiceLocator services;

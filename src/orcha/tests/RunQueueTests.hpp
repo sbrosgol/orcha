@@ -674,7 +674,12 @@ namespace Orcha::Tests {
         const std::string id = Json::parse(run.body)["id"];
         ORCHA_ASSERT(header(run, "Location") == "/api/runs/" + id);
 
-        wait_until([&] { return env.runs->stats().running == 1; }, "job run to start");
+        // The runner is counted before JobService::execute stores "running"
+        // (store I/O never runs under the queue's lock): wait for the row too.
+        wait_until([&] {
+            const auto stored = env.store->get_run(id);
+            return env.runs->stats().running == 1 && stored && stored->status == rs::Running;
+        }, "job run to start");
         auto list = Json::parse(route.handle(req("GET", "/api/runs")).body);
         ORCHA_ASSERT(list["queue"]["running"] == 1 && list["queue"]["max_concurrent"] == 1);
         ORCHA_ASSERT(list["runs"][0]["status"] == "running");

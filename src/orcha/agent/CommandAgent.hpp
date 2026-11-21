@@ -17,6 +17,7 @@
 #include "../jobs/JobService.hpp"
 #include "../utils/ILogger.hpp"
 #include "../config/AdminConfig.hpp"
+#include "AdminAccount.hpp"
 #include "../config/ServerConfig.hpp"
 #include <chrono>
 #include <memory>
@@ -95,6 +96,10 @@ namespace Orcha::Agent {
          */
         Router& router() { return router_; }
 
+        /// Who may use the admin surface (configured password, stored account,
+        /// or first-run setup).
+        [[nodiscard]] std::shared_ptr<const AdminAccount> admin_account() const { return admin_account_; }
+
     private:
         HttpResponse handle_request(const HttpRequest& request);
         void setup_default_routes();
@@ -113,6 +118,7 @@ namespace Orcha::Agent {
         Config::ServerConfig server_config_;
         std::shared_ptr<Core::CircuitBreakerRegistry> circuit_breakers_;
         std::shared_ptr<Core::PluginInstaller> plugin_installer_;   ///< null: no upload API
+        std::shared_ptr<AdminAccount> admin_account_;   ///< after admin_ and server_config_
 
         Router router_;
         std::unique_ptr<HttpServer> server_;
