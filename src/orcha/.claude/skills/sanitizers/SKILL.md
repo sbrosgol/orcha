@@ -46,13 +46,31 @@ regression test in `tests/` before fixing.
 
 ## Known false positive (macOS ASan)
 
-ASan on Darwin does not unregister an unloaded image's globals. If a **different**
-instrumented dylib is later mapped at the address of one that was `dlclose`d, any
-read of its string literals reports `global-buffer-overflow` "inside of global
-variable '.str' defined in <old plugin>". Confirm by reproducing with plain
-`dlopen`/`dlclose`/`dlopen` (no Orcha code) and by checking `dladdr` bases match.
-Avoid it in tests by ordering loads so nothing is mapped over a refused/unloaded
-plugin (see `test_plugin_abi_version_checked`), not by changing product code.
+ASan on Darwin does not unregister an unloaded image's globals. When instrumented
+dylibs are loaded in turn at the same address (install → refused legacy upgrade →
+rollback reload of the same plugin), reading the reloaded plugin's own string
+literals reports `global-buffer-overflow` "inside of global variable '.str'
+defined in <plugin source>", often listed several times. Confirm by reproducing
+with plain `dlopen`/`create_command`/`dlclose` of the real plugin libraries (no
+Orcha host code) and checking that the `dladdr` bases match. A toy plugin may not
+reproduce it; use the real ones.
+
+The fix in this repo: the test fixture plugins (`orcha_test_slow_plugin`,
+`orcha_test_legacy_plugin`) are built with `-fno-sanitize=address` (root
+`CMakeLists.txt`). Host code stays instrumented. Do the same for any new test
+plugin that tests load more than once, rather than reordering tests (upgrade and
+rollback tests have to reload into the freed range) or setting `report_globals=0`
+(which switches off global-overflow detection for the whole suite).
+
+## Reading the summary
+
+- A run only counts if it **finished**: each line must end with `All ... Tests
+  Passed`. An abort part-way (exit 134, `[FAIL]`) means every test after it went
+  unchecked under that sanitizer. Don't pipe the script into `tail`: that hides
+  its exit code.
+- Timing assertions must survive a sanitizer's slowdown (TSan ~1.5-10x). Assert
+  growth ratios (4x input → ~4x time when linear) or orderings, never a fixed
+  wall-clock budget (see `test_yaml_large_inputs_are_bounded_and_linear`).
 
 ## Reading reports
 
