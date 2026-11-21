@@ -224,8 +224,8 @@ namespace Orcha::Tests {
     inline void test_unregister_while_plugin_command_executing() {
 #ifdef ORCHA_TEST_SLOW_PLUGIN_PATH
         Core::CommandRegistry registry;
-        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH));
-        auto command = registry.get_command("slow_test_plugin");
+        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH, "orcha_test_slow_plugin"));
+        auto command = registry.get_command("orcha_test_slow_plugin");
         ORCHA_ASSERT(command != nullptr);
 
         auto running = std::async(std::launch::async, [command]() mutable {
@@ -236,15 +236,15 @@ namespace Orcha::Tests {
         command.reset();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        ORCHA_ASSERT(registry.unregister_command("slow_test_plugin")); // mid-execution
-        ORCHA_ASSERT_FALSE(registry.has_command("slow_test_plugin"));
+        ORCHA_ASSERT(registry.unregister_command("orcha_test_slow_plugin")); // mid-execution
+        ORCHA_ASSERT_FALSE(registry.has_command("orcha_test_slow_plugin"));
 
         // Before the fix the library was dlclose()d here and this crashed.
         const auto out = running.get();
         ORCHA_ASSERT(out.value("done", false));
 
         // The library can be loaded again afterwards.
-        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH));
+        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH, "orcha_test_slow_plugin"));
         std::cout << "[PASS] test_unregister_while_plugin_command_executing\n";
 #else
         std::cout << "[SKIP] test_unregister_while_plugin_command_executing (no test plugin)\n";

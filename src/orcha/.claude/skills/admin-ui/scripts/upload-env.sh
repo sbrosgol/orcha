@@ -7,8 +7,8 @@
 #   upload-env.sh stop  <workdir>
 #
 # start: creates (once) an Ed25519 key and signed fixtures in <workdir>/fixtures
-#   (v12 = echo 1.2.0, v13 = echo 1.3.0, clash = "echo-dup", which registers the
-#   command "echo" again and so never loads), and runs two servers:
+#   (v12 = echo 1.2.0, v13 = echo 1.3.0, clash = "echo-dup", whose command is
+#   "echo", not its name, so it never loads), and runs two servers:
 #   - :on_port  uploads enabled, the key scoped to echo* / slow* with
 #               override_bundled, bundled plugins copied from the build;
 #               prepared state: echo 1.2.0 uploaded (overriding the bundled 1.0.0)

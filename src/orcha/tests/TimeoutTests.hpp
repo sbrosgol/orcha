@@ -92,7 +92,7 @@ namespace Orcha::Tests {
 
         inline std::shared_ptr<Core::ICommand> load_plugin(Core::CommandRegistry& registry,
                                                            const char* path, const char* name) {
-            ORCHA_ASSERT(registry.load_command_library(path));
+            ORCHA_ASSERT(registry.load_command_library(path, std::string(name)));
             auto cmd = registry.get_command(name);
             ORCHA_ASSERT(cmd != nullptr);
             return cmd;
@@ -348,10 +348,10 @@ namespace Orcha::Tests {
         // refused plugin's old address yields a false global-buffer-overflow.
         // Load the versioned plugin first and refuse the legacy one last.
         Core::CommandRegistry registry;
-        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH));
-        ORCHA_ASSERT(registry.unregister_command("slow_test_plugin"));
-        ORCHA_ASSERT_FALSE(registry.load_command_library(ORCHA_TEST_LEGACY_PLUGIN_PATH));
-        ORCHA_ASSERT_FALSE(registry.has_command("slow_test_plugin"));
+        ORCHA_ASSERT(registry.load_command_library(ORCHA_TEST_SLOW_PLUGIN_PATH, "orcha_test_slow_plugin"));
+        ORCHA_ASSERT(registry.unregister_command("orcha_test_slow_plugin"));
+        ORCHA_ASSERT_FALSE(registry.load_command_library(ORCHA_TEST_LEGACY_PLUGIN_PATH, std::nullopt));   // refused by ABI
+        ORCHA_ASSERT_FALSE(registry.has_command("orcha_test_slow_plugin"));
         std::cout << "[PASS] test_plugin_abi_version_checked\n";
 #else
         std::cout << "[SKIP] test_plugin_abi_version_checked (no test plugins)\n";

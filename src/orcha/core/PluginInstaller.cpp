@@ -126,9 +126,112 @@ namespace Orcha::Core {
             bool held_ = false;
         };
 
-        bool numeric(const std::string& s) {
-            return !s.empty() && s.size() <= 18 &&
+        bool numeric(std::string_view s) {
+            return !s.empty() &&
                    std::ranges::all_of(s, [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; });
+        }
+
+        int three_way(std::string_view a, std::string_view b) {
+            const int c = a.compare(b);
+            return c < 0 ? -1 : c > 0 ? 1 : 0;
+        }
+
+        /// Numbers of any length, without converting (no overflow).
+        int compare_numbers(std::string_view a, std::string_view b) {
+            const auto strip = [](std::string_view v) {
+                while (v.size() > 1 && v.front() == '0') v.remove_prefix(1);
+                return v;
+            };
+            a = strip(a);
+            b = strip(b);
+            if (a.size() != b.size()) return a.size() < b.size() ? -1 : 1;
+            return three_way(a, b);
+        }
+
+        std::vector<std::string_view> split(std::string_view s, char sep) {
+            std::vector<std::string_view> parts;
+            for (std::size_t start = 0;;) {
+                const auto end = s.find(sep, start);
+                parts.push_back(s.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+                if (end == std::string_view::npos) return parts;
+                start = end + 1;
+            }
+        }
+
+        /// One identifier: numbers by value, numbers below text, text by bytes.
+        /// A total order, so version comparison stays transitive.
+        int compare_identifiers(std::string_view x, std::string_view y) {
+            const bool nx = numeric(x), ny = numeric(y);
+            if (nx && ny) return compare_numbers(x, y);
+            if (nx != ny) return nx ? -1 : 1;
+            return three_way(x, y);
+        }
+
+        /// SemVer 2.0 precedence, lenient about the core (it may have fewer or
+        /// more than three parts, missing ones counting as 0, so 2.0 == 2.0.0,
+        /// and non-numeric parts, ordered like pre-release identifiers):
+        /// "+build" is ignored; a pre-release ("1.0.0-rc.1") sorts below its
+        /// release; a shorter pre-release list below a longer one with the
+        /// same start. Upload versions are validated by valid_version().
+        int compare_versions(std::string_view a, std::string_view b) {
+            const auto parts = [](std::string_view v) {
+                v = v.substr(0, v.find('+'));
+                const auto dash = v.find('-');
+                return std::pair{v.substr(0, dash),
+                                 dash == std::string_view::npos ? std::string_view{} : v.substr(dash + 1)};
+            };
+            const auto [core_a, pre_a] = parts(a);
+            const auto [core_b, pre_b] = parts(b);
+            const auto ca = split(core_a, '.'), cb = split(core_b, '.');
+            for (std::size_t i = 0; i < std::max(ca.size(), cb.size()); ++i) {
+                const std::string_view x = i < ca.size() ? ca[i] : "0", y = i < cb.size() ? cb[i] : "0";
+                if (const int c = compare_identifiers(x, y); c != 0) return c;
+            }
+            if (pre_a.empty() != pre_b.empty()) return pre_a.empty() ? 1 : -1;   // release > pre-release
+            const auto pa = split(pre_a, '.'), pb = split(pre_b, '.');
+            for (std::size_t i = 0; i < std::min(pa.size(), pb.size()); ++i) {
+                if (const int c = compare_identifiers(pa[i], pb[i]); c != 0) return c;
+            }
+            return pa.size() == pb.size() ? 0 : pa.size() < pb.size() ? -1 : 1;
+        }
+
+        /// SemVer-shaped: dot-separated core, optional "-pre.release" and
+        /// "+build" parts, every identifier non-empty and made of [0-9A-Za-z-].
+        bool valid_version(std::string_view v) {
+            const auto ids_ok = [](std::string_view list) {
+                if (list.empty()) return false;
+                return std::ranges::all_of(split(list, '.'), [](std::string_view id) {
+                    return !id.empty() && std::ranges::all_of(id, [](char c) {
+                        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '-';
+                    });
+                });
+            };
+            if (v.size() > 64) return false;
+            const auto plus = v.find('+');
+            if (plus != std::string_view::npos && !ids_ok(v.substr(plus + 1))) return false;
+            const auto main = v.substr(0, plus);
+            const auto dash = main.find('-');
+            if (dash != std::string_view::npos && !ids_ok(main.substr(dash + 1))) return false;
+            const auto core = main.substr(0, dash);
+            return ids_ok(core) && std::ranges::none_of(core, [](char c) { return c == '-'; });
+        }
+
+        /// The version a plugin declares in its manifest, or "" (unversioned).
+        /// PluginMetadata::version falls back to Orcha's own version when none
+        /// is declared, which must not count as one when comparing versions.
+        std::string declared_version(const PluginMetadata& meta) {
+            if (meta.manifest_path.empty()) return "";
+            try {
+                std::error_code ec;
+                if (fs::file_size(meta.manifest_path, ec) > kMaxManifestBytes || ec) return "";
+                std::ifstream in(meta.manifest_path, std::ios::binary);
+                const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+                const auto j = parse_json_bounded(text);
+                return j.is_object() && j.contains("version") && j.at("version").is_string()
+                    ? j.at("version").get<std::string>() : "";
+            } catch (const std::exception&) {
+                return "";
+            }
         }
 
         std::string provenance_file(const std::string& name) { return ".orcha-provenance-" + name + ".json"; }
@@ -268,33 +371,73 @@ namespace Orcha::Core {
 
     std::optional<PluginInstaller::Existing> PluginInstaller::find_existing(const std::string& name) const {
         const auto src = sources();
-        if (auto meta = manager_->get_plugin_metadata(name)) return Existing{*meta, true, src.is_uploaded(*meta)};
+        // Versions as declared ("" when none), for comparisons and messages.
+        if (auto meta = manager_->get_plugin_metadata(name)) {
+            meta->version = declared_version(*meta);
+            return Existing{*meta, true, src.is_uploaded(*meta)};
+        }
         for (auto& entry : src.scan(*discovery_)) {
-            if (entry.meta.name == name) return Existing{std::move(entry.meta), false, entry.uploaded};
+            if (entry.meta.name == name) {
+                entry.meta.version = declared_version(entry.meta);
+                return Existing{std::move(entry.meta), false, entry.uploaded};
+            }
         }
         return std::nullopt;
     }
 
     std::string PluginInstaller::version_change(const std::string& current, const std::string& next) {
-        if (current.empty() || next.empty()) return "replace";
-        // Compare dot-separated parts: numerically when both are numbers.
-        std::istringstream a(current), b(next);
-        std::string pa, pb;
-        while (true) {
-            const bool ha = static_cast<bool>(std::getline(a, pa, '.'));
-            const bool hb = static_cast<bool>(std::getline(b, pb, '.'));
-            if (!ha && !hb) return "reinstall";
-            if (!ha) pa = "0";
-            if (!hb) pb = "0";
-            int cmp = 0;
-            if (numeric(pa) && numeric(pb)) {
-                const auto x = std::stoll(pa), y = std::stoll(pb);
-                cmp = x < y ? -1 : x > y ? 1 : 0;
-            } else {
-                cmp = pa < pb ? -1 : pa > pb ? 1 : 0;
-            }
-            if (cmp != 0) return cmp < 0 ? "upgrade" : "downgrade";
+        if (current.empty()) return "replace";
+        // An unversioned build can't be ordered against a known version: it
+        // may well be older, so it needs the same confirmation as a downgrade.
+        if (next.empty()) return "unversioned";
+        const int c = compare_versions(current, next);
+        return c == 0 ? "reinstall" : c < 0 ? "upgrade" : "downgrade";
+    }
+
+    Result<PluginInstaller::SignedIdentity, PluginUploadError> PluginInstaller::identity_of(
+        const std::string& library_filename, const std::optional<std::string>& manifest) {
+        using R = Result<SignedIdentity, PluginUploadError>;
+        // The file name is signed and becomes a path: a plain name with this
+        // platform's extension (re-checked at install: upload.json is unsigned).
+        const auto ext = IPluginDiscovery::get_library_extension();
+        const bool odd_chars = std::ranges::any_of(library_filename, [](char c) {
+            return static_cast<unsigned char>(c) < 0x20 || c == 0x7f || c == '/' || c == '\\';
+        });
+        if (library_filename.empty() || library_filename.size() > 128 || odd_chars ||
+            library_filename.front() == '.' || fs::path(library_filename).extension() != ext) {
+            return R::Err(err(Kind::Invalid, "Upload a " + ext + " library for this server (a plain file name ending in " + ext + ")"));
         }
+        SignedIdentity id;
+        id.name = pkg::plugin_name_from_filename(library_filename);
+        if (manifest) {
+            if (manifest->size() > kMaxManifestBytes) return R::Err(err(Kind::Invalid, "manifest.json is larger than 1 MB"));
+            try {
+                const auto j = parse_json_bounded(*manifest);
+                if (!j.is_object() || !j.contains("name") || !j.at("name").is_string()) {
+                    return R::Err(err(Kind::Invalid, "manifest.json needs a \"name\" string"));
+                }
+                if (j.contains("entry_point") && j.at("entry_point") != library_filename) {
+                    return R::Err(err(Kind::Invalid, "manifest.json entry_point must be \"" + library_filename + "\""));
+                }
+                if (j.contains("version") && (!j.at("version").is_string() ||
+                                              !valid_version(j.at("version").get<std::string>()))) {
+                    return R::Err(err(Kind::Invalid, "manifest.json version must be a version like 1.2.0 or "
+                                                     "1.2.0-rc.1 (dot-separated, no empty parts)"));
+                }
+                const auto meta = PluginMetadata::from_json(j, {});
+                id.name = meta.name;
+                id.version = j.contains("version") ? meta.version : "";
+                id.description = meta.description;
+                id.parameters = meta.parameters.size();
+            } catch (const std::exception& ex) {
+                return R::Err(err(Kind::Invalid, std::string("manifest.json: ") + ex.what()));
+            }
+        }
+        if (!pkg::is_valid_plugin_name(id.name)) {
+            return R::Err(err(Kind::Invalid, "Invalid plugin name \"" + id.name +
+                       "\": use letters, digits, '.', '_' or '-' (up to 64), not ending in a library extension"));
+        }
+        return R::Ok(std::move(id));
     }
 
     const PluginInstaller::Key* PluginInstaller::verify_signature(
@@ -373,15 +516,11 @@ namespace Orcha::Core {
         };
         if (!enabled()) return refuse(err(Kind::Disabled, disabled_reason_));
 
-        const auto ext = IPluginDiscovery::get_library_extension();
         const auto& filename = request.filename;
-        const bool odd_chars = std::ranges::any_of(filename, [](char c) {
-            return static_cast<unsigned char>(c) < 0x20 || c == 0x7f || c == '/' || c == '\\';
-        });
-        if (filename.empty() || filename.size() > 128 || odd_chars ||
-            filename.front() == '.' || fs::path(filename).extension() != ext) {
-            return refuse(err(Kind::Invalid, "Upload a " + ext + " library for this server (a plain file name ending in " + ext + ")"));
-        }
+        // Name, version and file name come only from the signed inputs; install()
+        // derives and checks them again the same way.
+        auto identity = identity_of(filename, request.manifest);
+        if (identity.is_err()) return refuse(identity.error());
         if (request.library.empty()) return refuse(err(Kind::Invalid, "The library is empty"));
         if (request.library.size() > options_.max_bytes) {
             return refuse(err(Kind::TooLarge, "The library is larger than " +
@@ -390,34 +529,13 @@ namespace Orcha::Core {
         const auto binary = pkg::inspect_library(request.library);
         if (!binary.loadable_here) return refuse(err(Kind::Invalid, binary.problem));
 
+        const auto& signed_id = identity.value();
         StagedPlugin staged;
-        staged.name = pkg::plugin_name_from_filename(filename);
-        if (request.manifest) {
-            if (request.manifest->size() > kMaxManifestBytes) {
-                return refuse(err(Kind::Invalid, "manifest.json is larger than 1 MB"));
-            }
-            try {
-                const auto manifest = parse_json_bounded(*request.manifest);
-                if (!manifest.is_object() || !manifest.contains("name") || !manifest.at("name").is_string()) {
-                    return refuse(err(Kind::Invalid, "manifest.json needs a \"name\" string"));
-                }
-                if (manifest.contains("entry_point") && manifest.at("entry_point") != filename) {
-                    return refuse(err(Kind::Invalid, "manifest.json entry_point must be \"" + filename + "\""));
-                }
-                const auto meta = PluginMetadata::from_json(manifest, {});
-                staged.name = meta.name;
-                staged.version = manifest.contains("version") ? meta.version : "";
-                staged.description = meta.description;
-                staged.parameters = meta.parameters.size();
-                staged.has_manifest = true;
-            } catch (const std::exception& ex) {
-                return refuse(err(Kind::Invalid, std::string("manifest.json: ") + ex.what()));
-            }
-        }
-        if (!pkg::is_valid_plugin_name(staged.name)) {
-            return refuse(err(Kind::Invalid, "Invalid plugin name \"" + staged.name +
-                              "\": use letters, digits, '.', '_' or '-' (up to 64), not ending in a library extension"));
-        }
+        staged.name = signed_id.name;
+        staged.version = signed_id.version;
+        staged.description = signed_id.description;
+        staged.parameters = signed_id.parameters;
+        staged.has_manifest = request.manifest.has_value();
         if (request.signature.size() != 64) {
             return refuse(err(Kind::BadSignature, "The signature must be a 64-byte Ed25519 signature"));
         }
@@ -491,8 +609,8 @@ namespace Orcha::Core {
             // One scan for all of them; what is loaded wins over what is on disk.
             const auto src = sources();
             std::map<std::string, std::pair<std::string, bool>> installed;   // name -> {version, uploaded}
-            for (const auto& entry : src.scan(*discovery_)) installed[entry.meta.name] = {entry.meta.version, entry.uploaded};
-            for (const auto& meta : manager_->get_all_plugins()) installed[meta.name] = {meta.version, src.is_uploaded(meta)};
+            for (const auto& entry : src.scan(*discovery_)) installed[entry.meta.name] = {declared_version(entry.meta), entry.uploaded};
+            for (const auto& meta : manager_->get_all_plugins()) installed[meta.name] = {declared_version(meta), src.is_uploaded(meta)};
             for (auto& s : out) {
                 if (auto it = installed.find(s.name); it != installed.end()) {
                     s.replaces_version = it->second.first;
@@ -569,8 +687,21 @@ namespace Orcha::Core {
                 "The staged files no longer match their signature, or its key is no longer trusted; "
                 "discard this upload and upload it again"));
         }
+        // upload.json is not signed: everything it says about who the plugin
+        // is (name, version) is derived again from the verified files, and an
+        // upload whose record disagrees is refused rather than trusted.
+        auto identity = identity_of(staged->library_filename, manifest);
+        const SignedIdentity* signed_id = identity.is_ok() ? &identity.value() : nullptr;
+        if (!signed_id || signed_id->name != staged->name || signed_id->version != staged->version) {
+            if (logger_) {
+                logger_->warn("Plugin install refused: upload " + id + "'s record does not match its signed files (by " +
+                              user + ")");
+            }
+            return InstallResult::Err(err(Kind::Invalid,
+                "This upload's record no longer matches its signed files; discard it and upload it again"));
+        }
         // Checked again: the key's scope may have changed since upload.
-        if (auto denied = check_allowed(*signer, staged->name)) {
+        if (auto denied = check_allowed(*signer, signed_id->name)) {
             if (logger_) logger_->warn("Plugin install refused: " + denied->message + " (by " + user + ")");
             return InstallResult::Err(std::move(*denied));
         }
@@ -586,15 +717,19 @@ namespace Orcha::Core {
         const auto existing = find_existing(staged->name);
         // Against what is installed now, not at upload: a staged upload can
         // have become a downgrade since.
-        const bool downgrade = existing && version_change(existing->meta.version, staged->version) == "downgrade";
-        if (downgrade && !allow_downgrade) {
+        const auto change = existing ? version_change(existing->meta.version, staged->version) : std::string("new");
+        if (needs_confirmation(change) && !allow_downgrade) {
+            const std::string what = change == "downgrade"
+                ? staged->version + " is older than the installed " + existing->meta.version
+                : "This build has no version, so it can't be checked against the installed " + existing->meta.version;
             if (logger_) {
-                logger_->warn("Plugin install refused: " + staged->name + " " + staged->version +
-                              " is older than the installed " + existing->meta.version +
-                              " and the downgrade was not confirmed (by " + user + ")");
+                logger_->warn("Plugin install refused: " + staged->name + ": " + what +
+                              (change == "downgrade" ? ", and the downgrade was not confirmed"
+                                                     : ", and replacing it was not confirmed") +
+                              " (by " + user + ")");
             }
-            auto e = err(Kind::Conflict, staged->version + " is older than the installed " + existing->meta.version +
-                                         "; confirm the downgrade to install it");
+            auto e = err(Kind::Conflict, what + (change == "downgrade" ? "; confirm the downgrade to install it"
+                                                                       : "; confirm to install it anyway"));
             e.requires_confirmation = "allow_downgrade";
             return InstallResult::Err(std::move(e));
         }
@@ -741,7 +876,8 @@ namespace Orcha::Core {
                           staged->sha256 + ", key " + staged->signer + ")" +
                           (existing ? (overrides_bundled ? " overriding the bundled " : " replacing ") +
                                       existing->meta.version : std::string()) +
-                          (downgrade ? " (confirmed downgrade)" : "") + " by " + user);
+                          (change == "downgrade" ? " (confirmed downgrade)"
+                           : change == "unversioned" ? " (confirmed unversioned replacement)" : "") + " by " + user);
         }
         InstalledPlugin out{staged->name, staged->version, std::nullopt, overrides_bundled};
         if (existing) out.previous_version = existing->meta.version;

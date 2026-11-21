@@ -1439,9 +1439,12 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
     // What installing it does, relative to the installed version.
     const upChange = s => (({
       new:'New plugin', upgrade:`Upgrade from ${s.replaces_version}`, downgrade:`Downgrade from ${s.replaces_version}`,
-      reinstall:`Reinstall of ${s.replaces_version}`, replace:`Replaces ${s.replaces_version||'the installed version'}`
+      reinstall:`Reinstall of ${s.replaces_version}`, replace:`Replaces ${s.replaces_version||'the installed version'}`,
+      unversioned:`Replaces ${s.replaces_version} with an unversioned build`
     })[s.change] || 'New plugin') + (s.replaces_bundled && s.change!=='new' ? ' (bundled)' : '');
-    const upAction = s => ({ upgrade:'Upgrade to '+upVersion(s), downgrade:'Downgrade to '+upVersion(s), reinstall:'Reinstall', replace:'Replace' })[s.change] || 'Install';
+    const upAction = s => ({ upgrade:'Upgrade to '+upVersion(s), downgrade:'Downgrade to '+upVersion(s), reinstall:'Reinstall', replace:'Replace', unversioned:'Replace' })[s.change] || 'Install';
+    // Changes the server installs only when confirmed ({allow_downgrade:true}).
+    const upNeedsConfirm = s => s.change==='downgrade' || s.change==='unversioned';
 
     function renderStagedUploads(focusAfter){
       const host=$('stagedUploads'), list=(state.uploads&&state.uploads.uploads)||[];
@@ -1503,13 +1506,15 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
             <div class="k">Manifest</div><div class="v">${s.has_manifest?`${esc(String(s.parameters))} parameter${s.parameters===1?'':'s'} declared`:'None: the job editor will show raw JSON parameters'}</div>
             <div class="k">Uploaded</div><div class="v">${esc(s.uploaded_by)} · ${timeCell(s.uploaded_at)}</div>
           </div>
-          ${s.change==='downgrade'?`<div class="alert">${icon('warn')}<span>${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.</span></div>
-          <label class="confirm-row"><input type="checkbox" id="upConfirm" /> Install ${esc(upVersion(s))} even though ${esc(s.replaces_version)} is installed</label>`:''}
+          ${upNeedsConfirm(s)?`<div class="alert">${icon('warn')}<span>${s.change==='downgrade'
+              ? `${esc(upVersion(s))} is older than the installed ${esc(s.replaces_version)}.`
+              : `This build has no version, so it can’t be checked against the installed ${esc(s.replaces_version)}: it may be older.`}</span></div>
+          <label class="confirm-row"><input type="checkbox" id="upConfirm" /> Install ${s.change==='downgrade'?esc(upVersion(s)):'this unversioned build'} even though ${esc(s.replaces_version)} is installed</label>`:''}
           ${s.replaces_bundled&&replacing?`<div class="alert info">${icon('info')}<span>This overrides the bundled ${esc(s.replaces_version)}. The bundled files are not changed.</span></div>`:''}
           <div class="alert flush">${icon('warn')}<span>Installing loads this library into the Orcha server: its code runs with the server’s permissions. Install only plugins you trust.${replacing?` If ${esc(upVersion(s))} fails to load, ${esc(s.replaces_version)} is restored.`:''}</span></div>`;
         ft.innerHTML = `<button class="btn danger" id="upDiscard" aria-label="Discard upload">${icon('trash','ico')}${icon('loader','spin')}<span class="sr-sm">Discard</span></button><span class="sp"></span>
           <button class="btn" data-close>Keep for later</button>
-          <button class="btn primary" id="upInstall" ${s.change==='downgrade'?'disabled':''}>${icon('loader','spin')}<span>${esc(upAction(s))}${s.install_crashed_at?' anyway':''}</span></button>`;
+          <button class="btn primary" id="upInstall" ${upNeedsConfirm(s)?'disabled':''}>${icon('loader','spin')}<span>${esc(upAction(s))}${s.install_crashed_at?' anyway':''}</span></button>`;
       } else if(up.statusErr){
         $('upTitle').textContent='Upload plugin';
         body.innerHTML = `<div class="alert err flush" role="alert">${icon('alert')}<span>Could not check whether this server accepts plugin uploads: ${esc(up.statusErr)}</span></div>`;
@@ -1597,7 +1602,7 @@ inline constexpr const char kDashboardHtml[] = R"HTML(<!DOCTYPE html>
       } catch(e){
         if(isAuthErr(e)) return;
         await Promise.allSettled([loadPluginsData(), loadUploadsData()]); renderPlugins(); renderStagedUploads();
-        // It became a downgrade since it was staged: show it as one (with the checkbox).
+        // It needs confirmation since it was staged (now a downgrade): show the checkbox.
         if(e.body && e.body.requires==='allow_downgrade' && $('upload').classList.contains('show')){
           const fresh=((state.uploads&&state.uploads.uploads)||[]).find(x=>x.id===s.id);
           if(fresh) up.staged=fresh;

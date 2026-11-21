@@ -258,7 +258,43 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(I::version_change("1.10.0", "1.9.0") == "downgrade");
         ORCHA_ASSERT(I::version_change("2.0", "2.0.0") == "reinstall");
         ORCHA_ASSERT(I::version_change("1.0.0-rc1", "1.0.0-rc2") == "upgrade");
-        ORCHA_ASSERT(I::version_change("", "1.0") == "replace" && I::version_change("1.0", "") == "replace");
+        ORCHA_ASSERT(I::version_change("", "1.0") == "replace" && I::version_change("", "") == "replace");
+        // An unversioned build over a known version needs confirmation like a downgrade.
+        ORCHA_ASSERT(I::version_change("1.0", "") == "unversioned" && I::needs_confirmation("unversioned"));
+        ORCHA_ASSERT(I::needs_confirmation("downgrade") && !I::needs_confirmation("upgrade") && !I::needs_confirmation("replace"));
+        // SemVer precedence. Regression: plain text order made 1.0.0 -> 1.0.0-rc1
+        // an "upgrade" (no confirmation) and 1.0.0-beta -> 1.0.0 a "downgrade".
+        ORCHA_ASSERT(I::version_change("1.0.0", "1.0.0-rc1") == "downgrade");
+        ORCHA_ASSERT(I::version_change("1.0.0-beta", "1.0.0") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.0.0-alpha", "1.0.0-alpha.1") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.0.0-alpha.2", "1.0.0-alpha.10") == "upgrade");   // numeric identifiers
+        ORCHA_ASSERT(I::version_change("1.0.0-1", "1.0.0-alpha") == "upgrade");           // numbers before text
+        ORCHA_ASSERT(I::version_change("1.0.0-alpha.beta", "1.0.0-beta") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.0.0+build.7", "1.0.0+build.9") == "reinstall"); // build metadata ignored
+        ORCHA_ASSERT(I::version_change("01.0", "1.0") == "reinstall");
+        ORCHA_ASSERT(I::version_change("1.99999999999999999999", "1.100000000000000000000") == "upgrade");   // no overflow
+        // A total order (numbers before text, as SemVer orders pre-releases).
+        // Regression: 1.2 < 1.10 < 1.1a < 1.2 was a cycle, so a chosen
+        // version string could pass for an upgrade and skip confirmation.
+        ORCHA_ASSERT(I::version_change("1.2", "1.10") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.10", "1.1a") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.2", "1.1a") == "upgrade");
+        ORCHA_ASSERT(I::version_change("1.1a", "1.2") == "downgrade");
+
+        // Upload versions must be well-formed (no empty parts), and the file
+        // name rules hold wherever the identity is derived.
+        for (const char* bad : {"1.0.0-", "1..0", "1.0.", "1.0.0-.a", "", " 1.0", "1.0+", "1.0.0/x"}) {
+            auto r = I::identity_of(lib_name("slowtest"), manifest("slowtest", bad));
+            ORCHA_ASSERT(r.is_err() && r.error().message.find("version must be") != std::string::npos);
+        }
+        ORCHA_ASSERT(I::identity_of(lib_name("slowtest"), std::string(R"({"name":"slowtest","version":5})")).is_err());
+        for (const char* good : {"1.0.0", "2.0", "1.0.0-rc.1", "1.0.0-alpha-2+build.7", "10"}) {
+            ORCHA_ASSERT(I::identity_of(lib_name("slowtest"), manifest("slowtest", good)).is_ok());
+        }
+        for (const std::string bad_file : {"../" + lib_name("x"), "." + lib_name("x"), std::string("x.txt"), std::string()}) {
+            ORCHA_ASSERT(I::identity_of(bad_file, std::nullopt).is_err());
+        }
+        ORCHA_ASSERT(I::identity_of(lib_name("x"), std::nullopt).value().name == "x");
 
         // Binary headers: a real plugin built here loads; others are refused unread.
 #ifdef ORCHA_TEST_SLOW_PLUGIN_PATH
@@ -390,7 +426,7 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(fs::exists(v1_dir / lib_name("slowtest")) && fs::exists(v1_dir / "manifest.json"));
         const auto v1 = env.manager->get_plugin_metadata("slowtest");
         ORCHA_ASSERT(v1 && v1->version == "1.0.0");
-        ORCHA_ASSERT(env.registry->get_command("slow_test_plugin") != nullptr);
+        ORCHA_ASSERT(env.registry->get_command("slowtest") != nullptr);
         ORCHA_ASSERT(env.installer->list().empty() && !fs::exists(env.staging / s.id));
         ORCHA_ASSERT(!env.denylist->contains("slowtest"));
         const auto origin = Core::PluginInstaller::provenance(*v1);
@@ -407,7 +443,7 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(failed.error().rolled_back);
         ORCHA_ASSERT(failed.error().message.find("plugin ABI") != std::string::npos);
         ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.0.0");
-        ORCHA_ASSERT(env.registry->get_command("slow_test_plugin") != nullptr);
+        ORCHA_ASSERT(env.registry->get_command("slowtest") != nullptr);
         ORCHA_ASSERT(fs::exists(v1_dir / lib_name("slowtest")) && fs::exists(v1_dir / "manifest.json"));
         ORCHA_ASSERT(fs::exists(v1_dir / "settings.json"));
         ORCHA_ASSERT(Core::PluginInstaller::provenance(*env.manager->get_plugin_metadata("slowtest")).has_value());
@@ -419,12 +455,12 @@ namespace Orcha::Tests {
 
         // A good upgrade while a workflow still holds v1: the new path means
         // dlopen maps the new library (not v1's image again).
-        auto busy = env.registry->get_command("slow_test_plugin");
+        auto busy = env.registry->get_command("slowtest");
         auto up = env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.0.0")));
         ORCHA_ASSERT(up.previous_version == "1.0.0");
         const auto v2 = env.manager->get_plugin_metadata("slowtest");
         ORCHA_ASSERT(v2 && v2->version == "2.0.0" && v2->library_path.parent_path() != v1_dir);
-        auto now = env.registry->get_command("slow_test_plugin");
+        auto now = env.registry->get_command("slowtest");
         ORCHA_ASSERT(now != nullptr && now != busy);
         // v1's own files moved out; the rest of its directory stays.
         ORCHA_ASSERT(!fs::exists(v1_dir / lib_name("slowtest")) && !fs::exists(v1_dir / "manifest.json"));
@@ -665,6 +701,95 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_plugin_upload_key_scopes\n";
     }
 
+    // A plugin is the command it is named (and signed) as. Regression: the
+    // command name came from the loaded code, so a key allowed to sign only
+    // "acme-*" could ship "acme-x" whose command is "echo" and take over the
+    // bundled echo (when loaded first, or when echo is disabled).
+    inline void test_plugin_command_is_its_signed_name() {
+        using namespace upload_tests;
+        Env env;
+        auto o = env.options();
+        o.public_keys = {{env.key.public_base64(), {"acme-*"}, false}};
+        auto acme = env.make(o);
+
+        // Upload: staged (bytes only), refused when loaded, previous state kept.
+        auto staged = acme->stage(env.upload(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, lib_name("x"), manifest("acme-x", "1.0.0")));
+        ORCHA_ASSERT(staged.is_ok());
+        auto installed = acme->install(staged.value().id, "tester");
+        ORCHA_ASSERT(installed.is_err() && installed.error().kind == K::LoadFailed);
+        ORCHA_ASSERT(installed.error().message.find("registers the command 'echo'") != std::string::npos);
+        ORCHA_ASSERT(installed.error().message.find("plugin name is 'acme-x'") != std::string::npos);
+        ORCHA_ASSERT(!env.registry->has_command("echo") && !env.manager->get_plugin_metadata("acme-x"));
+        ORCHA_ASSERT(env.install_dirs("acme-x").empty());
+
+        // Start-up order can't help it either: loaded before the real echo, the
+        // impostor is refused and echo keeps its command.
+        write_file(env.plugins / "acme-x" / "manifest.json", manifest("acme-x", "1.0.0"));
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.plugins / "acme-x" / lib_name("x"));
+        write_file(env.bundled / "Echo" / "manifest.json", manifest("echo", "1.0.0"));
+        fs::copy_file(ORCHA_TEST_SLOW_PLUGIN_PATH, env.bundled / "Echo" / lib_name("echo"));
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.plugins / "acme-x" / lib_name("x")).is_err());
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.bundled / "Echo" / lib_name("echo")).is_ok());
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("echo") && !env.manager->get_plugin_metadata("acme-x"));
+        ORCHA_ASSERT(env.registry->has_command("echo"));
+
+        // Plugins in plugins.directory follow the same rule (without a manifest
+        // the name comes from the file name).
+        fs::create_directories(env.bundled / "Plain");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Plain" / lib_name("plain"));
+        auto plain = env.manager->try_load_plugin(env.bundled / "Plain" / lib_name("plain"));
+        ORCHA_ASSERT(plain.is_err() && plain.error().find("its plugin name is 'plain'") != std::string::npos);
+
+        // No name, no load (it used to skip the check and register anything).
+        write_file(env.bundled / "Nameless" / "manifest.json", R"({"version":"1.0.0"})");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Nameless" / lib_name("nameless"));
+        auto nameless = env.manager->try_load_plugin(env.bundled / "Nameless" / lib_name("nameless"));
+        ORCHA_ASSERT(nameless.is_err() && nameless.error().find("has no name") != std::string::npos);
+        fs::create_directories(env.bundled / "Bare");
+        fs::copy_file(ORCHA_TEST_IMPOSTOR_PLUGIN_PATH, env.bundled / "Bare" / lib_name(""));   // "lib.so": no name either
+        ORCHA_ASSERT(env.manager->try_load_plugin(env.bundled / "Bare" / lib_name("")).is_err());
+        ORCHA_ASSERT(!env.registry->has_command("echo") || env.manager->get_plugin_metadata("echo"));
+
+        // The manifest's name wins over the file name (the fixture follows the
+        // same rule, so this pins the loader to the manifest).
+        env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("file-name"), manifest("manifest-name", "1.0.0")));
+        ORCHA_ASSERT(env.registry->has_command("manifest-name") && !env.registry->has_command("file-name"));
+        std::cout << "[PASS] test_plugin_command_is_its_signed_name\n";
+    }
+
+    // upload.json is not signed: install derives the plugin's name and version
+    // from the verified files and refuses a record that disagrees. Regression:
+    // editing the staged record could turn a downgrade into an "upgrade" (no
+    // confirmation) or rename the plugin past its key's scope.
+    inline void test_plugin_install_uses_only_the_signed_identity() {
+        using namespace upload_tests;
+        Env env;
+        env.install(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.0.0")));
+        const auto tamper = [&](const std::string& id, const std::string& key, const std::string& value) {
+            const auto record = env.staging / id / "upload.json";
+            auto j = Json::parse(read_file(record));
+            j[key] = value;
+            write_file(record, j.dump(2));
+        };
+
+        auto older = env.installer->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "1.0.0")));
+        ORCHA_ASSERT(older.is_ok() && older.value().change == "downgrade");
+        tamper(older.value().id, "version", "3.0.0");
+        auto sneaked = env.installer->install(older.value().id, "tester");
+        ORCHA_ASSERT(sneaked.is_err() && sneaked.error().kind == K::Invalid);
+        ORCHA_ASSERT(sneaked.error().message.find("no longer matches its signed files") != std::string::npos);
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "2.0.0");
+
+        auto renamed = env.installer->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), manifest("slowtest", "2.1.0")));
+        ORCHA_ASSERT(renamed.is_ok());
+        tamper(renamed.value().id, "name", "other");
+        auto as_other = env.installer->install(renamed.value().id, "tester");
+        ORCHA_ASSERT(as_other.is_err() && as_other.error().kind == K::Invalid);
+        ORCHA_ASSERT(env.install_dirs("other").empty() && !env.manager->get_plugin_metadata("other"));
+        ORCHA_ASSERT(logged(*env.logger, "record does not match its signed files") == 2);
+        std::cout << "[PASS] test_plugin_install_uses_only_the_signed_identity\n";
+    }
+
     inline void test_plugin_downgrade_needs_confirmation() {
         using namespace upload_tests;
         Env env;
@@ -692,11 +817,26 @@ namespace Orcha::Tests {
         ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.5.0");
         ORCHA_ASSERT(logged(*env.logger, "(confirmed downgrade)") == 1);
 
-        // Upgrades, reinstalls and unversioned uploads need no confirmation; the flag changes nothing for them.
+        // Upgrades and reinstalls need no confirmation; the flag changes nothing for them.
         ORCHA_ASSERT(env.installer->install(stage("1.6.0").id, "tester", true).is_ok());
         ORCHA_ASSERT(env.installer->install(stage("1.6.0").id, "tester").is_ok());
+
+        // An unversioned build can't be ordered against 1.6.0: confirm it like
+        // a downgrade. Regression: it replaced any version without asking.
         auto unversioned = env.installer->stage(env.upload(ORCHA_TEST_SLOW_PLUGIN_PATH, lib_name("slowtest"), std::nullopt));
-        ORCHA_ASSERT(unversioned.is_ok() && unversioned.value().change == "replace");
+        ORCHA_ASSERT(unversioned.is_ok() && unversioned.value().change == "unversioned");
+        auto ask = env.installer->install(unversioned.value().id, "tester");
+        ORCHA_ASSERT(ask.is_err() && ask.error().kind == K::Conflict && ask.error().requires_confirmation == "allow_downgrade");
+        ORCHA_ASSERT(ask.error().message.find("has no version") != std::string::npos);
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->version == "1.6.0");
+        ORCHA_ASSERT(env.installer->install(unversioned.value().id, "tester", true).is_ok());
+        ORCHA_ASSERT(env.manager->get_plugin_metadata("slowtest")->manifest_path.empty());   // the build without a manifest
+        ORCHA_ASSERT(logged(*env.logger, "(confirmed unversioned replacement)") == 1);
+        // Anything over an unversioned build needs no confirmation.
+        auto after = stage("1.0.0");
+        ORCHA_ASSERT(after.change == "replace");
+        ORCHA_ASSERT(env.installer->install(after.id, "tester").is_ok());
+        ORCHA_ASSERT(env.installer->install(stage("1.6.0").id, "tester").is_ok());   // back to 1.6.0 for the HTTP checks
 
         // Over HTTP: the 409 says what to confirm; the body must be well-formed.
         Agent::Routes::PluginUploadRoute route(env.installer);
@@ -850,6 +990,8 @@ namespace Orcha::Tests {
         test_plugin_upload_overrides_bundled();
         test_plugin_upload_key_scopes();
         test_plugin_downgrade_needs_confirmation();
+        test_plugin_command_is_its_signed_name();
+        test_plugin_install_uses_only_the_signed_identity();
         test_plugin_upload_route();
 #endif
     }

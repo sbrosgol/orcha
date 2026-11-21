@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 #include <memory>
@@ -63,15 +64,22 @@ namespace Orcha::Core {
     public:
         /**
          * @brief Load a command from a shared library.
-         * @param path Path to the shared library.
+         * @param path             Path to the shared library.
+         * @param expected_command The name the command must have (the plugin's
+         *        name, from its manifest or file name, which a signed upload
+         *        binds); checked before it is registered. nullopt: no check,
+         *        for tests that load a library directly (never in production).
          * @return Ok, or why it was refused (dlopen error, plugin ABI
-         *         mismatch, missing factory, name already registered, ...).
+         *         mismatch, missing factory, wrong command name, name already
+         *         registered, ...).
          */
-        [[nodiscard]] virtual Result<void, std::string> try_load_command_library(const std::string& path) = 0;
+        [[nodiscard]] virtual Result<void, std::string> try_load_command_library(
+            const std::string& path, const std::optional<std::string>& expected_command) = 0;
 
         /// try_load_command_library() for callers that only need success.
-        [[nodiscard]] bool load_command_library(const std::string& path) {
-            return try_load_command_library(path).is_ok();
+        [[nodiscard]] bool load_command_library(const std::string& path,
+                                                const std::optional<std::string>& expected_command) {
+            return try_load_command_library(path, expected_command).is_ok();
         }
 
         /**

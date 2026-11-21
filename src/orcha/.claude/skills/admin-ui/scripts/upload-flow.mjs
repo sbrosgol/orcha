@@ -87,13 +87,14 @@ await ev(`document.getElementById('cfOk').click(); 1`);
 await b.until(`!document.getElementById('upload').classList.contains('show')`); await sleep(300);
 check('discard from review closes dialog, focus restored', !(await shown()) && await active() !== 'BODY', await active());
 
-// The upload that crashed the server: warned, "Install anyway"; it also
-// clashes ("echo" is taken), so the load failure stays in the dialog.
+// The upload that crashed the server: warned, "Install anyway"; it is the echo
+// library named "echo-dup", so loading it is refused (its command is "echo",
+// not its name) and the load failure stays in the dialog.
 await ev(`[...document.querySelectorAll('[data-up="review"]')][0].click(); 1`); await sleep(500);
 check('crash warning in review', (await text('#upBody .alert.err')).includes('The server stopped while installing') && (await text('#upInstall')).includes('anyway'));
 await b.shot('7-crashed-review');
 await ev(`document.getElementById('upInstall').click(); 1`); await sleep(200); await idle();
-check('load failure shown in dialog', await shown() && (await text('#upBody')).includes("Command 'echo' already registered"), await text('#upBody'));
+check('load failure shown in dialog', await shown() && (await text('#upBody')).includes("registers the command 'echo', but its plugin name is 'echo-dup'"), await text('#upBody'));
 await ev(`[...document.querySelectorAll('#upFt [data-close]')][0].click(); 1`); await sleep(400);
 check('kept for later: staged card', (await text('#stagedUploads')).includes('echo-dup'));
 await ev(`document.querySelector('[data-up="discard"]').click(); 1`); await sleep(400);

@@ -94,6 +94,9 @@ automation calling `POST /workflow`, not the admin login.
 > compose file's default `change-me`, the dashboard also enters first-run
 > setup. Configurations with errors (e.g. a port above 65535) now refuse to
 > start (exit 2) instead of running with wrapped or ignored values.
+> A plugin's command must now be named like the plugin (its manifest `name`,
+> else its library file name): a plugin, bundled or uploaded, whose command
+> name differs no longer loads, and the log says which name to use.
 
 `POST /workflow` executes commands (including `shell_exec`), so it is
 fail-closed: it requires `Authorization: Bearer $ORCHA_SERVER_API_TOKEN`
@@ -343,11 +346,20 @@ uploads are **off by default** and must be **signed**:
    configuration at that moment. A refused upload gets `403` naming the key and
    what it may sign. (`ORCHA_PLUGINS_UPLOAD_PUBLIC_KEYS` sets plain keys only.)
 
+   > **A scope limits names, not trust.** An installed plugin runs inside the
+   > Orcha process with its permissions (its code runs as soon as it is
+   > loaded, before any check), so it can do anything the server can. A scope
+   > keeps a key from claiming or replacing other plugins' names; it does not
+   > make a key safe to hand to someone you would not trust with the server.
+
 3. **Sign each build** of the plugin. The signature covers the library's
    **file name**, its bytes and its `manifest.json`, so renaming the library
    or swapping the manifest invalidates it. The manifest (or, without one, the
    file name) names the plugin, so the signature decides which plugin an
-   upload becomes:
+   upload becomes. A plugin is one command named like the plugin: a library
+   whose command (`name()`) differs from that name is refused when it loads,
+   so a key can't ship a plugin that takes over another plugin's command. The
+   same rule applies to every plugin, including those in `plugins.directory`:
 
    ```bash
    src/orcha/scripts/orcha-plugin-sign.sh sign orcha-plugins.pem libmy_plugin.so manifest.json
@@ -376,7 +388,11 @@ plugin whose name already exists replaces it:
 Workflows already running keep using the old version.
 
 Installing an **older** version than the one installed (a downgrade) needs
-explicit confirmation: the dashboard asks you to tick "Install … even though …
+explicit confirmation (versions compare by SemVer precedence, so `1.0.0-rc.1`
+is older than `1.0.0`), and so does replacing a versioned plugin with a build
+that declares no version (it can't be ordered, so it may be older). Upload
+manifests must use SemVer-shaped versions (`1.2.0`, `1.2.0-rc.1`; no empty
+parts): the dashboard asks you to tick "Install … even though …
 is installed", and the API answers `409` with `"requires": "allow_downgrade"`
 until the install request sends `{"allow_downgrade": true}`. This is checked
 against the version installed at install time, so an upload that was an
