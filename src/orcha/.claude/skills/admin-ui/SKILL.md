@@ -71,6 +71,40 @@ requires rebuilding the `orcha` binary.
 - Keep keyboard and screen-reader support: focus-visible rings, `aria-*` on toggles, tabs and
   dialogs, Esc closes overlays, Tab is trapped in overlays.
 
+## Design principles (orchestration console)
+
+The operator's questions, in order: *Is anything broken or about to break?
+What is running now? Why did this run fail, and where did the time go?* Layout
+follows that order.
+
+- **Action first.** Things needing attention (open breakers, failed rollbacks,
+  recent failures, a full queue) come before KPIs and breakdowns, on desktop and
+  phone. Healthy summaries never hide unavailable data.
+- **Colour means status.** `--ok/--warn/--err` are reserved for run, step,
+  breaker and rollback outcomes. Metadata badges (trigger, source, tags) use
+  neutral tones, never red/pink next to a `failed` badge.
+- **Every number states its window.** A KPI computed from a page of runs says
+  "last N runs"; a time chart is fed by a server aggregate covering the whole
+  period, not by the latest page. Polling must not re-download step output.
+- **Show every status.** Counts and filters include `cancelled`, `interrupted`
+  and `skipped`, not only success/failed/running/queued.
+- **Runs are addressable.** Selecting a run updates the hash
+  (`#/jobs/<id>/runs/<runId>`); a link reproduces the view.
+- **History is rendered from the run, not the current job.** Step labels come
+  from the stored `result[].step`/`name`, never `definition.steps[i]` of a job
+  that may have been edited since.
+- **No hints for behaviour that doesn't exist.** Copy describes what an
+  interaction does (the flow canvas drag only moves the drawing).
+- **Visualisations have a DOM equivalent.** Canvas/SVG charts and graphs get a
+  text alternative (sr-only list/table) and keyboard-focusable nodes; anything
+  clickable in them is also reachable without a mouse or by touch.
+- **Rows that open something are keyboard targets.** A clickable `<tr>` puts a
+  `<button class="linkish">` or `<a href>` in its primary cell; never rely on a
+  row click handler alone.
+- **Invalid is not "off".** A control mirroring a definition value that is
+  present but invalid shows an inline invalid state, not its default.
+- Empty output renders "(no output)" for both `undefined` and `null`.
+
 ## Run it
 
 1. Build: `cmake --build cmake-build-debug --target orcha`

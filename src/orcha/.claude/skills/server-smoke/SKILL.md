@@ -1,6 +1,6 @@
 ---
 name: server-smoke
-description: Run the real orcha binary end to end and check user-visible HTTP behaviour (auth on /workflow, bind address, timeouts, shutdown/cancellation, admin API). Use after changing the agent, routes, auth, config, the engine's runtime behaviour or main.cpp, or when asked to confirm a change works on the actual server rather than in unit tests.
+description: Run the real orcha binary end to end and check user-visible HTTP behaviour (auth on /workflow, bind address, async runs - 202/Location, Prefer wait, cancel, 429 queue full - timeouts, shutdown/cancellation, admin API, signed plugin uploads). Use after changing the agent, routes, auth, config, the engine's runtime behaviour or main.cpp, or when asked to confirm a change works on the actual server rather than in unit tests.
 ---
 
 # End-to-end smoke tests on the real server
@@ -16,8 +16,10 @@ bash .claude/skills/server-smoke/scripts/smoke.sh <scratchpad>/smoke 18070
 ```
 
 Covers: health; `/workflow` open on loopback, 503 on `0.0.0.0` without a token,
-401/200 with a token, admin Basic accepted; 400 on bad JSON; step `timeout_ms`
-enforced; `/api/*` auth; SIGTERM during a 30 s workflow (exits in < 5 s, the run
+401/202 with a token, admin Basic accepted; 400 on bad JSON; async runs (202 +
+`Location`, polling, `Prefer: wait` → 200, cancel, queue full → 429 +
+`Retry-After`, nested `run_job` cancel → 409); step `timeout_ms` enforced;
+`/api/*` auth; SIGTERM during a 30 s workflow (exits in < 5 s, the run
 is reported `Cancelled`, no leftover child processes); a second instance on a busy
 port exits 1. Extend the script with a scenario when you add user-visible
 behaviour, and keep scenarios benign (no load or attack-style payloads).

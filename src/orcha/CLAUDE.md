@@ -144,8 +144,12 @@ Document new keys in `orcha.yaml.example` and the README; validate in
   a sanitizer, kept as a test where practical). Verify end to end on the real
   binary when behaviour is user-visible — see the `server-smoke` skill.
 - Changes touching the dashboard: `admin-ui` skill, then the `admin-ui-reviewer`
-  agent. Design/contract changes: `architecture-reviewer`. C++ API/idiom changes:
-  `cpp-reviewer`. Threads, locks, lifetimes, cancellation: `concurrency-reviewer`.
+  agent. Design/contract changes: `architecture-reviewer`. Run semantics (engine,
+  settings, lifecycle, retries/branching proposals): `orchestration-reviewer`.
+  C++ API/idiom changes: `cpp-reviewer`. Threads, locks, lifetimes,
+  cancellation: `concurrency-reviewer`.
+- Recurring work has a skill: `new-plugin` (command plugins), `workflow-setting`
+  (a new workflow/step key, end to end), `http-endpoint` (routes, auth, OpenAPI).
 - Git: branch from `dev` (`fix/…`, `feat/…`, `chore/…`), PRs target **`dev`**
   (`main` is updated from `dev`). Commit only when asked; one focused commit per fix,
   each building and passing tests on its own — see the `ship` skill.
