@@ -6,15 +6,23 @@ services:
     image: orcha:latest
     container_name: orcha
     ports:
-      - "${ORCHA_PORT:-8070}:8070"
+      # Published on the host's loopback only. To reach Orcha from other
+      # machines set ORCHA_BIND=0.0.0.0 (and an API token + admin password).
+      - "${ORCHA_BIND:-127.0.0.1}:${ORCHA_PORT:-8070}:8070"
     environment:
       # Override values from orcha.yaml. Anything matching `ORCHA_<section>_<key>`
       # is merged into the configuration at startup (see main.cpp).
-      ORCHA_ADMIN_USERNAME: ${ORCHA_ADMIN_USERNAME:-admin}
-      ORCHA_ADMIN_PASSWORD: ${ORCHA_ADMIN_PASSWORD:-change-me}
+      # Credentials are passed through only when you set them (shell or .env):
+      # an empty value would override a password set in a mounted orcha.yaml.
+      # Admin login: leave ORCHA_ADMIN_PASSWORD unset (and no password in
+      # orcha.yaml) to create the account on first visit to /admin instead,
+      # stored hashed on the data volume. Until then, anyone who can reach the
+      # port can create it: open /admin right after the first start.
+      ORCHA_ADMIN_USERNAME:
+      ORCHA_ADMIN_PASSWORD:
       # Required to use POST /workflow from outside the container
-      # (send `Authorization: Bearer <token>`). Empty => /workflow returns 503.
-      ORCHA_SERVER_API_TOKEN: ${ORCHA_SERVER_API_TOKEN:-}
+      # (send `Authorization: Bearer <token>`). Unset => /workflow returns 503.
+      ORCHA_SERVER_API_TOKEN:
       ORCHA_JOBS_DB_PATH: /app/data/orcha-jobs.db
       ORCHA_LOGGING_FILE: /app/logs/orcha.log
     volumes:
