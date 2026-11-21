@@ -87,7 +87,8 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   YAML bodies (YAML `Content-Type` on `/workflow`, `/api/jobs`,
   `/api/definitions/convert`)
   go through `parse_request_body()` → `Utils::parse_yaml()` (depth 64, 100k
-  values after alias expansion, one document).
+  values after alias expansion, merge keys nested ≤ 16 and never recursive,
+  one document).
 - **YAML ↔ JSON** lives only in `utils/YamlJson.cpp` (CLI, jobs API, convert
   endpoint; the dashboard calls the endpoint and has no YAML parser). Its header
   must not include yaml-cpp (the agent layer builds without it); `parse_yaml`/

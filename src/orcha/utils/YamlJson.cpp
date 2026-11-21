@@ -112,9 +112,17 @@ namespace Orcha::Utils {
             return std::nullopt;
         }
 
+        /// State of one conversion. On a throw the whole walk is abandoned, so
+        /// the stacks need no unwinding.
+        struct Walk {
+            const YamlLimits& limits;
+            std::size_t nodes = 0;            ///< Values produced so far.
+            std::vector<YAML::Node> open;     ///< Mappings being converted, outermost first.
+            std::size_t merges = 0;           ///< Merge sources being converted.
+        };
+
         template <class J>
-        J convert_node(const YAML::Node& node, const YamlLimits& limits,
-                       std::size_t depth, std::size_t& nodes);
+        J convert_node(const YAML::Node& node, std::size_t depth, Walk& walk);
 
         template <class J>
         J convert_scalar(const YAML::Node& node) {
@@ -159,8 +167,7 @@ namespace Orcha::Utils {
         }
 
         template <class J>
-        J convert_map(const YAML::Node& node, const YamlLimits& limits,
-                      std::size_t depth, std::size_t& nodes) {
+        J convert_map(const YAML::Node& node, std::size_t depth, Walk& walk) {
             // Keys set by the mapping itself; they win over merged ones.
             std::unordered_set<std::string> own;
             for (const auto& kv : node) {
@@ -172,15 +179,29 @@ namespace Orcha::Utils {
                     throw yaml_error("Duplicate key '" + kv.first.Scalar() + "'", kv.first.Mark());
                 }
             }
+            walk.open.push_back(node);
             J obj = J::object();
             std::unordered_set<std::string> merged;
             const auto merge = [&](const YAML::Node& source, const YAML::Mark& mark) {
                 if (!source.IsMap()) {
                     throw yaml_error("A merge key (<<) needs a mapping or a list of mappings", mark);
                 }
-                // The source is converted on its own (its keys come back in order)
-                // and sits at this mapping's level, not one below it.
-                J from = convert_node<J>(source, limits, depth - 1, nodes);
+                // Merging a mapping that contains the merge would expand forever.
+                if (std::ranges::any_of(walk.open, [&](const YAML::Node& m) { return m.is(source); })) {
+                    throw yaml_error("A merge key (<<) refers to a mapping that contains it", mark);
+                }
+                // A merge source sits at the merging mapping's level, so merges
+                // nest without adding depth. Bound them on their own: each is a
+                // recursion, and a chain of anchors that each merge the previous
+                // one would otherwise exhaust the stack below the node limit.
+                if (walk.merges >= walk.limits.max_merge_nesting) {
+                    throw yaml_error("Merge keys (<<) are nested more than " +
+                                     std::to_string(walk.limits.max_merge_nesting) + " levels deep", mark);
+                }
+                // The source is converted on its own (its keys come back in order).
+                ++walk.merges;
+                J from = convert_node<J>(source, depth - 1, walk);
+                --walk.merges;
                 for (auto& [k, v] : from.items()) {
                     // Earlier sources win over later ones (YAML merge-key spec).
                     if (!own.contains(k) && merged.insert(k).second) append_member(obj, k, std::move(v));
@@ -196,15 +217,16 @@ namespace Orcha::Utils {
                     continue;
                 }
                 append_member(obj, kv.first.Scalar(),
-                              convert_node<J>(kv.second, limits, depth, nodes));
+                              convert_node<J>(kv.second, depth, walk));
             }
+            walk.open.pop_back();
             return obj;
         }
 
         template <class J>
-        J convert_node(const YAML::Node& node, const YamlLimits& limits,
-                       std::size_t depth, std::size_t& nodes) {
-            if (++nodes > limits.max_nodes) {
+        J convert_node(const YAML::Node& node, std::size_t depth, Walk& walk) {
+            const auto& limits = walk.limits;
+            if (++walk.nodes > limits.max_nodes) {
                 throw yaml_error("Document is too large (more than " +
                                  std::to_string(limits.max_nodes) +
                                  " values after expanding aliases)", node.Mark());
@@ -221,11 +243,11 @@ namespace Orcha::Utils {
                     if (node.IsSequence()) {
                         J arr = J::array();
                         for (const auto& item : node) {
-                            arr.push_back(convert_node<J>(item, limits, depth + 1, nodes));
+                            arr.push_back(convert_node<J>(item, depth + 1, walk));
                         }
                         return arr;
                     }
-                    return convert_map<J>(node, limits, depth + 1, nodes);
+                    return convert_map<J>(node, depth + 1, walk);
                 }
                 case YAML::NodeType::Null:
                 case YAML::NodeType::Undefined:
@@ -371,8 +393,8 @@ namespace Orcha::Utils {
      */
     template <class J>
     J yaml_to_json(const YAML::Node& node, const YamlLimits& limits) {
-        std::size_t nodes = 0;
-        return convert_node<J>(node, limits, 0, nodes);
+        Walk walk{limits};
+        return convert_node<J>(node, 0, walk);
     }
 
     } // namespace
