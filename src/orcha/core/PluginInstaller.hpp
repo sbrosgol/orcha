@@ -175,9 +175,28 @@ namespace Orcha::Core {
         /// or nullopt for plugins that were not uploaded.
         [[nodiscard]] static std::optional<Json> provenance(const PluginMetadata& meta);
 
-        /// "upgrade", "downgrade", "reinstall" or "replace" (unversioned) for
-        /// installing @p next over @p current.
+        /// What installing @p next over @p current is: "upgrade", "downgrade",
+        /// "reinstall" (same version), "unversioned" (@p next has no version but
+        /// @p current has one) or "replace" (@p current has none). SemVer
+        /// precedence, so 1.0.0-rc.1 is older than 1.0.0. "downgrade" and
+        /// "unversioned" need confirmation (needs_confirmation()).
         [[nodiscard]] static std::string version_change(const std::string& current, const std::string& next);
+        [[nodiscard]] static bool needs_confirmation(const std::string& change) {
+            return change == "downgrade" || change == "unversioned";
+        }
+
+        /// What the signed files say the plugin is: its manifest's name and
+        /// version, else the library's file name. The only source of a plugin's
+        /// identity (upload.json is not signed).
+        struct SignedIdentity {
+            std::string name, version, description;
+            std::size_t parameters = 0;
+        };
+        /// Also checks the library file name (a plain name with this platform's
+        /// extension) and the version (SemVer-shaped), so stage() and install()
+        /// apply the same rules to the same signed inputs.
+        [[nodiscard]] static Result<SignedIdentity, PluginUploadError> identity_of(
+            const std::string& library_filename, const std::optional<std::string>& manifest);
 
     private:
         struct Existing {

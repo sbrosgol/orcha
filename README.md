@@ -388,7 +388,11 @@ plugin whose name already exists replaces it:
 Workflows already running keep using the old version.
 
 Installing an **older** version than the one installed (a downgrade) needs
-explicit confirmation: the dashboard asks you to tick "Install … even though …
+explicit confirmation (versions compare by SemVer precedence, so `1.0.0-rc.1`
+is older than `1.0.0`), and so does replacing a versioned plugin with a build
+that declares no version (it can't be ordered, so it may be older). Upload
+manifests must use SemVer-shaped versions (`1.2.0`, `1.2.0-rc.1`; no empty
+parts): the dashboard asks you to tick "Install … even though …
 is installed", and the API answers `409` with `"requires": "allow_downgrade"`
 until the install request sends `{"allow_downgrade": true}`. This is checked
 against the version installed at install time, so an upload that was an

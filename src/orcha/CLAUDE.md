@@ -68,12 +68,18 @@ saved jobs with cron scheduling (SQLite). The repo root holds `Dockerfile`,
   `<upload dir>/<name>-<id>` directory (a fresh dlopen path; never reload a new
   library from an old path). `install()` fsyncs a journal and
   denylists the plugin before loading it; journal removal is the commit point;
-  **a plugin is one command named like the plugin** (manifest `name`, else the
-  library file name): the registry refuses a command whose `name()` differs
-  (`try_load_command_library(path, expected)`), so key scopes and
-  `override_bundled` on the name cover the command, and a plugin without a
-  name is never loaded. Scopes limit naming, not trust: a loaded plugin runs
-  with the server's privileges;
+  install derives name and version again from the verified files (`upload.json`
+  is an unsigned cache; a mismatch is refused). **A plugin is one command named
+  like the plugin** (manifest `name`, else the library file name): the registry
+  refuses a command whose `name()` differs (`try_load_command_library(path,
+  expected)`), so key scopes and `override_bundled` on the name cover the
+  command, and a plugin without a name is never loaded. Scopes limit naming,
+  not trust: a loaded plugin runs with the server's privileges. Versions compare
+  by SemVer precedence (`version_change`, a total order); upload versions must
+  be SemVer-shaped; replacing a versioned plugin with an unversioned build
+  needs the same confirmation as a downgrade (`needs_confirmation`). The
+  installer compares against the version a plugin *declares* (manifest), never
+  `PluginMetadata::version`'s fallback;
   `recover_interrupted()` runs at server start only (never CLI), under a flock.
   Each trusted key has a name scope (`plugins` globs; none = any) and may
   override a bundled plugin only with `override_bundled: true`; both are

@@ -56,8 +56,9 @@ requires rebuilding the `orcha` binary.
   review must always say that installing runs the plugin's code in the server.
   `/api/plugins/_uploads` `keys` are `{id, plugins|null, override_bundled}`; staged
   uploads carry `allowed_by` (the key scope that permits the name). A downgrade
-  review shows `#upConfirm`; Install stays disabled until it is ticked and then
-  sends `{allow_downgrade: true}`.
+  review (`change` `downgrade`, or `unversioned`: an unversioned build over a
+  versioned one; see `upNeedsConfirm`) shows `#upConfirm`; Install stays
+  disabled until it is ticked and then sends `{allow_downgrade: true}`.
   `/api/plugins` entries carry `source` (`bundled`|`uploaded`) and, for an upload
   that overrides a bundled plugin, `overrides {version, library_path}`.
   `/api/plugins/_uploads` is fetched in `refreshAll()` (fail-soft).

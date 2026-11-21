@@ -48,6 +48,8 @@ than `EchoCommand` (too simple to show the contracts).
   equal the manifest `name` (or, without a manifest, the library file name
   minus `lib` and the extension): the loader refuses a mismatch, because key
   scopes and bundled-override checks are made on that name.
+- **Versions** follow SemVer (`1.2.0`, `1.2.0-rc.1`): the downgrade check
+  orders pre-releases below their release.
 - **No fixed shared paths.** Downloads/extractions go to a per-run temp dir
   (two runs of the same step may run at once), are checksum-verified before
   use, and are cleaned up; never `remove_all` a directory relative to the
