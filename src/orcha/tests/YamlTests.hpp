@@ -19,6 +19,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <thread>
 
 namespace Orcha::Tests {
 
@@ -252,6 +253,63 @@ namespace Orcha::Tests {
         std::cout << "[PASS] test_yaml_merge_keys\n";
     }
 
+    // Regression: a mapping that merged itself recursed until the stack ran out
+    // (merge sources don't add depth), crashing the server from any YAML body.
+    inline void test_yaml_recursive_merges_are_errors() {
+        using namespace yaml_tests;
+        // Request workers run on secondary threads, whose stacks are much
+        // smaller than the main thread's (512 KiB on macOS): test there, and
+        // carry a failed assertion back instead of terminating the suite.
+        std::exception_ptr failure;
+        std::thread([&failure] { try {
+            const auto message_of = [](const std::string& text) {
+                return expect_yaml_error([&] { (void)Utils::parse_yaml(text); }).message();
+            };
+            const auto contains = [](const std::string& s, const char* part) {
+                return s.find(part) != std::string::npos;
+            };
+            // Directly, and through a mapping nested inside the merged one.
+            ORCHA_ASSERT(contains(message_of("a: &x {k: 1, <<: *x}\n"), "contains it"));
+            ORCHA_ASSERT(contains(message_of("a: &x\n  k: 1\n  <<: *x\n"), "contains it"));
+            ORCHA_ASSERT(contains(message_of("a: &x {b: {<<: *x}}\n"), "contains it"));
+            ORCHA_ASSERT(contains(message_of("a: &x {b: [{<<: [{}, *x]}]}\n"), "contains it"));
+
+            // A chain of anchors, each merging the previous one. Converting nN
+            // nests N merges: 16 is fine, 17 is an error, and so is a chain of
+            // thousands (a stack overflow before the fix).
+            const auto chain = [](int n) {
+                std::string doc = "n0: &n0 {v: 0}\n";
+                for (int i = 1; i <= n; ++i) {
+                    doc += "n" + std::to_string(i) + ": &n" + std::to_string(i) +
+                           " {<<: *n" + std::to_string(i - 1) + "}\n";
+                }
+                return doc;
+            };
+            ORCHA_ASSERT(Utils::parse_yaml(chain(16))["n16"]["v"] == 0);
+            ORCHA_ASSERT(contains(message_of(chain(17)), "nested more than 16"));
+            ORCHA_ASSERT(contains(message_of(chain(3000)), "nested more than 16"));
+
+            // The deepest accepted input combines both limits: 64 levels of
+            // mappings, the innermost merging the end of a 16-merge chain
+            // (`deep` itself adds the 16th merge to n15's 15).
+            // Level 1 is the document; `deep` opens levels 2..levels.
+            const auto deepest = [&](int levels) {
+                std::string doc = chain(15) + "deep: ";
+                for (int i = 2; i < levels; ++i) doc += "{a: ";
+                return doc + "{<<: *n15}" + std::string(levels - 2, '}') + "\n";
+            };
+            ORCHA_ASSERT(Utils::parse_yaml(deepest(64)).contains("deep"));
+            ORCHA_ASSERT(contains(message_of(deepest(65)), "maximum depth of 64"));
+
+            // An anchor merged many times side by side is not recursion.
+            std::string wide = "base: &b {v: 1}\n";
+            for (int i = 0; i < 500; ++i) wide += "k" + std::to_string(i) + ": {<<: *b}\n";
+            ORCHA_ASSERT(Utils::parse_yaml(wide)["k499"]["v"] == 1);
+        } catch (...) { failure = std::current_exception(); } }).join();
+        if (failure) std::rethrow_exception(failure);
+        std::cout << "[PASS] test_yaml_recursive_merges_are_errors\n";
+    }
+
     inline void test_yaml_large_inputs_are_bounded_and_linear() {
         using namespace yaml_tests;
         // Size: refused before yaml-cpp builds its (~100x larger) node tree.
@@ -407,6 +465,7 @@ namespace Orcha::Tests {
         test_yaml_errors_carry_positions();
         test_yaml_limits_bound_untrusted_input();
         test_yaml_merge_keys();
+        test_yaml_recursive_merges_are_errors();
         test_yaml_large_inputs_are_bounded_and_linear();
         test_yaml_media_types();
         test_definition_convert_route();

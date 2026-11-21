@@ -241,7 +241,8 @@ stays a string). Unquoted `true`/`false`, `null`/`~`, integers (including
 `0x`/`0o`) and decimal numbers are typed. Words such as `yes`/`on`, and
 `.inf`/`.nan`, stay strings. Anchors, aliases and merge keys
 (`<<: *defaults`) work, and keys a mapping sets itself win over merged ones.
-Duplicate keys are an error. Each input must hold exactly one document of at
+A merge source may itself use merge keys up to 16 levels deep, and may not
+contain the mapping that merges it. Duplicate keys are an error. Each input must hold exactly one document of at
 most 512 KB (larger request bodies get `413`), with at most 64 levels of
 nesting and 100,000 values after aliases expand. Comments and formatting are
 not kept, because the definition is stored as JSON.

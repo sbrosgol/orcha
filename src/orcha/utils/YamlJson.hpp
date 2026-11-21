@@ -40,6 +40,10 @@ namespace Orcha::Utils {
         std::size_t max_bytes = 512 * 1024; ///< Input text (yaml-cpp needs ~100x this in memory).
         std::size_t max_depth = 64;         ///< Container nesting (as kMaxRequestJsonDepth).
         std::size_t max_nodes = 100'000;    ///< Values in the converted tree.
+        /// Merge keys (`<<`) whose source itself merges, and so on. Merged keys
+        /// don't add depth, but each level is a recursion on top of max_depth,
+        /// so this bounds the converter's stack use with it.
+        std::size_t max_merge_nesting = 16;
     };
 
     /// A YAML syntax or conversion error. line()/column() are 1-based; 0 if unknown.
