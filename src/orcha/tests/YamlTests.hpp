@@ -14,6 +14,7 @@
 #include "../utils/YamlJson.hpp"
 
 #include "Assertions.hpp"
+#include <algorithm>
 #include <chrono>
 #include <clocale>
 #include <iostream>
@@ -261,15 +262,31 @@ namespace Orcha::Tests {
 
         // A wide mapping keeps its order and converts in linear time
         // (ordered_json's operator[] made this quadratic: ~3 s for 50k keys).
-        std::string wide;
-        for (int i = 0; i < 50'000; ++i) wide += "k" + std::to_string(i) + ": " + std::to_string(i) + "\n";
-        Utils::YamlLimits roomy;
-        roomy.max_bytes = wide.size();
-        const auto start = std::chrono::steady_clock::now();
-        const auto doc = Utils::parse_yaml<OJson>(wide, roomy);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
+        // Compare growth, not a fixed budget: 4x the keys takes ~4x the time
+        // when linear and ~16x when quadratic, in any build. A fixed 1 s
+        // failed under TSan (~1.1 s) and was close in a debug build (~0.75 s).
+        const auto wide = [](int keys) {
+            std::string text;
+            for (int i = 0; i < keys; ++i) text += "k" + std::to_string(i) + ": " + std::to_string(i) + "\n";
+            return text;
+        };
+        const auto convert_time = [](const std::string& text, OJson& out) {
+            Utils::YamlLimits roomy;
+            roomy.max_bytes = text.size();
+            auto best = std::chrono::steady_clock::duration::max();
+            for (int attempt = 0; attempt < 2; ++attempt) {   // best of two: less scheduler noise
+                const auto start = std::chrono::steady_clock::now();
+                out = Utils::parse_yaml<OJson>(text, roomy);
+                best = std::min(best, std::chrono::steady_clock::now() - start);
+            }
+            return std::chrono::duration<double>(best).count();
+        };
+        OJson small, doc;
+        const double t_small = convert_time(wide(12'500), small);
+        const double t_large = convert_time(wide(50'000), doc);
+        ORCHA_ASSERT(small.size() == 12'500);
         ORCHA_ASSERT(doc.size() == 50'000 && doc.begin().key() == "k0" && doc["k49999"] == 49999);
-        ORCHA_ASSERT(elapsed < std::chrono::seconds(1));
+        ORCHA_ASSERT(t_large < 8 * t_small);
 
         // JSON into ordered_json: keys per object are capped.
         ORCHA_ASSERT(parse_json_bounded<OJson>(R"({"a":1,"b":{"c":2,"d":3}})", 64, 2).size() == 2);

@@ -225,6 +225,18 @@ add_dependencies(test_new_features orcha_test_legacy_plugin)
 target_compile_definitions(test_new_features PRIVATE
         ORCHA_TEST_LEGACY_PLUGIN_PATH="$<TARGET_FILE:orcha_test_legacy_plugin>")
 
+# Never ASan-instrument these two fixtures. The upload tests load copies of
+# them in turn at the same address (install, refused legacy upgrade, rollback
+# reload), and ASan on macOS does not unregister an unloaded image's globals:
+# the reloaded plugin's own string literals are then reported as
+# global-buffer-overflow, which aborted every sanitizer run of the suite.
+# The host code under test (registry, installer, lifetimes) stays instrumented,
+# and use after unload still faults because the image is unmapped.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(orcha_test_slow_plugin PRIVATE -fno-sanitize=address)
+    target_compile_options(orcha_test_legacy_plugin PRIVATE -fno-sanitize=address)
+endif()
+
 # Timeout/cancellation tests drive the real shell_exec and http_request plugins.
 foreach(plugin ShellExec HttpRequest)
     if(TARGET ${plugin})
